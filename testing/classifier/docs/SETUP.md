@@ -328,8 +328,8 @@ classifier comments and emits per-class precision inputs (see PLAYBOOK §5).
 ### Primary sink — Google Sheet (service-account bearer token)
 
 ```bash
-export CLASSIFIER_SHEET_ID=<the target Google Sheet ID>
-export CLASSIFIER_SHEET_TOKEN=<a Google service-account access token>
+export SHEET_ID=<the target Google Sheet ID>
+export GOOGLE_SHEETS_TOKEN=<a Google service-account access token>
 
 testing/metrics/test_classifier_comments.sh
 ```
@@ -339,17 +339,17 @@ testing/metrics/test_classifier_comments.sh
   print-access-token` for the service account, or your secrets manager) and
   pass it via the environment — **never** as a command-line argument and
   **never** committed.
-- Treat `CLASSIFIER_SHEET_TOKEN` exactly like an API key: GitHub Actions secret
+- Treat `GOOGLE_SHEETS_TOKEN` exactly like an API key: GitHub Actions secret
   in CI, environment variable locally, kept out of logs.
 
-### Fallback sink — TSV/CSV to stdout (the realistic P0 default)
+### Fallback sink — TSV to stdout (the realistic P0 default)
 
 ```bash
 # TSV to stdout (default for early pilots, before the Sheet is wired)
-testing/metrics/test_classifier_comments.sh --format tsv
+testing/metrics/test_classifier_comments.sh
 
-# CSV instead
-testing/metrics/test_classifier_comments.sh --format csv > classifier-metrics.csv
+# capture to a file (it's tab-separated; import as TSV)
+testing/metrics/test_classifier_comments.sh > classifier-metrics.tsv
 ```
 
 This shares plumbing intent with `security/metrics/pr_review_comments.sh`
@@ -395,9 +395,9 @@ Check the workflow logs:
 
 ### Metrics script writes nothing to the Sheet
 
-- `CLASSIFIER_SHEET_TOKEN` is unset, expired, or the service account lacks edit
-  access to `CLASSIFIER_SHEET_ID`. Re-mint the token and confirm Sheet sharing.
-- As a fast diagnostic, run with `--format tsv` to confirm the harvester is
+- `GOOGLE_SHEETS_TOKEN` is unset, expired, or the service account lacks edit
+  access to `SHEET_ID`. Re-mint the token and confirm Sheet sharing.
+- As a fast diagnostic, run it to confirm the harvester is
   finding comments at all; if TSV is populated but the Sheet isn't, the problem
   is in the token/Sheet auth, not the harvest.
 

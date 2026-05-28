@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # =============================================================================
-# classifier_thumbs.sh — harvest 👍/👎 reactions on AI test-classifier PR
+# test_classifier_comments.sh — harvest 👍/👎 reactions on AI test-classifier PR
 # comments, tie each reaction back to the classifier's machine-readable verdict,
 # and emit a TSV suitable for copy-paste into a tracking sheet.
 #
@@ -82,10 +82,10 @@ set -euo pipefail
 # ---------------------------------------------------------------------------
 # Usage
 # ---------------------------------------------------------------------------
-#   ./classifier_thumbs.sh                 # TSV to stdout (P0 fallback)
-#   ./classifier_thumbs.sh > rows.tsv      # capture for paste
-#   GOOGLE_SHEETS_TOKEN=... SHEET_ID=... ./classifier_thumbs.sh   # + Sheets sink
-#   DEBUG=1 ./classifier_thumbs.sh         # per-PR fetched/matched counts to stderr
+#   ./test_classifier_comments.sh                 # TSV to stdout (P0 fallback)
+#   ./test_classifier_comments.sh > rows.tsv      # capture for paste
+#   GOOGLE_SHEETS_TOKEN=... SHEET_ID=... ./test_classifier_comments.sh   # + Sheets sink
+#   DEBUG=1 ./test_classifier_comments.sh         # per-PR fetched/matched counts to stderr
 # =============================================================================
 
 # --- Configuration ---

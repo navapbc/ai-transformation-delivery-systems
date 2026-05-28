@@ -193,12 +193,12 @@ Steps:
 ------------------------------------------------------------------------------
 
     # Primary — Google Sheet via service-account bearer token:
-    export CLASSIFIER_SHEET_ID=<target Google Sheet ID>
-    export CLASSIFIER_SHEET_TOKEN=<service-account access token>
+    export SHEET_ID=<target Google Sheet ID>
+    export GOOGLE_SHEETS_TOKEN=<service-account access token>
     testing/metrics/test_classifier_comments.sh
 
     # Fallback — TSV/CSV to stdout (the realistic P0 default):
-    testing/metrics/test_classifier_comments.sh --format tsv
+    testing/metrics/test_classifier_comments.sh
 
 ------------------------------------------------------------------------------
 Onboarding new team members

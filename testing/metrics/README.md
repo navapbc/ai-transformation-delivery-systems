@@ -4,7 +4,7 @@ This directory is the metrics counterpart of the AI **test-classifier** workstre
 paralleling `security/metrics/`. It harvests the developer feedback signal that
 the P1 classifier asks for and turns it into rows you can track over time.
 
-## What `classifier_thumbs.sh` measures
+## What `test_classifier_comments.sh` measures
 
 The P1 classifier posts **one issue comment per CI run** that has findings.
 Each comment leads with the Conventional-Comment label `test-classifier:` and
@@ -55,9 +55,9 @@ falling back to the inlined `.reactions` summary.
 ## Running it (TSV fallback — the P0 default)
 
 ```bash
-./classifier_thumbs.sh                 # TSV to stdout, ready to paste into a sheet
-./classifier_thumbs.sh > rows.tsv      # capture to a file
-DEBUG=1 ./classifier_thumbs.sh         # per-PR fetched/matched counts on stderr
+./test_classifier_comments.sh                 # TSV to stdout, ready to paste into a sheet
+./test_classifier_comments.sh > rows.tsv      # capture to a file
+DEBUG=1 ./test_classifier_comments.sh         # per-PR fetched/matched counts on stderr
 ```
 
 All diagnostics go to **stderr**, so stdout is always a clean TSV (header +
@@ -75,7 +75,7 @@ script silently skips it and just prints the TSV.
 export GOOGLE_SHEETS_TOKEN="ya29.<service-account-bearer-token>"
 export SHEET_ID="1AbC...xyz"          # static; from /spreadsheets/d/<SHEET_ID>/edit
 export SHEET_RANGE="Sheet1!A1"        # optional, this is the default
-./classifier_thumbs.sh
+./test_classifier_comments.sh
 ```
 
 Service-account setup (read+write scope, least privilege):

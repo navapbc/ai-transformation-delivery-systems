@@ -323,7 +323,7 @@ classifications = data.get("classifications", [])
 
 lines = []
 # Conventional-Comment label so the comment is greppable and the metrics
-# harvester (testing/metrics/classifier_thumbs.sh) can identify it by a
+# harvester (testing/metrics/test_classifier_comments.sh) can identify it by a
 # stable leading marker. Keep this in sync with CLASSIFIER_LABEL there.
 lines.append("test-classifier: AI triage of failing tests")
 lines.append("")

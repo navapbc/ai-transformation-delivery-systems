@@ -62,7 +62,7 @@ is what tells us where the classifier needs tuning.
 ## Comment format
 
 Post **one** PR conversation comment (not one per line). Match this format
-exactly — the metrics harvester (`testing/metrics/classifier_thumbs.sh`)
+exactly — the metrics harvester (`testing/metrics/test_classifier_comments.sh`)
 identifies classifier comments by the **leading `test-classifier:` label line**,
 so the comment body MUST begin with it.
 

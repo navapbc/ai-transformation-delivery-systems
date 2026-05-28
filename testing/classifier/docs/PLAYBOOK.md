@@ -392,8 +392,8 @@ reaction counts off each one with `jq`.
 
 | Sink | When to use | How |
 |---|---|---|
-| **Google Sheet (primary)** | The shared pilot dashboard everyone reads. | The script POSTs rows to a Sheet via a **service-account bearer token**. Set `CLASSIFIER_SHEET_ID` and `CLASSIFIER_SHEET_TOKEN` (the service-account access token) in the environment. |
-| **CSV/TSV to stdout (P0 fallback)** | The realistic default for early pilots before the Sheet plumbing is wired. Pipe it anywhere. | Run with `--format tsv` (or `--format csv`); the script writes rows to stdout. This shares plumbing intent with the security metrics script. |
+| **Google Sheet (primary)** | The shared pilot dashboard everyone reads. | The script POSTs rows to a Sheet via a **service-account bearer token**. Set `SHEET_ID` and `GOOGLE_SHEETS_TOKEN` (the service-account access token) in the environment. |
+| **TSV to stdout (P0 fallback)** | The realistic default for early pilots before the Sheet plumbing is wired. Pipe it anywhere. | Run the script with no Sheet env vars set; it writes tab-separated rows to stdout. This shares plumbing intent with the security metrics script. |
 
 ### What we read from it
 
@@ -465,7 +465,7 @@ Per class, per time window:
 ### Keep secrets out of CI logs
 
 - The dispatcher uses `set -euo pipefail` and **never echoes** API keys or
-  tokens. Pass `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` / `CLASSIFIER_SHEET_TOKEN`
+  tokens. Pass `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` / `GOOGLE_SHEETS_TOKEN`
   only via GitHub Actions secrets and environment variables — never as command
   arguments (which can appear in `ps` output and logs).
 - If a test failure message itself contains a secret (it shouldn't, but it
