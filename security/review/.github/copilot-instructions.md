@@ -75,6 +75,8 @@ Suggestion: <Concise one-line summary of the recommended fix>
 ```suggestion
 <concrete code change that resolves the finding>
 ```
+
+_Reviewed by AI, was this helpful? Please react with 👍 or 👎._
 ```
 
 ### Compliance comment template
@@ -94,6 +96,8 @@ Suggestion: <Concise one-line summary of the recommended remediation>
 ```suggestion
 <concrete IaC resource block or configuration change that resolves the finding>
 ```
+
+_Reviewed by AI, was this helpful? Please react with 👍 or 👎._
 ```
 
 ### Notes on the templates
@@ -112,6 +116,12 @@ Suggestion: <Concise one-line summary of the recommended remediation>
   ID and (where it differs in tailoring) the CMS ARS 5.1 control ID.
 - Do not use `praise`, `nitpick`, `thought`, or any other Conventional
   Comments label. Only `security` and `compliance` are in scope.
+- The attribution line `_Reviewed by AI, was this helpful? Please react with
+  👍 or 👎._` is mandatory on every comment posted to GitHub. Place it as
+  the last line of the comment body, after the suggestion / code-fence block.
+  Local tooling (the `pr-review` dispatcher) renders this line automatically
+  for findings emitted via JSON; when posting comments directly, include it
+  yourself.
 
 ## What the review action should be
 

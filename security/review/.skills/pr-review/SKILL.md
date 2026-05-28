@@ -265,7 +265,11 @@ between the markers must be a single object with the schema below.
     flag converts any non-`APPROVE` result into a non-zero exit if the team
     wants the PR build to fail; that is a dispatcher concern, not an AI one.
 - `summary` — a short overall PR-level review body, posted as the review's
-  top-level body (not attached to a line).
+  top-level body (not attached to a line). The dispatcher appends the
+  attribution line (`_Reviewed by AI, was this helpful? Please react with
+  👍 or 👎._`) as the final line of the rendered summary; do not include it
+  yourself in the JSON `summary` value (the dispatcher handles it to avoid
+  duplication).
 - `comments` — array of inline comments. Each comment must include:
   - `path` — repo-relative file path (matches what `git diff --name-only` returns)
   - `line` — 1-indexed line number in the **new** (RIGHT-side) version of the file
@@ -297,7 +301,9 @@ between the markers must be a single object with the schema below.
 ### 6C — Comment body rendering (what the dispatcher produces from the JSON)
 
 The dispatcher renders each comment's body in Conventional Comments format
-with severity as a decoration:
+with severity as a decoration. Every rendered comment ends with a single
+attribution line so reviewers can signal usefulness back to us via GitHub
+reactions:
 
 ```
 <perspective>(<severity>): <title>
@@ -311,6 +317,8 @@ Suggestion: <one-line summary of the suggested change>
 ```suggestion
 <suggestion_body>
 ```
+
+_Reviewed by AI, was this helpful? Please react with 👍 or 👎._
 ```
 
 Or, for `suggestion_kind: "reference"`:
@@ -327,6 +335,8 @@ Suggestion: <one-line summary of the suggested change>
 ```<suggestion_language>
 <suggestion_body>
 ```
+
+_Reviewed by AI, was this helpful? Please react with 👍 or 👎._
 ```
 
 Where:

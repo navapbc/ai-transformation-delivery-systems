@@ -294,6 +294,8 @@ Suggestion:
 \`\`\`${fence_lang}
 ${body}
 \`\`\`
+
+_Reviewed by AI, was this helpful? Please react with 👍 or 👎._
 EOF
 }
 
@@ -335,6 +337,15 @@ action = data.get("review_action", "COMMENT")
 summary = data.get("summary", "AI-assisted PR review (security + compliance).")
 comments_in = data.get("comments", [])
 
+AI_ATTRIBUTION = (
+    "_Reviewed by AI, was this helpful? Please react with "
+    "\U0001F44D or \U0001F44E._"
+)
+# Append the attribution as the final line of the top-level review body.
+# Guard against duplication if the AI already included it in the JSON summary.
+if AI_ATTRIBUTION not in summary:
+    summary = summary.rstrip() + "\n\n" + AI_ATTRIBUTION
+
 def render_body(c):
     perspective = c.get("perspective", "security")
     severity = c.get("severity", "LOW").upper()
@@ -352,7 +363,8 @@ def render_body(c):
         f"Description: {description}\n\n"
         f"Severity: {severity}\n\n"
         f"Suggestion:\n\n"
-        f"```{fence}\n{body}\n```\n"
+        f"```{fence}\n{body}\n```\n\n"
+        f"_Reviewed by AI, was this helpful? Please react with \U0001F44D or \U0001F44E._\n"
     )
 
 comments_out = []
