@@ -21,7 +21,7 @@ it top to bottom and run with zero guessing.
 ## Contents
 
 1. [What the classifier is](#1-what-the-classifier-is)
-2. [The 3-scenario framing](#2-the-3-scenario-framing)
+2. [The four-verdict taxonomy](#2-the-four-verdict-taxonomy)
 3. [Phasing: P0 → P1 → (future) P2 → P3](#3-phasing-p0--p1--future-p2--p3)
 4. [How to drop the GitHub Action into your repo](#4-how-to-drop-the-github-action-into-your-repo)
 5. [The metrics loop (👍/👎 and precision inputs)](#5-the-metrics-loop)
@@ -34,13 +34,17 @@ it top to bottom and run with zero guessing.
 
 The classifier is an AI reviewer that runs **after your test suite runs in
 CI** (or against a local commit) and, for each test failure or each finding,
-tags it as one of three calls:
+tags it as one of four verdicts:
 
-| Call | Meaning | What the team should do |
+| Verdict | Meaning | What the team should do |
 |---|---|---|
-| **`test-fix`** | The test failed but the application is fine. The test is stale, brittle, or a change-detector that's asserting on an intentional change. | Fix the **TEST**. |
-| **`code-fix`** | The test failed because the application actually regressed. | Fix the **CODE**. |
-| **`no-action`** | The test passed. Nothing to do. | Nothing. |
+| **`APPLICATION_BUG`** | The test failed because the application actually regressed. | Fix the **CODE**. |
+| **`TEST_BUG`** | The test failed but the application is fine. The test is stale, brittle, or a change-detector that's asserting on an intentional change. | Fix the **TEST**. |
+| **`FLAKY_FAILURE`** | The failure is intermittent / non-deterministic (timing, ordering) and would pass on an unchanged re-run. | Re-run to confirm, then deflake. Not a code or test-logic patch. |
+| **`ENVIRONMENT_ISSUE`** | Infrastructure: timeout, connection refused, port in use, runner OOM, missing service/secret. | Fix the environment / re-run. Neither app nor test is at fault. |
+
+> A passing test is not classified — it is simply omitted. "Nothing failed"
+> is handled by the `NO_ACTION` result marker, not a per-test verdict.
 
 It mirrors the security workstream exactly in its plumbing:
 
@@ -82,7 +86,8 @@ a tuning signal (see P1 below).
 │      └──────────────┴──────────────┘                                  │
 │                     ▼                                                 │
 │   AI reads SKILL.md, classifies each failure as                       │
-│   test-fix | code-fix | no-action, emits rationale + JSON,            │
+│   APPLICATION_BUG | TEST_BUG | FLAKY_FAILURE | ENVIRONMENT_ISSUE,      │
+│   emits rationale + JSON,                                             │
 │   ends with: <<<AI_REVIEW_RESULT:CLASSIFIED>>>                        │
 │                     │                                                 │
 │         ┌───────────┴───────────┐                                     │
@@ -114,43 +119,63 @@ testing/classifier/.skills/test-classifier/scripts/test-classifier-dispatcher.sh
 
 ---
 
-## 2. The 3-scenario framing
+## 2. The four-verdict taxonomy
 
-This is Joe's framing, and it is the heart of the classifier. Every test
-outcome maps to exactly one of three scenarios:
+Joe's original "is the test wrong or the code wrong?" framing is the
+foundation of the classifier. We've extended it to the industry-standard
+four-way split (ContextQA / FixSense / TestDino), because "the test or the
+code" only covers two of the four ways a test can fail. Every failing test
+maps to exactly one of four verdicts:
 
-| # | Test result | App state | Classification | Rationale focus |
-|---|---|---|---|---|
-| 1 | **fails** | fine | **`test-fix`** | The test encodes a stale expectation — a renamed field, a reworded copy string, a deliberately changed return shape, a timing/order assumption, a snapshot that should be re-baselined. The production code is behaving correctly. |
-| 2 | **fails** | broken | **`code-fix`** | The code regressed against a contract the test correctly encodes. The test is doing its job; the fix belongs in the application. |
-| 3 | **passes** | — | **`no-action`** | No signal. Recorded for precision accounting only. |
+| # | Verdict | When | Rationale focus |
+|---|---|---|---|
+| 1 | **`APPLICATION_BUG`** | The test fails and the app is genuinely broken. | The code regressed against a contract the test correctly encodes. The test is doing its job; the fix belongs in the application. |
+| 2 | **`TEST_BUG`** | The test fails but the app is fine. | The test encodes a stale expectation — a renamed field, a reworded copy string, a deliberately changed return shape, an ordering assumption, a snapshot that should be re-baselined. The production code is behaving correctly. |
+| 3 | **`FLAKY_FAILURE`** | The failure is intermittent / non-deterministic. | Timing, ordering, or other non-determinism that would pass on an unchanged re-run. Re-run to confirm, then deflake — it is neither a code nor a test-logic patch. |
+| 4 | **`ENVIRONMENT_ISSUE`** | The failure is infrastructure, not behavior. | Timeout, connection refused, port already in use, runner OOM, a missing service or secret. Fix the environment / re-run; neither the app nor the test is at fault. |
 
-The classifier's **primary job** is to tag each finding `test-fix` vs
-`code-fix` vs `no-action`, **with a short rationale**, so teams never generate
-no-op tests for genuinely broken code. That last clause is the whole point: a
-naive "AI fixes failing tests" loop will happily edit the test to match the
-broken code, turning a real regression green. The classifier refuses to make
-that move silently — it surfaces the call and the reasoning, and (in P1) makes
-a human confirm it.
+> A passing test is **not** classified — it is omitted. "Nothing failed" is
+> the `NO_ACTION` result marker, not a per-test verdict.
+
+The classifier's **primary job** is to tag each finding with one of these four
+verdicts, **with a short rationale**, so teams never generate no-op tests for
+genuinely broken code. That last clause is the whole point: a naive "AI fixes
+failing tests" loop will happily edit the test to match the broken code,
+turning a real regression green. The classifier refuses to make that move
+silently — it surfaces the call and the reasoning, and (in P1) makes a human
+confirm it.
 
 ### How the AI is expected to reason
 
-For each failing test the classifier weighs evidence such as:
+The decision procedure runs **in order**, and the order matters:
 
-- Does the diff touch the code under test, or only unrelated files? (A failure
-  with no nearby code change skews toward `test-fix` / flake.)
-- Does the assertion encode a *contract* (an API shape, an invariant, a
-  security control) or an *incidental detail* (exact log wording, ordering,
-  a hard-coded timestamp)? Contract breakage skews `code-fix`; incidental
-  breakage skews `test-fix`.
-- Is the change to the code under test plausibly *intentional* (a feature
-  change reflected in the PR description) vs an accidental regression?
-- Is the failure deterministic or flaky?
+1. **Rule out `ENVIRONMENT_ISSUE` first.** Does the failure output show a
+   timeout, connection refused, port already in use, runner OOM, or a missing
+   service/secret? If so, the behavior was never exercised — never invent an
+   `APPLICATION_BUG` to explain a timeout.
+2. **Then rule out `FLAKY_FAILURE`.** Is the failure non-deterministic —
+   timing, ordering, a race that would pass on an unchanged re-run? When a
+   single run looks flaky but might be real, prefer `FLAKY_FAILURE` with **low
+   confidence** and recommend a re-run as the disambiguator.
+3. **Only then ask the app-vs-test question** (`APPLICATION_BUG` vs
+   `TEST_BUG`). For that call the classifier weighs evidence such as:
+   - Does the diff touch the code under test, or only unrelated files? (A
+     failure with no nearby code change skews toward `TEST_BUG` / flake.)
+   - Does the assertion encode a *contract* (an API shape, an invariant, a
+     security control) or an *incidental detail* (exact log wording, ordering,
+     a hard-coded timestamp)? Contract breakage skews `APPLICATION_BUG`;
+     incidental breakage skews `TEST_BUG`.
+   - Is the change to the code under test plausibly *intentional* (a feature
+     change reflected in the PR description) vs an accidental regression?
 
-When the evidence is genuinely ambiguous, the classifier must say so in the
-rationale and default to the **more conservative** call — `code-fix` — because
-the cost of silently rewriting a test to hide a regression is far higher than
-the cost of a human glancing at a test that was actually just stale.
+When the app-vs-test evidence is genuinely ambiguous, the classifier must say
+so in the rationale and default to the **more conservative** call —
+`APPLICATION_BUG` over `TEST_BUG` — because shipping a bug behind a green check
+is the worst outcome, and the cost of silently rewriting a test to hide a
+regression is far higher than the cost of a human glancing at a test that was
+actually just stale. (This default applies only after `ENVIRONMENT_ISSUE` and
+`FLAKY_FAILURE` have been ruled out — never reach for `APPLICATION_BUG` to
+explain an infra failure or a flake.)
 
 ---
 
@@ -172,8 +197,9 @@ Run it with `--mode p0`. The `--post-comment` flag is ignored in this mode.
 ### P1 — MVP: comment + mandatory 👍/👎  ✅ in scope
 
 - The classifier runs in CI and posts **one PR comment** per classified
-  failure (or one rolled-up comment, team's choice), stating the call
-  (`test-fix` / `code-fix`) and the short rationale.
+  failure (or one rolled-up comment, team's choice), stating the verdict
+  (`APPLICATION_BUG` / `TEST_BUG` / `FLAKY_FAILURE` / `ENVIRONMENT_ISSUE`) and
+  the short rationale.
 - The comment **requests a mandatory 👍 / 👎 reaction** from the developer:
   - 👍 = "the classifier got the call right"
   - 👎 = "the classifier got the call wrong"
@@ -190,8 +216,8 @@ Run it with `--mode p1 --post-comment`.
 > Documented as direction only. **Do not build during the pilot.**
 
 The intended next step is for the classifier to attach a *proposed diff* — a
-suggested edit to the test (for `test-fix`) or a pointer at the regressed code
-(for `code-fix`) — using GitHub's one-click `` ```suggestion `` blocks, and to
+suggested edit to the test (for `TEST_BUG`) or a pointer at the regressed code
+(for `APPLICATION_BUG`) — using GitHub's one-click `` ```suggestion `` blocks, and to
 track the **merge-rate** of those suggestions as a stronger quality signal
 than 👍/👎 alone. This stays behind the **propose-diff-then-approve** rule (see
 §6): the classifier proposes; a human approves and commits. No autocommit.
@@ -330,7 +356,7 @@ Commit and push. The next PR triggers a classification at whatever phase
 
 The pilot default is **advisory / non-blocking** — exactly like security
 review. If, much later, a team wants a failing classification (e.g. an
-unconfirmed `code-fix`) to fail the build, uncomment the `--gate` line in the
+unconfirmed `APPLICATION_BUG`) to fail the build, uncomment the `--gate` line in the
 workflow's run step:
 
 ```yaml
@@ -341,7 +367,7 @@ testing/classifier/.skills/test-classifier/scripts/test-classifier-dispatcher.sh
   # --gate
 ```
 
-Use with care: a false `code-fix` becomes a merge blocker.
+Use with care: a false `APPLICATION_BUG` becomes a merge blocker.
 
 ---
 
@@ -352,9 +378,10 @@ whole purpose is to gather that measurement. Two things are harvested:
 
 1. **The 👍/👎 reaction counts** on each P1 classifier comment — the developer's
    verdict on whether the call was right.
-2. **Classifier precision inputs** — the raw `(call, was-it-right?)` pairs that
-   let us compute precision per class (`test-fix` precision, `code-fix`
-   precision) over time.
+2. **Classifier precision inputs** — the raw `(verdict, was-it-right?)` pairs
+   that let us compute precision per class (`APPLICATION_BUG`, `TEST_BUG`,
+   `FLAKY_FAILURE`, `ENVIRONMENT_ISSUE`) over time. **`APPLICATION_BUG`
+   precision is the one to watch** — never ship a no-op test for a real bug.
 
 ### Where it goes
 
@@ -372,11 +399,13 @@ reaction counts off each one with `jq`.
 
 Per class, per time window:
 
-- **Count** of classifications emitted (`test-fix`, `code-fix`, `no-action`).
+- **Count** of classifications emitted (`APPLICATION_BUG`, `TEST_BUG`,
+  `FLAKY_FAILURE`, `ENVIRONMENT_ISSUE`). Passing tests are omitted, not counted.
 - **👍 / 👎 totals** per class.
-- **Precision** ≈ 👍 / (👍 + 👎) for each of `test-fix` and `code-fix`. This is the
-  number that decides whether a pilot graduates from P0 to P1, and (eventually)
-  whether P2 is worth building.
+- **Precision** ≈ 👍 / (👍 + 👎) for each verdict — with **`APPLICATION_BUG`
+  precision the headline number**, since a missed real bug is the worst
+  outcome. This is what decides whether a pilot graduates from P0 to P1, and
+  (eventually) whether P2 is worth building.
 - **Response rate** — what fraction of P1 comments actually received the
   mandatory reaction. A low response rate means the signal is unreliable and
   the team needs a nudge, not a phase change.
@@ -404,6 +433,24 @@ Per class, per time window:
   see the security workstream's `code-security` hook, which blocks real
   PII/PHI/secrets *before* they ever land. Keep those hooks installed; the
   classifier assumes fixtures have already cleared them.
+
+### Data minimization — send the least that yields a correct verdict
+
+- Dedicated tools in this space set a useful bar: **FixSense sends only the test
+  name, error message, and stack trace** to its analysis API — never the source
+  tree, env vars, or repo contents. Adopt the same posture: the classifier reads
+  only the failing-test signal, the implicated code paths, and the
+  change-under-test diff — **not** the broader source tree, env files, or
+  credential stores "for context."
+- **The one place we deliberately send more** than a stack-trace-only tool is
+  the `git diff "$AI_REVIEW_AGAINST" HEAD`. This is required and intentional: the
+  `APPLICATION_BUG`-vs-`TEST_BUG` decision hinges on whether the change *intended*
+  to alter the asserted behavior, and that cannot be judged without seeing the
+  change. We accept that wider scope because the verdict quality depends on it —
+  and we keep everything *else* minimal to compensate.
+- Redact secret-shaped and PHI/PII-shaped values before they reach a prompt or a
+  posted comment; never quote a suspicious fixture verbatim (see the SKILL.md
+  "Data sent to the AI" section, which is the canonical version of this rule).
 
 ### The classifier never commits to a branch a human hasn't approved
 

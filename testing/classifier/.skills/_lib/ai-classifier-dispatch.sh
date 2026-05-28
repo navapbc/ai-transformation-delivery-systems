@@ -31,8 +31,8 @@
 #
 # Result marker contract:
 #   The AI is instructed to end its output with EXACTLY ONE of:
-#       <<<AI_REVIEW_RESULT:CLASSIFIED>>>   (≥1 test-fix/code-fix verdict)
-#       <<<AI_REVIEW_RESULT:NO_ACTION>>>    (nothing failed / all no-action)
+#       <<<AI_REVIEW_RESULT:CLASSIFIED>>>   (≥1 failing test triaged; any verdict)
+#       <<<AI_REVIEW_RESULT:NO_ACTION>>>    (nothing failed; classifications empty)
 #
 # Classifier policy (advisory by default):
 #   The classifier is non-blocking. CLASSIFIED is informational; it does not
@@ -385,7 +385,7 @@ ai_review::run() {
       exit 0
       ;;
     NO_ACTION)
-      ai_review::ok "${AI_C_BOLD}✅  ${SKILL_HUMAN_NAME}: no action — nothing failed (or all no-action).${AI_C_RESET}"
+      ai_review::ok "${AI_C_BOLD}✅  ${SKILL_HUMAN_NAME}: no action — nothing failed.${AI_C_RESET}"
       exit 0
       ;;
     UNPARSEABLE|*)

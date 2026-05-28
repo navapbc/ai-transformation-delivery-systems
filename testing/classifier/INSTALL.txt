@@ -1,8 +1,8 @@
 AI Test Classifier — Quick Install
 ===================================
 
-This file is a fast-path reference. For the full pilot playbook (3-scenario
-framing, P0/P1 phasing, metrics loop, security considerations), see
+This file is a fast-path reference. For the full pilot playbook (four-verdict
+taxonomy, P0/P1 phasing, metrics loop, security considerations), see
 docs/PLAYBOOK.md. For the step-by-step local + GitHub Actions setup, see
 docs/SETUP.md.
 
@@ -13,11 +13,14 @@ and the same disabled-by-default / advisory workflow posture.
 
 WHAT IT DOES
 ============
-For each failing test on a PR, the classifier tags the failure as:
-  • test-fix   — test failed, app is fine     → fix the TEST
-  • code-fix   — test failed, app regressed    → fix the CODE
-  • no-action  — test passed                   → nothing
-...so the team never generates no-op tests for genuinely broken code.
+For each failing test on a PR, the classifier tags the failure as one of:
+  • APPLICATION_BUG   — test failed, app regressed         → fix the CODE
+  • TEST_BUG          — test failed, app is fine (stale)    → fix the TEST
+  • FLAKY_FAILURE     — intermittent / non-deterministic    → re-run, then deflake
+  • ENVIRONMENT_ISSUE — infra: timeout / conn / OOM / svc   → fix env / re-run
+(Passing tests are not classified.) This is the industry-standard four-way
+taxonomy — so the team never generates no-op tests for genuinely broken code,
+and never patches code to chase a flaky or environment failure.
 
 SCOPE: P0 + P1 ONLY.
   • P0 = observe-only (classify, record, NO PR comments).
@@ -207,8 +210,9 @@ Onboarding new team members
       c. Install gh and authenticate (gh auth login) for P1 posting
 
 ------------------------------------------------------------------------------
-Done. The classifier tags every test failure as test-fix / code-fix /
-no-action. Start in P0 (observe-only); graduate to P1 (comment + mandatory
+Done. The classifier tags every failing test as APPLICATION_BUG / TEST_BUG /
+FLAKY_FAILURE / ENVIRONMENT_ISSUE. Start in P0 (observe-only); graduate to P1
+(comment + mandatory
 👍/👎) once P0 precision looks trustworthy. P2/P3 are future direction only —
 see docs/PLAYBOOK.md. Security considerations (no PHI/PII in fixtures or
 prompts, propose-diff-then-approve, secrets out of CI logs, FedRAMP) are in

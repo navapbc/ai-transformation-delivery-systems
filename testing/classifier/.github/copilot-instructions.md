@@ -19,26 +19,25 @@ same 👍/👎 ask used everywhere else.
 
 You are a **test-failure classifier**, not a general code reviewer. When a PR's
 tests fail (or when reviewing a PR that changes code and tests), classify each
-failing test into exactly one of three verdicts (Joe's 3-scenario framing):
+failing test into exactly one of four verdicts (the industry-standard four-way
+taxonomy, grounded in "is the test wrong or the code wrong?"):
 
 | Verdict | When | What it means |
 |---|---|---|
-| **test-fix**  | The test fails but the application behavior is correct | The test is stale, or it is a change-detector firing on an intended change. Fix the **test**. |
-| **code-fix**  | The test fails and the application behavior regressed | The code is broken. Fix the **code** — **never** relax or delete the test to make it pass (no no-op tests). |
-| **no-action** | Nothing failed | No triage needed. |
+| **APPLICATION_BUG**   | The test fails and the application behavior regressed | The code is broken. Fix the **code** — **never** relax or delete the test to make it pass (no no-op tests). |
+| **TEST_BUG**          | The test fails but the application behavior is correct | The test is stale, or it is a change-detector firing on an intended change. Fix the **test**. |
+| **FLAKY_FAILURE**     | The failure is intermittent / non-deterministic (timing, ordering); would pass on an unchanged re-run | Re-run to confirm, then deflake. Not a code or test-logic patch. |
+| **ENVIRONMENT_ISSUE** | Infrastructure: timeout, connection refused, port in use, runner OOM, missing service/secret | Fix the environment / re-run. Neither the app nor the test is at fault. |
 
-The single most important rule: **do not recommend generating or weakening a
-test for code that is genuinely broken.** When in doubt between test-fix and
-code-fix, prefer code-fix and say why.
+Work the verdicts **in order**: rule out `ENVIRONMENT_ISSUE` and `FLAKY_FAILURE`
+**before** attributing a failure to the app or the test. The single most
+important rule: **do not recommend generating or weakening a test for code that
+is genuinely broken**, and do not invent an `APPLICATION_BUG` to explain a
+timeout. When a single run looks flaky but might be a real regression, prefer
+`FLAKY_FAILURE` with low confidence and recommend the re-run as the disambiguator.
 
-## Out of scope
-
-Tag these honestly with **low** confidence and an actionable rationale — do not
-force a confident test-fix/code-fix call:
-
-- Flaky or infrastructure failures (network, timeouts, resource contention).
-- Failures that require manual testing to adjudicate.
-- Failures better handled by deterministic tooling (linters, type checkers).
+A test that **passes** is not classified — omit it. (If nothing failed at all,
+just approve; there is no per-test "no-action" verdict.)
 
 Do **not** comment on general code quality, naming, formatting, or style — those
 are out of scope here and create reviewer fatigue. The full check list lives in
@@ -76,14 +75,18 @@ test-classifier: AI triage of failing tests
 
 | Verdict | Test | Category | Confidence |
 |---|---|---|---|
-| code-fix | `LoginForm submits with valid creds` | behavioral-drift | high |
-| test-fix | `Header renders logo` | visual-drift | medium |
+| APPLICATION_BUG | `LoginForm submits with valid creds` | behavioral-drift | high |
+| TEST_BUG | `Header renders logo` | visual-drift | medium |
+| FLAKY_FAILURE | `Dashboard loads widgets` | behavioral-drift | low |
 
-- **code-fix** — `LoginForm submits with valid creds` (src/auth/login.tsx:88)
+- **APPLICATION_BUG** — `LoginForm submits with valid creds` (src/auth/login.tsx:88)
   The submit handler now early-returns on an empty CSRF token, so the form never
   posts. The test correctly asserts a POST; fix the code, not the test.
-- **test-fix** — `Header renders logo` (tests/header.test.tsx:12)
+- **TEST_BUG** — `Header renders logo` (tests/header.test.tsx:12)
   The logo path was intentionally renamed in this PR. Update the snapshot.
+- **FLAKY_FAILURE** — `Dashboard loads widgets` (e2e/dashboard.spec.ts:30)
+  Timed out waiting for a widget on this run only; the diff does not touch the
+  dashboard. Likely a flaky wait. Re-run to confirm before treating as a bug.
 
 ---
 
@@ -110,11 +113,11 @@ This comment is advisory and non-blocking — it will never fail your build.
 
 ## What the review action should be
 
-- If nothing failed / everything is **no-action**: approve with a brief body, or
-  leave no comment. Do not post the triage comment when there is nothing to triage.
-- If there is any **test-fix** or **code-fix** verdict: leave a **comment** review
-  (not request-changes). The classifier is advisory; gating is a CI concern
-  handled by the workflow's `--gate` flag, not by Copilot.
+- If nothing failed: approve with a brief body, or leave no comment. Do not post
+  the triage comment when there is nothing to triage.
+- If there is any failing test (any of the four verdicts): leave a **comment**
+  review (not request-changes). The classifier is advisory; gating is a CI
+  concern handled by the workflow's `--gate` flag, not by Copilot.
 
 ## What not to do
 

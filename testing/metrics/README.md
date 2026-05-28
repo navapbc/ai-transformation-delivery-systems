@@ -14,14 +14,16 @@ embeds a machine-readable verdict between the classifier's markers (defined in
 ```
 <!-- AI_CLASSIFIER_JSON_BEGIN -->
 { "mode": "p1", "summary": "...", "classifications": [
-  { "verdict": "test-fix" | "code-fix" | "no-action",
+  { "verdict": "APPLICATION_BUG" | "TEST_BUG" | "FLAKY_FAILURE" | "ENVIRONMENT_ISSUE",
     "category": "visual-drift" | "behavioral-drift" | "e2e-form-flow-drift" | "other",
     "confidence": "high" | "medium" | "low", ... } ] }
 <!-- AI_CLASSIFIER_JSON_END -->
 ```
 
 The script summarizes the `classifications` array into one representative row
-(the first non-`no-action` entry, else the first entry).
+(the most-actionable verdict in priority order
+`APPLICATION_BUG` > `TEST_BUG` > `FLAKY_FAILURE` > `ENVIRONMENT_ISSUE`, else the
+first entry).
 
 The comment requests a **mandatory 👍 / 👎 reaction** from the developer. That
 reaction is the P1 tuning signal:
@@ -39,9 +41,10 @@ These are the two things the pilot needs:
 
 1. **P1 👍-rate** — share of classifier comments that got a 👍 (overall and per
    verdict bucket). This is the headline "is the classifier trusted?" number.
-2. **Classifier-precision inputs** — verdict × 👍/👎, so test-fix vs code-fix vs
-   no-action accuracy can be tracked separately. We never want to ship a no-op
-   test for genuinely broken code, so `code-fix` precision is the one to watch.
+2. **Classifier-precision inputs** — verdict × 👍/👎, so `APPLICATION_BUG` vs
+   `TEST_BUG` vs `FLAKY_FAILURE` vs `ENVIRONMENT_ISSUE` accuracy can be tracked
+   separately. We never want to ship a no-op test for genuinely broken code, so
+   `APPLICATION_BUG` precision is the one to watch.
 
 A classifier comment is identified by **two** signals, both required: the
 author matches `TARGET_USER` (the CI bot, default `github-actions[bot]`) **and**

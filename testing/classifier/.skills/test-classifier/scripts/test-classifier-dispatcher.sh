@@ -18,7 +18,7 @@
 #      tests were classified. The --gate flag flips this to exit 1 when the
 #      result is CLASSIFIED (CI-blocking mode for teams that want it).
 #
-# Modes (Joe's 3-scenario framing is in the skill; the dispatcher only chooses
+# Modes (the four-verdict taxonomy is in the skill; the dispatcher only chooses
 # what to DO with the verdicts):
 #
 #   --mode p0   Observe-only. Classify and record/print. Post NOTHING to the PR.
@@ -59,7 +59,7 @@ fi
 
 # ── Skill identity ──────────────────────────────────────────────────────────
 SKILL_NAME="test-classifier"
-SKILL_HUMAN_NAME="AI Test Classifier (test-fix / code-fix / no-action)"
+SKILL_HUMAN_NAME="AI Test Classifier (application-bug / test-bug / flaky / environment)"
 SKILL_PATH_CANONICAL=".skills/test-classifier/SKILL.md"
 
 # ── Classifier-specific arg parsing ────────────────────────────────────────
@@ -247,16 +247,18 @@ Follow the skill instructions in test-classifier/SKILL.md exactly:
 
   1. Collect the failing-test signal (which tests failed and the failure output).
   2. Collect the change-under-test diff (above).
-  3. For EACH failing test, decide a verdict using the 3-scenario procedure:
-       - test fails / app correct  -> "test-fix"  (fix the TEST; it is stale or
-                                       a change-detector firing on an intended change)
-       - test fails / app regressed -> "code-fix" (fix the CODE; do NOT relax the
-                                        test — never generate a no-op test for
-                                        genuinely broken code)
-       - test passes / nothing failed -> "no-action"
-     Respect the OUT-of-scope rules: flaky/infra failures, failures needing manual
-     testing, and deterministic-tooling failures are NOT confident code-fix/test-fix
-     calls — tag them honestly with low confidence and an actionable rationale.
+  3. For EACH failing test, decide ONE verdict using the four-verdict procedure
+     (work it IN ORDER — rule out substrate causes before app-vs-test):
+       - environment/infra failure (timeout, connection refused, port in use,
+         runner OOM, missing service/secret) -> "ENVIRONMENT_ISSUE"
+       - intermittent / non-deterministic (timing/ordering; would pass on an
+         unchanged re-run) -> "FLAKY_FAILURE" (recommend a re-run to confirm)
+       - test fails / app correct -> "TEST_BUG" (fix the TEST; it is stale or a
+         change-detector firing on an intended change)
+       - test fails / app regressed -> "APPLICATION_BUG" (fix the CODE; do NOT
+         relax the test — never generate a no-op test for genuinely broken code)
+     Passing tests are NOT classified (omit them). Prefer FLAKY_FAILURE with low
+     confidence over a confident APPLICATION_BUG when a single run looks flaky.
   4. Tag each with a category: visual-drift | behavioral-drift | e2e-form-flow-drift | other.
   5. Assign a confidence: high | medium | low (be honest about uncertainty).
   6. Emit a human-readable terminal report (formatted markdown).
@@ -272,8 +274,8 @@ Follow the skill instructions in test-classifier/SKILL.md exactly:
 After the JSON block, end your response with EXACTLY ONE of the following
 markers, on its own line, with no surrounding text:
 
-  <<<AI_REVIEW_RESULT:CLASSIFIED>>>   (>=1 test-fix/code-fix verdict)
-  <<<AI_REVIEW_RESULT:NO_ACTION>>>    (nothing failed / all no-action)
+  <<<AI_REVIEW_RESULT:CLASSIFIED>>>   (>=1 failing test triaged; any verdict)
+  <<<AI_REVIEW_RESULT:NO_ACTION>>>    (nothing failed; classifications empty)
 
 The marker must be consistent with the JSON classifications. Failure to emit a
 marker, or a mismatch between the marker and the JSON, will cause the dispatcher
@@ -452,7 +454,7 @@ test_classifier::run() {
       ai_review::info "Classifier result: CLASSIFIED"
       ;;
     NO_ACTION)
-      ai_review::ok "Classifier result: NO_ACTION (nothing failed / all no-action)."
+      ai_review::ok "Classifier result: NO_ACTION (nothing failed)."
       ;;
     *)
       ai_review::err "Could not parse classifier result marker."
@@ -496,7 +498,7 @@ test_classifier::run() {
 
   # ── --gate mode: exit non-zero when tests were classified. ────────────────
   # The classifier is advisory by default; --gate is for teams who want a red
-  # build when the classifier finds test-fix/code-fix work to do.
+  # build when the classifier triages any failing test.
   if (( GATE_MODE == 1 )) && [[ "${result}" == "CLASSIFIED" ]]; then
     if (( AI_REVIEW_NO_BLOCK == 1 )); then
       ai_review::warn "--gate would fail the build (result CLASSIFIED), but --no-block is set; exiting 0."

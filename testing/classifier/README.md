@@ -6,13 +6,17 @@ getting wrong when they wire AI into testing:
 
 > **When a test fails, is the *test* wrong, or is the *code* wrong?**
 
-For every failure it emits one of three calls, with a short rationale:
+For every failure it emits one of four calls, with a short rationale:
 
 | Call | Meaning | Action |
 |---|---|---|
-| **`test-fix`**  | Test failed, app is fine (stale/brittle test). | Fix the TEST. |
-| **`code-fix`**  | Test failed, app actually regressed. | Fix the CODE. |
-| **`no-action`** | Test passed. | Nothing. |
+| **`APPLICATION_BUG`**   | Test failed because the app actually regressed. | Fix the CODE. |
+| **`TEST_BUG`**          | Test failed, app is fine (stale/brittle test). | Fix the TEST. |
+| **`FLAKY_FAILURE`**     | Intermittent failure, not a real regression. | Re-run, then deflake. |
+| **`ENVIRONMENT_ISSUE`** | Infra fault (timeout/connection/OOM/missing service). | Fix the env or re-run. |
+
+Passing tests are omitted — "nothing failed" surfaces as the `NO_ACTION` result
+marker, not a per-test verdict.
 
 The point is to **never generate no-op tests for genuinely broken code** — the
 worst failure mode of "AI fixes the failing tests" tooling. The classifier
@@ -69,7 +73,7 @@ testing/metrics/
 
 ## Start here
 
-1. Read **`docs/PLAYBOOK.md`** — the 3-scenario framing, the P0→P1 phasing, the
+1. Read **`docs/PLAYBOOK.md`** — the four-verdict taxonomy, the P0→P1 phasing, the
    metrics loop, and the embedded security-considerations section.
 2. Follow **`docs/SETUP.md`** — Path A to run locally, Path B to enable the
    GitHub Actions workflow, with the `MODE` (`p0`/`p1`) configuration.

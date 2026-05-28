@@ -1,8 +1,9 @@
 # Test Classifier Setup Guide
 
 This document covers everything needed to run the AI test classifier — the
-tool that tags each CI test failure as **`test-fix`**, **`code-fix`**, or
-**`no-action`** (see [`PLAYBOOK.md`](./PLAYBOOK.md) for the full framing and
+tool that tags each CI test failure as **`APPLICATION_BUG`**, **`TEST_BUG`**,
+**`FLAKY_FAILURE`**, or **`ENVIRONMENT_ISSUE`** (see
+[`PLAYBOOK.md`](./PLAYBOOK.md) for the full framing and
 phasing). There are **two independent paths**, and you can use either or both:
 
 | Path | What it does | Who runs it | Setup effort |
@@ -92,15 +93,18 @@ only. In `--mode p1`, add `--post-comment` to also post the PR comment. In
 In `--mode p1 --post-comment`, the dispatcher posts **one** PR comment per
 classified failure (or one rolled-up comment) stating:
 
-- The call: **`test-fix`** or **`code-fix`** (a passing test is `no-action`
-  and is recorded, not posted).
+- The call: one of **`APPLICATION_BUG`** (test fails because the app
+  regressed — fix the code), **`TEST_BUG`** (test fails but the app is correct
+  — fix the test), **`FLAKY_FAILURE`** (intermittent — re-run, then deflake),
+  or **`ENVIRONMENT_ISSUE`** (infra: timeout/connection/OOM/missing service —
+  fix the env or re-run). A passing test is simply not classified.
 - A short rationale for the call.
 - A **mandatory 👍 / 👎 ask** — the developer reacts 👍 if the call is right, 👎 if
   wrong. That reaction is the tuning signal the metrics loop reads.
 
 The classifier is **advisory** — posting a comment never fails anything. Use
-`--gate` only if you have explicitly decided to make an unconfirmed `code-fix`
-a blocker (out of pilot scope; see the PLAYBOOK §3 and §4).
+`--gate` only if you have explicitly decided to make an unconfirmed
+`APPLICATION_BUG` a blocker (out of pilot scope; see the PLAYBOOK §3 and §4).
 
 ### Flags reference (classifier-specific)
 
@@ -109,7 +113,7 @@ a blocker (out of pilot scope; see the PLAYBOOK §3 and §4).
 | `--pr <number>`   | Explicit PR number. Overrides auto-discovery via `gh pr view`. |
 | `--mode <p0\|p1>` | Phase. `p0` = observe-only (record, no comment). `p1` = comment + mandatory 👍/👎. |
 | `--post-comment`  | Post the classifier comment via `gh api`. Required in `p1`; ignored in `p0`. |
-| `--gate`          | Exit non-zero on an unconfirmed `code-fix`. For CI gating (out of pilot scope). |
+| `--gate`          | Exit non-zero on any unconfirmed triaged failure (e.g. an `APPLICATION_BUG`). For CI gating (out of pilot scope). |
 | `--json-only`     | Print only the JSON block (for piping into the metrics harvest). |
 
 Plus the shared dispatcher-library flags (identical to security/review):
@@ -229,8 +233,9 @@ Commit and push. The next PR triggers a classification at whatever phase
 ### Step 7 — Optional: enable gating (out of pilot scope)
 
 The pilot default is **advisory / non-blocking**, exactly like security review.
-If, much later, a team wants an unconfirmed `code-fix` to fail the build,
-uncomment the `--gate` line in the workflow's run step:
+If, much later, a team wants an unconfirmed triaged failure (e.g. an
+`APPLICATION_BUG`) to fail the build, uncomment the `--gate` line in the
+workflow's run step:
 
 ```yaml
 testing/classifier/.skills/test-classifier/scripts/test-classifier-dispatcher.sh \
@@ -241,8 +246,8 @@ testing/classifier/.skills/test-classifier/scripts/test-classifier-dispatcher.sh
 ```
 
 Combined with a repository rule set that requires the workflow to pass, this
-makes the classifier a true merge gate. Use with care — a false `code-fix`
-becomes blocking.
+makes the classifier a true merge gate. Use with care — a false
+`APPLICATION_BUG` becomes blocking.
 
 ---
 

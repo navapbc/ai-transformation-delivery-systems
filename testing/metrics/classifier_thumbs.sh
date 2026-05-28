@@ -25,12 +25,13 @@ set -euo pipefail
 #      The block is a single object with a "classifications" array (one entry
 #      per failing test); each entry has the shape:
 #        {
-#          "verdict":    "test-fix" | "code-fix" | "no-action",
+#          "verdict":    "APPLICATION_BUG" | "TEST_BUG" | "FLAKY_FAILURE" | "ENVIRONMENT_ISSUE",
 #          "category":   "visual-drift" | "behavioral-drift" | "e2e-form-flow-drift" | "other",
 #          "confidence": "high" | "medium" | "low"
 #        }
-#      We summarize that array down to one representative row (the first
-#      non-no-action classification, else the first entry).
+#      We summarize that array down to one representative row by most-actionable
+#      verdict (APPLICATION_BUG > TEST_BUG > FLAKY_FAILURE > ENVIRONMENT_ISSUE),
+#      else the first entry.
 #   3. A request for a MANDATORY 👍 / 👎 reaction from the developer. That
 #      reaction is the P1 tuning signal: 👍 = "classifier called it right",
 #      👎 = "classifier called it wrong".
@@ -206,8 +207,10 @@ for REPO in "${REPOSITORIES[@]}"; do
             # if any. The classifier emits a top-level object with a
             # "classifications" array (one entry per failing test), each with
             # verdict / category / confidence. We summarize that array into a
-            # single representative verdict/category/confidence for the row:
-            # the first non-no-action classification (or the first entry).
+            # single representative row by picking the most actionable verdict,
+            # in priority order APPLICATION_BUG > TEST_BUG > FLAKY_FAILURE >
+            # ENVIRONMENT_ISSUE (a real shipped bug is the signal that matters
+            # most), falling back to the first entry.
             def extract_verdict(body):
               (body | capture("<!-- AI_CLASSIFIER_JSON_BEGIN -->(?<j>[\\s\\S]*?)<!-- AI_CLASSIFIER_JSON_END -->"; "m").j)
               // ""
@@ -215,8 +218,9 @@ for REPO in "${REPOSITORIES[@]}"; do
 
             def summarize($obj):
               ($obj.classifications // []) as $cs
-              | ( [ $cs[] | select((.verdict // "") != "no-action") ] | .[0] )
-                as $pick
+              | ( ["APPLICATION_BUG","TEST_BUG","FLAKY_FAILURE","ENVIRONMENT_ISSUE"]
+                  | map(. as $v | ($cs[] | select((.verdict // "") == $v)))
+                  | .[0] ) as $pick
               | ( $pick // ($cs[0] // {}) );
 
             .[]
