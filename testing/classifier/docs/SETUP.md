@@ -44,6 +44,25 @@ repo calls with a single pinned `uses:` line. **No files are copied into your
 repo.** Upgrading is a one-line SHA bump; there is no vendored copy to drift,
 and provenance is unambiguous.
 
+### Step 0 — One-time org prerequisite (private source repo)
+
+`navapbc/ai-transformation-delivery-systems` is **private**, so before any other
+repo can call its reusable workflow, an org/repo admin must allow it once:
+
+1. In **this source repo**: **Settings** → **Actions** → **General** →
+   **Access** → set **"Accessible from repositories in the 'navapbc'
+   organization"** (or list the specific consumer repos).
+
+This single setting unlocks two things at runtime, both with the consumer's
+default `GITHUB_TOKEN` — **no PAT is required**:
+
+- the `uses:` reference to the reusable workflow resolves, and
+- the workflow's own step that fetches this bundle's scripts (a pinned source
+  tarball via the GitHub API) is authorized.
+
+If you see `error: workflow was not found` or a `404` fetching the bundle in the
+consumer's Actions log, this setting is the cause.
+
 ### Step 1 — Add the caller workflow
 
 Create `.github/workflows/ai-test-classifier.yml` in your **consumer** repo:

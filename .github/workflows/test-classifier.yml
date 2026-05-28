@@ -83,23 +83,33 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha }}
 
       # 2. THIS bundle's scripts, pinned to the same version the caller referenced
-      #    (or an explicit override). Lands in ./.classifier-bundle, never committed.
-      - name: Fetch the classifier bundle (pinned)
-        uses: actions/checkout@v4
-        with:
-          repository: navapbc/ai-transformation-delivery-systems
-          ref: ${{ inputs.ref != '' && inputs.ref || github.sha }}
-          path: .classifier-bundle
-          fetch-depth: 1
-
-      # Stage the bundle's testing/ tree into the caller's workspace so all the
-      # repo-relative paths the dispatcher and its prompt use (e.g.
-      # testing/classifier/.skills/test-classifier/SKILL.md) resolve exactly as
-      # they do in a local or vendored install. This keeps the dispatcher
-      # layout-agnostic: one code path for local, vendored, and CI use.
-      - name: Stage the classifier bundle into the workspace
+      #    (or an explicit override). We fetch a source tarball via the GitHub
+      #    API rather than a second `actions/checkout`, because checkout's token
+      #    is scoped to the CALLER's repo and cannot read this (possibly private)
+      #    source repo. The API tarball is fetched with the same GITHUB_TOKEN,
+      #    which works once the org's Actions "accessibility" setting allows this
+      #    repo's reusable workflow to be called by other org repos — the same
+      #    prerequisite the `uses:` reference itself already requires. No PAT.
+      #
+      #    The bundle's testing/ tree is staged into the caller's workspace so
+      #    every repo-relative path the dispatcher and its prompt use (e.g.
+      #    testing/classifier/.skills/test-classifier/SKILL.md) resolves exactly
+      #    as in a local or vendored install — one dispatcher code path for all.
+      - name: Fetch and stage the classifier bundle (pinned)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BUNDLE_REF: ${{ inputs.ref != '' && inputs.ref || github.sha }}
         run: |
-          cp -R .classifier-bundle/testing "$GITHUB_WORKSPACE/testing"
+          set -euo pipefail
+          tmp="$(mktemp -d)"
+          # Tarball of the source repo at the pinned ref. The archive's single
+          # top-level dir is named <owner>-<repo>-<sha>; strip it on extract.
+          gh api "repos/navapbc/ai-transformation-delivery-systems/tarball/${BUNDLE_REF}" \
+            > "$tmp/bundle.tgz"
+          mkdir -p "$tmp/extract"
+          tar -xzf "$tmp/bundle.tgz" -C "$tmp/extract" --strip-components=1
+          cp -R "$tmp/extract/testing" "$GITHUB_WORKSPACE/testing"
+          rm -rf "$tmp"
           chmod +x testing/classifier/.skills/_lib/ai-classifier-dispatch.sh
           chmod +x testing/classifier/.skills/test-classifier/scripts/test-classifier-dispatcher.sh
           chmod +x testing/classifier/scripts/sync-skills.sh
