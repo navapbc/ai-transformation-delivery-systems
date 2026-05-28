@@ -381,11 +381,11 @@ ai_review::run() {
 
   case "${result}" in
     CLASSIFIED)
-      ai_review::info "${AI_C_BOLD}🧪  ${SKILL_HUMAN_NAME}: failing tests were classified. Review the verdicts above.${AI_C_RESET}"
+      ai_review::info "${AI_C_BOLD}${SKILL_HUMAN_NAME}: failing tests were classified. Review the verdicts above.${AI_C_RESET}"
       exit 0
       ;;
     NO_ACTION)
-      ai_review::ok "${AI_C_BOLD}✅  ${SKILL_HUMAN_NAME}: no action — nothing failed.${AI_C_RESET}"
+      ai_review::ok "${AI_C_BOLD}${SKILL_HUMAN_NAME}: no action — nothing failed.${AI_C_RESET}"
       exit 0
       ;;
     UNPARSEABLE|*)

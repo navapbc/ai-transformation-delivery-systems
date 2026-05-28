@@ -28,8 +28,8 @@ SCOPE: P0 + P1 ONLY.
   • P2 (proposed diffs / merge-rate) and P3 (zero-shot test generation) are
     FUTURE/STUBS, documented in docs/PLAYBOOK.md only — do NOT build them.
 
-⚠️ MERGE, DON'T OVERWRITE
-==========================
+MERGE, DON'T OVERWRITE
+======================
 If your repository already has any of these files, do NOT blindly replace them
 with the bundled version — open the existing file and merge in the bundled
 content by hand. Files at risk of collision:
@@ -97,7 +97,7 @@ Steps:
        testing/classifier/.skills/test-classifier/scripts/test-classifier-dispatcher.sh
 
     # Copilot test-classification instructions
-    # ⚠️ If .github/copilot-instructions.md already exists, do NOT overwrite —
+    # NOTE: If .github/copilot-instructions.md already exists, do NOT overwrite —
     # merge the BEGIN/END ai-test-classifier section into your existing file.
     cp "$BUNDLE/testing/classifier/.github/copilot-instructions.md" \
        testing/classifier/.github/copilot-instructions.md

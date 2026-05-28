@@ -133,7 +133,7 @@ A workflow file lives at
 `testing/classifier/.github/workflows/ai-test-classifier.yml`. It is
 **disabled by default**. To enable it, complete the steps below.
 
-> ⚠️ **Merge, don't overwrite.** If your repository already has a file at
+> **Merge, don't overwrite.** If your repository already has a file at
 > `.github/workflows/ai-test-classifier.yml` or
 > `.github/copilot-instructions.md`, **do not blindly replace them** — open the
 > existing file and merge in the relevant sections. The
@@ -255,11 +255,11 @@ makes the classifier a true merge gate. Use with care — a false
 
 | | `p0` — observe-only | `p1` — MVP |
 |---|---|---|
-| Classifies failures | ✅ | ✅ |
-| Records to metrics sink | ✅ | ✅ |
-| Posts PR comment | ❌ | ✅ |
-| Asks for mandatory 👍/👎 | ❌ | ✅ |
-| Developer-visible | ❌ | ✅ |
+| Classifies failures | Yes | Yes |
+| Records to metrics sink | Yes | Yes |
+| Posts PR comment | No | Yes |
+| Asks for mandatory 👍/👎 | No | Yes |
+| Developer-visible | No | Yes |
 | Use when | Establishing baseline precision; no one trusts a comment yet | Baseline precision is good enough to be worth a developer's glance and reaction |
 
 **Graduation rule of thumb:** run `p0` until you have enough recorded

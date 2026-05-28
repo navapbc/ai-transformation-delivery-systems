@@ -327,7 +327,7 @@ lines = []
 # stable leading marker. Keep this in sync with CLASSIFIER_LABEL there.
 lines.append("test-classifier: AI triage of failing tests")
 lines.append("")
-lines.append("## 🧪 AI Test Classifier — triage of failing tests")
+lines.append("## AI Test Classifier — triage of failing tests")
 lines.append("")
 lines.append(summary)
 lines.append("")

@@ -1,7 +1,7 @@
 <!-- BEGIN ai-test-classifier PR instructions -->
 # GitHub Copilot Test-Classifier Instructions
 
-> ⚠️ **Merge, don't overwrite.** If your repository already has a
+> **Merge, don't overwrite.** If your repository already has a
 > `.github/copilot-instructions.md`, append the content between the
 > `<!-- BEGIN ai-test-classifier PR instructions -->` and
 > `<!-- END ai-test-classifier PR instructions -->` markers into your existing
@@ -69,7 +69,7 @@ so the comment body MUST begin with it.
 ```
 test-classifier: AI triage of failing tests
 
-## 🧪 AI Test Classifier — triage of failing tests
+## AI Test Classifier — triage of failing tests
 
 <one-paragraph summary>
 

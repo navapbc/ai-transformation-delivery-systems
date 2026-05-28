@@ -269,21 +269,21 @@ lead each finding with its verdict, and keep rationales to one or two sentences.
 
 #### `src/components/Banner.test.tsx`
 
-- ✏️  **TEST_BUG** | visual-drift | confidence: high
+- **TEST_BUG** | visual-drift | confidence: high
   `Banner › renders the announcement copy`
   The diff intentionally updates the banner copy from "Welcome" to "Welcome back".
   The app is rendering the new, correct copy; the snapshot is stale. Update the test.
 
 #### `src/api/checkout.test.ts`
 
-- 🛠️  **APPLICATION_BUG** | behavioral-drift | confidence: high
+- **APPLICATION_BUG** | behavioral-drift | confidence: high
   `checkout › applies the loyalty discount`
   The diff refactored `applyDiscount()` and now returns the pre-discount total.
   Nothing in the change intended to remove the discount — the code regressed. Fix the code.
 
 #### `e2e/signup.spec.ts`
 
-- 🎲 **FLAKY_FAILURE** | e2e-form-flow-drift | confidence: low
+- **FLAKY_FAILURE** | e2e-form-flow-drift | confidence: low
   `signup › submits the registration form`
   The submit step times out at the "Create account" button on this run only;
   nothing in the diff touches the submit handler. Likely a flaky selector/wait.
@@ -291,7 +291,7 @@ lead each finding with its verdict, and keep rationales to one or two sentences.
 
 #### `tests/integration/orders.test.ts`
 
-- 🌐 **ENVIRONMENT_ISSUE** | other | confidence: high
+- **ENVIRONMENT_ISSUE** | other | confidence: high
   `orders › fetches the order history`
   The test failed with "connection refused" to the orders DB on the runner. The
   backing service was unavailable; neither the app nor the test is at fault.
@@ -404,7 +404,7 @@ the reaction is the tuning signal. The rendered body looks like this:
 ```
 test-classifier: AI triage of failing tests
 
-## 🧪 AI Test Classifier — triage of failing tests
+## AI Test Classifier — triage of failing tests
 
 <summary>
 

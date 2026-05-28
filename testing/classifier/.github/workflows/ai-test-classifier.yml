@@ -5,7 +5,7 @@
 # ONE PR comment requesting a mandatory 👍/👎 reaction (P1).
 #
 # ┌─────────────────────────────────────────────────────────────────────────┐
-# │ 🛑 DISABLED BY DEFAULT                                                  │
+# │ DISABLED BY DEFAULT                                                      │
 # │                                                                         │
 # │ To enable, change the trigger below from `on: workflow_dispatch:` to    │
 # │ include `pull_request:` events, AND complete the setup steps in         │

@@ -184,7 +184,7 @@ explain an infra failure or a flake.)
 The pilot is scoped to **P0 and P1 only**. P2 and P3 are documented here as
 direction, not as shipped capability. Do not build them as part of the pilot.
 
-### P0 — Observe-only  ✅ in scope
+### P0 — Observe-only  (in scope)
 
 - The classifier runs in CI and **classifies every failure**.
 - It **records** each call + rationale to the metrics sink (Google Sheet / TSV).
@@ -194,7 +194,7 @@ direction, not as shipped capability. Do not build them as part of the pilot.
 
 Run it with `--mode p0`. The `--post-comment` flag is ignored in this mode.
 
-### P1 — MVP: comment + mandatory 👍/👎  ✅ in scope
+### P1 — MVP: comment + mandatory 👍/👎  (in scope)
 
 - The classifier runs in CI and posts **one PR comment** per classified
   failure (or one rolled-up comment, team's choice), stating the verdict
@@ -211,7 +211,7 @@ Run it with `--mode p0`. The `--post-comment` flag is ignored in this mode.
 
 Run it with `--mode p1 --post-comment`.
 
-### P2 — Proposed commit suggestions / merge-rate  🚧 FUTURE — NOT BUILT
+### P2 — Proposed commit suggestions / merge-rate  (FUTURE — NOT BUILT)
 
 > Documented as direction only. **Do not build during the pilot.**
 
@@ -222,7 +222,7 @@ track the **merge-rate** of those suggestions as a stronger quality signal
 than 👍/👎 alone. This stays behind the **propose-diff-then-approve** rule (see
 §6): the classifier proposes; a human approves and commits. No autocommit.
 
-### P3 — Zero-shot test generation  🚧 FUTURE — NOT BUILT
+### P3 — Zero-shot test generation  (FUTURE — NOT BUILT)
 
 > Documented as direction only. **Do not build during the pilot.**
 
@@ -258,7 +258,7 @@ cp testing/classifier/.github/workflows/ai-test-classifier.yml \
    .github/workflows/ai-test-classifier.yml
 ```
 
-> ⚠️ **Merge, don't overwrite.** If you already have a workflow with that
+> **Merge, don't overwrite.** If you already have a workflow with that
 > name, open both files and merge — don't clobber an existing one.
 
 The workflow ships **disabled**: its only trigger is `workflow_dispatch`, with
