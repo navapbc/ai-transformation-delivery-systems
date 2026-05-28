@@ -196,6 +196,100 @@ treat them with the same severity as SSNs):**
 
 ---
 
+### 3A.1 — Mandatory: Logging Hygiene (PHI/PII leak prevention)
+
+This section is **non-negotiable** for any system that processes PHI, PII,
+or CMS-specific identifiers (MBI, HICN, CCN, NPI — see § 3A). Most HIPAA
+violations in code reviews are not hardcoded PHI values — they are **log
+statements that look innocent today but leak PHI tomorrow** once the
+identifier-bearing object they format starts carrying real data.
+
+**Authority:** HIPAA Security Rule **§ 164.312(b)** (Audit Controls) and the
+Privacy Rule **§ 164.502(b)** (Minimum Necessary Standard) both require
+that logs capture only the information necessary for the stated audit
+purpose. NIST **SI-11** (Error Handling), **AU-3** (Content of Audit
+Records), **AU-9** (Protection of Audit Information), and **AC-23** (Data
+Mining Protection) reinforce this for federal workloads.
+
+**Flag as Critical when adding PHI, or High when adding PII, to any of:**
+
+- **Direct identifier interpolation into log strings:**
+  - `logger.info(f"Resolving claim for {beneficiary}")` where `beneficiary`
+    is or contains an MBI / HICN / SSN / name / DOB
+  - `console.log("user:", user)` where `user` is a domain object whose
+    `__str__` / `toString` / default serializer renders identifiers
+  - `printf`/`fmt.Println` with PHI-bearing format args
+- **Structured-logging fields that capture full payloads:**
+  - `logger.info("request", extra={"body": request.body, ...})`
+  - `log.WithFields(log.Fields{"params": params, "headers": headers})`
+  - Common high-risk field names to grep for: `body`, `request_body`,
+    `response_body`, `payload`, `params`, `headers`, `cookies`, `claims`,
+    `event`, `record`, `row`, `entity`, `dto`, `data`
+- **Exception handlers that log full request / response objects:**
+  - `except Exception as e: logger.error("failed", request=request)` —
+    the request often contains the very identifier the call was about
+  - `catch (err) { logger.error({ err, req, res }); }` — Express / Koa
+    middleware pattern that captures full bodies
+- **Debug / verbose toggles that dump headers, cookies, or bearer tokens:**
+  - `if (DEBUG) logger.debug("headers:", req.headers)` —
+    `Authorization`, `Cookie`, and custom `X-MBI` headers all leak
+  - `logger.debug("env:", os.environ)` — leaks any secret in env
+- **APM / tracing spans tagged with raw identifiers:**
+  - `span.set_tag("user.mbi", mbi)`, `tracer.set_baggage("ssn", ssn)`
+  - OpenTelemetry attributes named after sensitive fields
+- **URL paths embedding identifiers** (these get captured by access logs,
+  referrer headers, browser history, and APM traces even if the
+  application itself never logs them):
+  - `/api/beneficiary/{mbi}/claims` — use opaque internal IDs in URLs
+    and resolve server-side
+- **`print()` / `dump()` / `pp` / `inspect` calls left in non-test code** —
+  they bypass log-redaction middleware entirely
+- **Error-message construction that interpolates identifiers** for
+  user-facing display:
+  - `raise NotFound(f"MBI {mbi} not found")` — the message ends up in
+    structured error logs, monitoring alerts, and sometimes 4xx response
+    bodies returned to clients
+
+**Required mitigations to look for (and require if absent):**
+
+1. **Redaction at the log-formatter layer** — a `SensitiveDataFilter` /
+   `RedactingProcessor` / `logging.Filter` that masks known patterns
+   (MBI, HICN, SSN, NPI, JWTs, bearer tokens) before the record is
+   serialized. Centralize this; never rely on every call site to remember.
+2. **Allow-list logging, not deny-list** — domain objects should expose a
+   `to_log_safe()` / `repr_safe()` method that returns only non-sensitive
+   fields. Default `__repr__` / `toString` on PHI-bearing classes should
+   be overridden to redact.
+3. **Opaque internal IDs in URLs and logs** — log a UUID / surrogate key,
+   not the MBI. Maintain the mapping in a controlled lookup table.
+4. **Structured fields, not free-form strings** — structured logs are
+   easier to redact, audit, and route to a higher-classification sink.
+   A free-form `f"..."` string is a black box to redaction tooling.
+5. **Separate audit-log sink for PHI access events** — when you must log
+   an identifier (e.g., for HIPAA § 164.312(b) access tracking), route it
+   to a separate sink with stricter retention, access control, and
+   encryption (NIST AU-9). Do not mix audit logs with application logs.
+
+**Severity ladder (extension of § 3A's table):**
+
+| Logging finding | Severity |
+|---|---|
+| Adding a log line that includes a real PHI identifier value | **Critical** |
+| Adding a log line that interpolates a PHI-bearing variable / object whose runtime value will be real PHI | **Critical** |
+| Adding a log line that interpolates a PII-bearing variable / object | **High** |
+| Adding structured-logging fields named `body` / `request` / `params` / `headers` / `claims` in a PHI-handling code path, without an explicit redaction filter in place | **High** |
+| Adding APM / tracing tags whose value is a PHI identifier | **Critical** |
+| Adding `print()` / `console.log()` / `dump()` in non-test code that touches PHI | **High** |
+| Embedding a PHI identifier in a URL path that will be captured by access logs | **High** |
+| Removing or weakening an existing redaction filter | **Critical** |
+
+When uncertain whether a logged value will carry PHI at runtime, treat it
+as if it will (the "minimum necessary" standard is a runtime guarantee,
+not a static-analysis one). When in doubt, recommend the structured-field
++ redaction-filter pattern explicitly in the suggestion block.
+
+---
+
 ### 3B — OWASP Top 10 (apply where relevant to the project)
 
 Review the diff against each applicable OWASP category. Skip categories with
@@ -263,9 +357,16 @@ if the diff contains only CSS). Be explicit about what was skipped and why.
 - CI/CD pipeline changes that could allow injection of malicious code
 
 **A09 — Security Logging and Monitoring Failures**
-- Removal of security-relevant logging
-- Logging of sensitive data (passwords, tokens, PII in log statements)
+- Removal of security-relevant logging (login attempts, authz failures,
+  privileged operations) — note any monitoring gap this introduces
+- Logging of sensitive data (passwords, tokens, secrets, PII, PHI) — see
+  **§ 3A.1 Logging Hygiene** for the full pattern catalog and severity
+  ladder. PHI in log statements is the single most common HIPAA-violation
+  vector in healthcare codebases; apply § 3A.1 on every diff that touches
+  a logging call in a PHI/PII-handling code path.
 - Missing audit trail for privileged operations added in this diff
+  (NIST AU-2, AU-3; HIPAA § 164.312(b)) — but route those audit events to
+  a sink separate from application logs, per § 3A.1.
 
 **A10 — Server-Side Request Forgery (SSRF)**
 - User-controlled URLs passed to HTTP clients, fetch calls, or curl
@@ -282,7 +383,9 @@ if the diff contains only CSS). Be explicit about what was skipped and why.
 - **Error handling** — Exceptions caught and swallowed that hide security failures
 - **Race conditions** — TOCTOU issues, unprotected shared state
 - **Dependency confusion** — Internal package names that could be shadowed
-- **Secrets in logs** — Sensitive values passed to logging calls
+- **Secrets / PII / PHI in logs** — sensitive values passed to logging,
+  tracing, or error-reporting calls. See **§ 3A.1 Logging Hygiene** for
+  the full check list, severity ladder, and required mitigations.
 - **Prototype pollution** (JS/TS) — Unsafe object merges or assignments
 - **Insecure randomness** — Use of `Math.random()` or `rand()` for security purposes
 

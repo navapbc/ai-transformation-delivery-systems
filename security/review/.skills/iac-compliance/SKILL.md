@@ -189,6 +189,73 @@ overlay of NIST 800-53.
 - CloudWatch Log Groups without a retention period set (`retention_in_days` absent or 0)
 - CloudWatch Log Groups without KMS encryption when they contain sensitive log streams
 
+**AU-11 / SI-11 / AC-23 | Log content discipline (PHI/PII leak prevention at the IaC layer)**
+
+The application-code side of this concern lives in `.skills/code-security/
+SKILL.md` § 3A.1 (Logging Hygiene). At the IaC layer, the equivalent
+risk is provisioning logging infrastructure that **captures sensitive
+data by configuration** — independent of what the application code chooses
+to log. HIPAA **§ 164.502(b)** (Minimum Necessary) applies to logs as
+much as to APIs: a log sink that records full request bodies on a
+PHI-handling service is a HIPAA control failure even if no individual
+developer "wrote" the leak. Flag the following:
+
+- **API Gateway / ALB / NLB / CloudFront access logging** enabled on a
+  route that exposes identifiers in the path or query string (`/api/
+  beneficiary/{mbi}/claims`, `?ssn=...`, `?mbi=...`). Access logs capture
+  the full request URI by default. Required mitigations: opaque IDs in
+  URLs (preferred); or `access_log_settings` / `logging_config` configured
+  to redact / omit the path component; or move the access-log destination
+  to a stricter sink (see below). **NIST AC-23, AU-11.**
+- **API Gateway stage logging at `INFO` / `DEBUG`** (`data_trace_enabled
+  = true`, `logging_level = "INFO"` and above) on PHI-handling APIs — the
+  full request and response payload is written to CloudWatch Logs. Allow
+  only `ERROR` in production unless paired with an explicit redaction
+  layer. **NIST SI-11, AU-3, HIPAA § 164.312(b).**
+- **Lambda functions** without `LOG_LEVEL` pinned, or with environment
+  variables like `DEBUG=true`, on PHI-handling functions — Lambda's
+  default `print()` capture sends everything to CloudWatch. **NIST AU-3.**
+- **CloudWatch Logs Insights / subscription filters** that forward logs
+  to a downstream sink (Kinesis, OpenSearch, third-party SIEM, Splunk,
+  Datadog) **without** a redaction processor in the path. The downstream
+  sink often has weaker access controls than the original log group.
+  **NIST AU-9, AC-3.**
+- **S3 server access logs** on PHI buckets written to a target bucket
+  that itself lacks: encryption (`server_side_encryption_configuration`),
+  public-access blocks, and an Object Lock / retention policy distinct
+  from the source bucket's. Access logs include full object keys —
+  which often encode patient/beneficiary identifiers. **NIST AU-9, SC-28.**
+- **VPC Flow Logs / Route 53 Resolver Query Logs** routed to a shared
+  log bucket without separate access controls when traffic includes
+  PHI-bearing internal services (DNS query logs leak service names that
+  may include MBI hashes; flow logs leak source/dest pairs useful for
+  re-identification). **NIST AU-9, AC-23.**
+- **CloudTrail data events** enabled on S3 buckets / DynamoDB tables /
+  Lambda functions that hold PHI without scoping `data_resource` to
+  exclude object-key / partition-key fields that carry identifiers.
+  CloudTrail records the resource ARN, which for S3 includes the object
+  key. **NIST AU-9, HIPAA § 164.312(b).**
+- **APM / observability provisioning** (Datadog, New Relic, X-Ray,
+  OpenTelemetry collectors) configured with sampling that captures full
+  span attributes / request headers on PHI-handling services. Flag the
+  IaC resource that wires up the agent without an attribute filter or
+  scrubber. **NIST SI-11, AC-23.**
+- **Audit-log retention shorter than HIPAA's 6-year requirement**
+  (§ 164.316(b)(2)(i)) on log groups / S3 buckets storing access-audit
+  records for ePHI systems. **NIST AU-11, HIPAA § 164.316(b).**
+- **Co-mingled application logs and audit logs** — a single CloudWatch
+  log group receiving both application output and § 164.312(b) audit
+  events. The audit stream needs stricter retention, access control, and
+  KMS scope than the application stream. **NIST AU-9, AC-6.**
+
+For each finding, cite the AU- / SI- / AC-family control ID (and the CMS
+ARS 5.1 tailoring when it differs) and recommend the structural fix —
+typically a separate, KMS-encrypted, access-controlled audit-sink
+resource plus a redaction layer (subscription filter or Firehose
+transform) on the application-log path. The remediation should be a
+new / modified IaC resource, so use the `` ```hcl `` (or appropriate)
+fence rather than `` ```suggestion ``.
+
 ---
 
 ### CM — Configuration Management
