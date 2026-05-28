@@ -8,11 +8,20 @@
 Add ONE workflow file to the **current (consumer) repo** that calls the
 classifier's reusable workflow by pinned SHA. No scripts are copied in.
 
-## Step 1 — write this file VERBATIM
+## Step 1 — fetch the ready-made caller file and write its bytes
 
-Create `.github/workflows/ai-test-classifier.yml` in the consumer repo with
-**exactly** this content. Do not rewrite, reformat, or substitute the SHA — copy
-it character-for-character (the `uses:` line is one unbroken string):
+**Do not hand-type the YAML** (transcription corrupts the `name:`/`on:`/`uses:`
+lines). Instead, fetch the bundle's ready-made caller file — already pinned to
+the correct SHA — and write its exact bytes to the consumer repo. One command:
+
+```
+mkdir -p .github/workflows && \
+gh api "repos/navapbc/ai-transformation-delivery-systems/contents/testing/classifier/caller-workflow.yml?ref=__PIN_SHA__" \
+  --jq .content | base64 -d > .github/workflows/ai-test-classifier.yml
+```
+
+That writes `.github/workflows/ai-test-classifier.yml` verbatim — no retyping,
+nothing to scramble. For reference, the file you just wrote should be exactly:
 
 ```yaml
 name: AI test classifier
@@ -21,7 +30,7 @@ on:
     types: [opened, synchronize, reopened]
 jobs:
   classify:
-    uses: navapbc/ai-transformation-delivery-systems/.github/workflows/test-classifier.yml@7df95a730b75f9d48a53be86f6d74583decbe279
+    uses: navapbc/ai-transformation-delivery-systems/.github/workflows/test-classifier.yml@__PIN_SHA__
     with:
       tool: claude
       mode: p0
@@ -29,9 +38,9 @@ jobs:
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
 ```
 
-Do not run a YAML linter or any verify command — just make sure the `uses:`
-line is a single unbroken line with exactly one `@` and reads
-`...test-classifier.yml@<sha>`. If it looks scrambled, rewrite it. Then move on.
+Do not run a YAML linter. If you want a sanity check, `cat` the file and confirm
+the first line is `name: AI test classifier` and the `uses:` line is a single
+unbroken line with one `@`. Then move on.
 
 ## Step 2 — tell the human these two manual steps (you cannot do them)
 
