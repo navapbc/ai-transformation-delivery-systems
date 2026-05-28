@@ -51,13 +51,6 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SKILLS_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"   # → .../testing/classifier/.skills
 LIB_PATH="${SKILLS_ROOT}/_lib/ai-classifier-dispatch.sh"
 
-# Repo root is still useful for diagnostics and gh operations.
-if REPO_ROOT="$(git -C "${SCRIPT_DIR}" rev-parse --show-toplevel 2>/dev/null)"; then
-  :
-else
-  REPO_ROOT="$(cd "${SKILLS_ROOT}/../../.." && pwd)"
-fi
-
 if [[ ! -f "${LIB_PATH}" ]]; then
   echo "ERROR: shared dispatch library not found at: ${LIB_PATH}" >&2
   echo "       This file is required. Re-install the skills (see the playbook)." >&2
@@ -209,22 +202,18 @@ ai_review::discover_pr_context() {
     exit 1
   fi
 
-  local pr_json
-  if ! pr_json="$(gh pr view --json number,baseRefName 2>/dev/null)"; then
+  # Let gh extract the fields with --jq (same idiom as the --pr branch above),
+  # rather than scraping the raw JSON with brittle regexes.
+  AI_REVIEW_PR_NUMBER="$(gh pr view --json number --jq '.number' 2>/dev/null || true)"
+  AI_REVIEW_PR_BASE="$(gh pr view --json baseRefName --jq '.baseRefName' 2>/dev/null || true)"
+
+  if [[ -z "${AI_REVIEW_PR_NUMBER}" ]] || [[ -z "${AI_REVIEW_PR_BASE}" ]]; then
     echo "ERROR: 'gh pr view' could not find an open PR for the current branch." >&2
     echo "" >&2
     echo "  Either:" >&2
     echo "    • Push your branch and open a PR, then re-run; or" >&2
     echo "    • Specify the PR number explicitly:   --pr <number>" >&2
     echo "    • Specify the base ref directly:      --against origin/main" >&2
-    exit 1
-  fi
-
-  AI_REVIEW_PR_NUMBER="$(echo "${pr_json}" | sed -n 's/.*"number":\([0-9]*\).*/\1/p')"
-  AI_REVIEW_PR_BASE="$(echo  "${pr_json}" | sed -n 's/.*"baseRefName":"\([^"]*\)".*/\1/p')"
-
-  if [[ -z "${AI_REVIEW_PR_NUMBER}" ]] || [[ -z "${AI_REVIEW_PR_BASE}" ]]; then
-    echo "ERROR: failed to parse PR number / base ref from 'gh pr view' output." >&2
     exit 1
   fi
 
@@ -427,8 +416,8 @@ test_classifier::run() {
     ai_review::log  "  Mode:           ${CLASSIFIER_MODE}"
     ai_review::log  "  PR number:      ${AI_REVIEW_PR_NUMBER:-(none — using --against directly)}"
     ai_review::log  "  Diff source:    $(ai_review::diff_command_description)"
-    ai_review::log  "  Post comment:   $((POST_COMMENT == 1 ? POST_COMMENT : 0))"
-    ai_review::log  "  Gate mode:      $((GATE_MODE == 1 ? GATE_MODE : 0))"
+    ai_review::log  "  Post comment:   ${POST_COMMENT}"
+    ai_review::log  "  Gate mode:      ${GATE_MODE}"
     ai_review::log  "  Changed files:"
     ai_review::changed_files | sed 's/^/    /'
     exit 0

@@ -112,10 +112,6 @@ GOOGLE_SHEETS_TOKEN="${GOOGLE_SHEETS_TOKEN:-}"
 SHEET_ID="${SHEET_ID:-}"
 SHEET_RANGE="${SHEET_RANGE:-Sheet1!A1}"
 
-# Reactions API needs this preview Accept header on older API versions; modern
-# GitHub serves reactions without it, but sending it is harmless and explicit.
-REACTIONS_ACCEPT="application/vnd.github.squirrel-girl-preview+json"
-
 # --- Diagnostics go to stderr so stdout stays a clean TSV stream. ---
 log() { echo "$@" >&2; }
 
@@ -236,10 +232,11 @@ for REPO in "${REPOSITORIES[@]}"; do
                 verdict:    ($v.verdict    // ""),
                 category:   ($v.category   // ""),
                 confidence: (if ($v.confidence == null) then "" else ($v.confidence | tostring) end),
-                # Reactions are usually inlined on the comment object; capture
-                # them as a first guess and refine via the reactions API below.
-                up_inline:   (.reactions["+1"] // 0),
-                down_inline: (.reactions["-1"] // 0)
+                # The comment object already carries authoritative 👍/👎 totals
+                # in its `.reactions` summary (same source the security metrics
+                # script uses) — read them here, no extra per-comment API call.
+                up:   (.reactions["+1"] // 0),
+                down: (.reactions["-1"] // 0)
               }
         ' 2>/dev/null || echo "")
 
@@ -259,18 +256,8 @@ for REPO in "${REPOSITORIES[@]}"; do
             VERDICT=$(echo "$REC" | jq -r '.verdict')
             CATEGORY=$(echo "$REC" | jq -r '.category')
             CONFIDENCE=$(echo "$REC" | jq -r '.confidence')
-
-            # Authoritative reaction counts via the reactions API (the inlined
-            # `.reactions` summary can lag); fall back to the inlined counts if
-            # the API call returns nothing.
-            REACTIONS_JSON=$(fetch_api "/repos/$REPO/issues/comments/$CID/reactions" \
-                                -H "Accept: ${REACTIONS_ACCEPT}")
-            UP=$(echo "$REACTIONS_JSON" | jq '[.[] | select(.content == "+1")] | length' 2>/dev/null || echo 0)
-            DOWN=$(echo "$REACTIONS_JSON" | jq '[.[] | select(.content == "-1")] | length' 2>/dev/null || echo 0)
-            if [ "$UP" = "0" ] && [ "$DOWN" = "0" ]; then
-                UP=$(echo "$REC" | jq -r '.up_inline')
-                DOWN=$(echo "$REC" | jq -r '.down_inline')
-            fi
+            UP=$(echo "$REC" | jq -r '.up')
+            DOWN=$(echo "$REC" | jq -r '.down')
 
             printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
                 "$REPO" "$PR_NUM" "$CID" "$VERDICT" "$CATEGORY" "$CONFIDENCE" "$UP" "$DOWN"
