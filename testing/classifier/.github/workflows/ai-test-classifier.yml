@@ -1,0 +1,177 @@
+# .github/workflows/ai-test-classifier.yml
+#
+# AI test-classifier workflow. Runs the test-classifier skill on a pull
+# request and either records the classification (P0, observe-only) or posts
+# ONE PR comment requesting a mandatory 👍/👎 reaction (P1).
+#
+# ┌─────────────────────────────────────────────────────────────────────────┐
+# │ DISABLED BY DEFAULT                                                      │
+# │                                                                         │
+# │ To enable, change the trigger below from `on: workflow_dispatch:` to    │
+# │ include `pull_request:` events, AND complete the setup steps in         │
+# │ docs/SETUP.md:                                                          │
+# │                                                                         │
+# │   1. Add a repository variable:  AI_REVIEW_TOOL    = claude|codex|copilot│
+# │   2. Add a repository variable:  AI_CLASSIFIER_MODE = p0|p1             │
+# │      (defaults to the safe observe-only `p0` when unset).               │
+# │   3. Add the matching API-key secret (see docs/SETUP.md                 │
+# │      "GitHub Actions setup" section).                                   │
+# │   4. Confirm the workflow has `pull-requests: write` permission         │
+# │      (set below). Only needed in P1; harmless/unused in P0.             │
+# └─────────────────────────────────────────────────────────────────────────┘
+#
+# This workflow is INTENTIONALLY INDEPENDENT of your build/test jobs. It runs
+# in parallel and never gates the build (the classifier is advisory). Do NOT
+# add a `needs:` on this job from your build pipeline — keeping it decoupled is
+# what lets a team drop the yaml in without touching their existing CI.
+
+name: AI test classifier
+
+# Currently opt-in: triggers only on manual dispatch. To enable automatic
+# classification on every PR, uncomment the `pull_request:` block below.
+on:
+  workflow_dispatch:
+  # pull_request:
+  #   types: [opened, synchronize, reopened]
+
+# Least-privilege permissions for the default GITHUB_TOKEN.
+# `contents: read` is needed to check out the repo and run `git diff`.
+# `pull-requests: write` is needed ONLY in P1 to post the one PR comment.
+# In P0 (observe-only) the workflow posts nothing; the permission is unused.
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  test-classifier:
+    runs-on: ubuntu-latest
+    # Skip on draft PRs by default — classify only when the PR is ready.
+    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.draft == false
+
+    steps:
+      - name: Validate workflow configuration
+        env:
+          AI_REVIEW_TOOL: ${{ vars.AI_REVIEW_TOOL }}
+          AI_CLASSIFIER_MODE: ${{ vars.AI_CLASSIFIER_MODE }}
+        run: |
+          if [[ -z "${AI_REVIEW_TOOL}" ]]; then
+            echo "::error::Repository variable AI_REVIEW_TOOL is not set."
+            echo "::error::Set it under Settings → Secrets and variables → Actions → Variables"
+            echo "::error::to one of: claude | codex | copilot"
+            exit 1
+          fi
+          case "${AI_REVIEW_TOOL}" in
+            claude|codex|copilot) ;;
+            *)
+              echo "::error::AI_REVIEW_TOOL='${AI_REVIEW_TOOL}' is invalid."
+              echo "::error::Must be one of: claude | codex | copilot"
+              exit 1
+              ;;
+          esac
+          # AI_CLASSIFIER_MODE is optional; default to the safe observe-only p0.
+          MODE="${AI_CLASSIFIER_MODE:-p0}"
+          case "${MODE}" in
+            p0|p1) ;;
+            *)
+              echo "::error::AI_CLASSIFIER_MODE='${MODE}' is invalid. Must be p0 | p1."
+              exit 1
+              ;;
+          esac
+          echo "Resolved mode: ${MODE}"
+
+      - name: Check out PR head (full history for diff)
+        uses: actions/checkout@v4
+        with:
+          # Full history so `git diff $BASE HEAD` works.
+          fetch-depth: 0
+          # Check out the PR's head SHA so the context matches what would merge.
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Make scripts executable
+        working-directory: testing/classifier
+        run: |
+          chmod +x .skills/_lib/ai-classifier-dispatch.sh
+          chmod +x .skills/test-classifier/scripts/test-classifier-dispatcher.sh
+          chmod +x scripts/sync-skills.sh
+
+      - name: Sync canonical SKILL.md into the chosen tool's directory
+        working-directory: testing/classifier
+        env:
+          AI_REVIEW_TOOL: ${{ vars.AI_REVIEW_TOOL }}
+        run: scripts/sync-skills.sh
+
+      - name: Install AI CLI — Claude Code
+        if: vars.AI_REVIEW_TOOL == 'claude'
+        run: npm install -g @anthropic-ai/claude-code
+
+      - name: Install AI CLI — Codex
+        if: vars.AI_REVIEW_TOOL == 'codex'
+        run: npm install -g @openai/codex
+
+      - name: Install AI CLI — Copilot
+        if: vars.AI_REVIEW_TOOL == 'copilot'
+        run: npm install -g @github/copilot
+
+      - name: Run AI test classifier
+        working-directory: testing/classifier
+        env:
+          AI_REVIEW_TOOL: ${{ vars.AI_REVIEW_TOOL }}
+          AI_CLASSIFIER_MODE: ${{ vars.AI_CLASSIFIER_MODE }}
+          CI: 'true'
+          # Pass through whichever API key matches the chosen tool. Each secret
+          # is set only if the team uses that tool — unused ones stay blank.
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          OPENAI_API_KEY:    ${{ secrets.OPENAI_API_KEY }}
+          # gh CLI picks up GITHUB_TOKEN automatically.
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # PR number and base ref come from the workflow context.
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          BASE_REF:  ${{ github.event.pull_request.base.ref }}
+        run: |
+          set -euo pipefail
+
+          MODE="${AI_CLASSIFIER_MODE:-p0}"
+
+          if [[ -z "${PR_NUMBER:-}" ]]; then
+            echo "::warning::No PR context (likely a manual workflow_dispatch). Skipping."
+            exit 0
+          fi
+
+          # Make sure origin/<base-ref> resolves locally — actions/checkout
+          # fetches the head SHA but may not set up a refs/remotes entry.
+          git fetch --no-tags --depth=200 origin "${BASE_REF}:refs/remotes/origin/${BASE_REF}" || true
+
+          mkdir -p classifier-out
+          DISPATCHER=".skills/test-classifier/scripts/test-classifier-dispatcher.sh"
+
+          if [[ "${MODE}" == "p0" ]]; then
+            # P0 — observe-only. Record the classification as a CI artifact and
+            # post NOTHING to the PR. --json-only emits just the JSON block.
+            echo "Mode P0 (observe-only): recording classification, posting nothing."
+            "${DISPATCHER}" \
+              --pr "${PR_NUMBER}" \
+              --mode p0 \
+              --json-only \
+              | tee classifier-out/classification.json
+              # --gate   # (advisory by default — uncomment to fail the build on CLASSIFIED)
+          else
+            # P1 — MVP. Post ONE PR comment with the call + rationale and the
+            # mandatory 👍/👎 ask (the tuning signal). Still non-blocking.
+            echo "Mode P1 (MVP): posting one classification comment with the 👍/👎 ask."
+            "${DISPATCHER}" \
+              --pr "${PR_NUMBER}" \
+              --mode p1 \
+              --post-comment \
+              | tee classifier-out/classification.txt
+              # --gate   # (advisory by default — uncomment to fail the build on CLASSIFIED)
+          fi
+
+      - name: Upload classification record
+        # Always upload: in P0 this artifact IS the primary record; in P1 it is
+        # the audit trail alongside the posted comment.
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ai-test-classification
+          path: testing/classifier/classifier-out/
+          if-no-files-found: ignore

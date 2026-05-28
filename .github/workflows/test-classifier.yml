@@ -1,0 +1,176 @@
+# .github/workflows/test-classifier.yml
+#
+# REUSABLE workflow for the AI test classifier.
+#
+# This is the supported way to consume the classifier in another repo WITHOUT
+# vendoring the bundle's files. A consumer repo adds a tiny caller workflow that
+# references this one with a pinned SHA — no copied scripts, one line to update:
+#
+#   # .github/workflows/ai-test-classifier.yml in the CONSUMER repo
+#   name: AI test classifier
+#   on:
+#     pull_request:
+#       types: [opened, synchronize, reopened]
+#   jobs:
+#     classify:
+#       uses: navapbc/ai-transformation-delivery-systems/.github/workflows/test-classifier.yml@<commit-sha>
+#       with:
+#         tool: claude          # claude | codex | copilot
+#         mode: p0              # p0 (observe-only) | p1 (posts one PR comment)
+#         # ref: <sha>          # optional: bundle ref to fetch scripts from; defaults to the @<sha> above
+#       secrets:
+#         ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+#         # OPENAI_API_KEY:  ${{ secrets.OPENAI_API_KEY }}   # only if tool=codex
+#
+# Pin to a SHA (not a branch) for reproducibility: the consumer always runs an
+# exact, reviewed version of the dispatcher, and there is nothing copied into
+# their repo to drift. To update, bump the SHA in the caller — that is the whole
+# upgrade procedure.
+
+name: AI test classifier (reusable)
+
+on:
+  workflow_call:
+    inputs:
+      tool:
+        description: 'AI CLI to use: claude | codex | copilot'
+        type: string
+        required: true
+      mode:
+        description: 'p0 (observe-only, posts nothing) | p1 (posts one PR comment)'
+        type: string
+        default: 'p0'
+      ref:
+        description: >
+          Git ref of THIS repo to fetch the classifier scripts from. Defaults to
+          the ref the caller pinned via uses:@<ref>. Override only to test an
+          unreleased bundle version.
+        type: string
+        default: ''
+    secrets:
+      ANTHROPIC_API_KEY:
+        required: false
+      OPENAI_API_KEY:
+        required: false
+
+# Least-privilege: read the consumer's code; write PR comments only (used in p1).
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  classify:
+    runs-on: ubuntu-latest
+    if: github.event.pull_request.draft == false
+    steps:
+      - name: Validate inputs
+        env:
+          TOOL: ${{ inputs.tool }}
+          MODE: ${{ inputs.mode }}
+        run: |
+          case "${TOOL}" in claude|codex|copilot) ;; *)
+            echo "::error::inputs.tool='${TOOL}' invalid. Must be claude | codex | copilot"; exit 1 ;;
+          esac
+          case "${MODE:-p0}" in p0|p1) ;; *)
+            echo "::error::inputs.mode='${MODE}' invalid. Must be p0 | p1"; exit 1 ;;
+          esac
+
+      # 1. The CONSUMER's repo — this is what the dispatcher diffs and classifies.
+      - name: Check out the caller's repo (the change under test)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      # 2. THIS bundle's scripts, pinned to the same version the caller referenced
+      #    (or an explicit override). We fetch a source tarball via the GitHub
+      #    API rather than a second `actions/checkout`, because checkout's token
+      #    is scoped to the CALLER's repo and cannot read this (possibly private)
+      #    source repo. The API tarball is fetched with the same GITHUB_TOKEN,
+      #    which works once the org's Actions "accessibility" setting allows this
+      #    repo's reusable workflow to be called by other org repos — the same
+      #    prerequisite the `uses:` reference itself already requires. No PAT.
+      #
+      #    The bundle's testing/ tree is staged into the caller's workspace so
+      #    every repo-relative path the dispatcher and its prompt use (e.g.
+      #    testing/classifier/.skills/test-classifier/SKILL.md) resolves exactly
+      #    as in a local or vendored install — one dispatcher code path for all.
+      - name: Fetch and stage the classifier bundle (pinned)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BUNDLE_REF: ${{ inputs.ref != '' && inputs.ref || github.sha }}
+        run: |
+          set -euo pipefail
+          tmp="$(mktemp -d)"
+          # Tarball of the source repo at the pinned ref. The archive's single
+          # top-level dir is named <owner>-<repo>-<sha>; strip it on extract.
+          gh api "repos/navapbc/ai-transformation-delivery-systems/tarball/${BUNDLE_REF}" \
+            > "$tmp/bundle.tgz"
+          mkdir -p "$tmp/extract"
+          tar -xzf "$tmp/bundle.tgz" -C "$tmp/extract" --strip-components=1
+          cp -R "$tmp/extract/testing" "$GITHUB_WORKSPACE/testing"
+          rm -rf "$tmp"
+          chmod +x testing/classifier/.skills/_lib/ai-classifier-dispatch.sh
+          chmod +x testing/classifier/.skills/test-classifier/scripts/test-classifier-dispatcher.sh
+          chmod +x testing/classifier/scripts/sync-skills.sh
+
+      - name: Sync canonical SKILL.md into the chosen tool's directory
+        working-directory: testing/classifier
+        env:
+          AI_REVIEW_TOOL: ${{ inputs.tool }}
+        run: scripts/sync-skills.sh
+
+      - name: Install AI CLI — Claude Code
+        if: inputs.tool == 'claude'
+        run: npm install -g @anthropic-ai/claude-code
+      - name: Install AI CLI — Codex
+        if: inputs.tool == 'codex'
+        run: npm install -g @openai/codex
+      - name: Install AI CLI — Copilot
+        if: inputs.tool == 'copilot'
+        run: npm install -g @github/copilot
+
+      - name: Run AI test classifier
+        env:
+          AI_REVIEW_TOOL: ${{ inputs.tool }}
+          AI_CLASSIFIER_MODE: ${{ inputs.mode }}
+          CI: 'true'
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          OPENAI_API_KEY:    ${{ secrets.OPENAI_API_KEY }}
+          GITHUB_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          BASE_REF:  ${{ github.event.pull_request.base.ref }}
+        run: |
+          set -euo pipefail
+          MODE="${AI_CLASSIFIER_MODE:-p0}"
+
+          if [[ -z "${PR_NUMBER:-}" ]]; then
+            echo "::warning::No PR context. Skipping."; exit 0
+          fi
+
+          # The bundle's testing/ tree was staged into the caller's workspace,
+          # so the dispatcher and its prompt see the same repo-relative layout
+          # as a local/vendored install, while git diff still sees the caller's PR.
+          DISPATCHER="testing/classifier/.skills/test-classifier/scripts/test-classifier-dispatcher.sh"
+
+          # Make origin/<base-ref> resolvable for the diff range.
+          git fetch --no-tags --depth=200 origin "${BASE_REF}:refs/remotes/origin/${BASE_REF}" || true
+
+          mkdir -p classifier-out
+          if [[ "${MODE}" == "p0" ]]; then
+            echo "Mode P0 (observe-only): recording classification, posting nothing."
+            "${DISPATCHER}" --pr "${PR_NUMBER}" --mode p0 --json-only \
+              | tee classifier-out/classification.json
+          else
+            echo "Mode P1 (MVP): posting one classification comment with the 👍/👎 ask."
+            "${DISPATCHER}" --pr "${PR_NUMBER}" --mode p1 --post-comment \
+              | tee classifier-out/classification.txt
+          fi
+
+      - name: Upload classification record
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ai-test-classification
+          path: classifier-out/
+          if-no-files-found: ignore
