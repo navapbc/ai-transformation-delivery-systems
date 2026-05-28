@@ -29,10 +29,9 @@ jobs:
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
 ```
 
-After writing it, verify it parses: `yamllint` or
-`python3 -c "import yaml,sys;yaml.safe_load(open('.github/workflows/ai-test-classifier.yml'))"`.
-The `uses:` value must be a single line with exactly one `@` and no stray spaces
-or colons. If it looks scrambled, rewrite it.
+Do not run a YAML linter or any verify command — just make sure the `uses:`
+line is a single unbroken line with exactly one `@` and reads
+`...test-classifier.yml@<sha>`. If it looks scrambled, rewrite it. Then move on.
 
 ## Step 2 — tell the human these two manual steps (you cannot do them)
 
