@@ -77,6 +77,20 @@ to any file matched by this path pattern.
   from "wrong password" (enables enumeration).
 - Sensitive values (tokens, passwords, MFA codes) passed to logging calls.
   **OWASP A09:2021** (Security Logging and Monitoring Failures).
+- **CMS-specific identifiers (MBI, HICN, CCN, NPI) appearing in JWT claims,
+  session payloads, audit logs, error messages, or URL paths.** See
+  `.skills/code-security/SKILL.md` § 3A for the detection patterns. Auth
+  code is a particularly common leak path because:
+  - Beneficiary identifiers sometimes get embedded in `sub`, `preferred_
+    username`, or custom claims rather than an opaque internal user ID.
+  - Audit-log middleware often logs the full request/response body, which
+    can include MBIs returned by downstream Medicare APIs.
+  - URL paths like `/api/beneficiary/{mbi}/claims` expose the identifier in
+    web-server access logs, browser history, referrer headers, and APM
+    traces. Use opaque internal IDs in URLs; resolve to MBI server-side.
+  Severity follows the PHI ladder in `code-security/SKILL.md` (Critical
+  when real, Medium when likely synthetic). **NIST AU-3, AU-9, IA-4,
+  SI-11; HIPAA 164.312(b).**
 
 ### Low-severity flags
 

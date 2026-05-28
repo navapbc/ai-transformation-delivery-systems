@@ -137,7 +137,52 @@ project type.
   names, dates (except year), phone, fax, email, SSN, MRN, health plan #,
   account #, certificate/license #, VIN, device serial, URL, IP, biometric,
   full-face photo, any unique identifier
-- Note: flag even if values appear in test data — real PHI must never exist in source
+
+**CMS-specific identifiers (call out explicitly — these are the signature
+PHI values in any system that interacts with Medicare / Medicaid data;
+treat them with the same severity as SSNs):**
+
+- **MBI — Medicare Beneficiary Identifier** (current, replaced HICNs in 2018).
+  11 characters; positionally constrained alphanumeric that deliberately
+  excludes the letters `S L O I B Z` to avoid confusion with digits.
+  - Position 1: `[1-9]`
+  - Positions 2, 5, 8, 9: `[AC-HJ-KM-NP-RT-Y]` (uppercase, no SLOIBZ)
+  - Positions 3, 6: `[0-9AC-HJ-KM-NP-RT-Y]` (alphanumeric, no SLOIBZ)
+  - Positions 4, 7, 10, 11: `\d`
+  - Compact form regex (no separators):
+    `\b[1-9][AC-HJ-KM-NP-RT-Y][0-9AC-HJ-KM-NP-RT-Y]\d[AC-HJ-KM-NP-RT-Y][0-9AC-HJ-KM-NP-RT-Y]\d[AC-HJ-KM-NP-RT-Y]{2}\d{2}\b`
+  - Hyphenated forms (`1S0-A0-AA0-AA00`, `1S0A-A0AA-0AA00`, etc.) appear in
+    display contexts — strip non-alphanumerics before matching, then apply
+    the compact regex above.
+  - Examples (synthetic, illustrative only): `1S00A00AA00`, `1EG4-TE5-MK73`.
+- **HICN — Health Insurance Claim Number** (legacy, pre-2018; still present
+  in archived data, claims history, and crosswalk tables). Format is an
+  SSN (9 digits) plus a 1- or 2-character Beneficiary Identification Code
+  (BIC) suffix such as `A`, `B`, `B1`, `C1`, `D`, `T`, `M`, etc.
+  - Regex: `\b\d{3}-?\d{2}-?\d{4}[A-Z]\d?\b` or `\b\d{9}[A-Z]\d?\b`
+  - Because HICNs embed a real SSN, a HICN finding is **always** at least
+    an SSN finding too — emit it as PHI/HICN (the stronger framing) rather
+    than as a bare SSN.
+- **CCN — CMS Certification Number** (a.k.a. Medicare Provider Number; used
+  for facility identification, not beneficiary identification, but still
+  CMS-regulated and sensitive when paired with claims data).
+  - Six digits, with leading ranges encoding facility type (e.g., `010001`–
+    `019999` short-term hospitals, `670001`–`679999` FQHCs, etc.).
+  - Regex: `\b\d{6}\b` — high false-positive rate; only flag when the
+    surrounding context (variable name, column header, comment, or
+    co-located CCN/NPI/provider fields) indicates CMS provider identity.
+- **NPI — National Provider Identifier** (HHS-issued, not strictly CMS, but
+  always co-located with CMS data and required by HIPAA transactions).
+  10 digits with a Luhn check digit. Regex: `\b\d{10}\b` with Luhn
+  validation to suppress false positives. Treat as PHI when paired with
+  patient or claim context; treat as low-sensitivity public data when
+  appearing standalone in a provider-directory context (NPIs are
+  publishable per the NPPES public file).
+
+- Note: flag even if values appear in test data — real PHI must never exist
+  in source. Synthetic-looking MBIs / HICNs are still worth a Medium-
+  severity flag because the format is unusual enough that engineers can
+  copy a production value thinking it is fake.
 
 **Severity of secrets/PII/PHI findings:**
 

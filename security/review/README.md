@@ -994,7 +994,16 @@ PHI in source code is a HIPAA violation risk.
    environment shouldn't have allowed export to a dev machine.
 3. **Replace with synthetic data.** Avoid even synthetic data in repos where
    possible; use obviously fake values (`John Test`, `1900-01-01`,
-   `555-000-0000`).
+   `555-000-0000`). For CMS-specific identifiers, CMS publishes synthetic
+   test ranges — use them rather than inventing your own:
+   - **MBI:** use values from the CMS BFD synthetic-beneficiary set
+     (e.g., `1S00E00JA00`, `1S00E00JA01` …). Document the source in a
+     fixture-level comment so reviewers don't have to guess.
+   - **HICN:** use SSNs from the SSA's reserved test range
+     (`987-65-4320` through `987-65-4329`) with a BIC suffix
+     (e.g., `987-65-4320A`).
+   - **CCN / NPI:** use ranges CMS has reserved for testing; never copy a
+     real provider's number even if it appears in a public NPPES export.
 4. **Report to your compliance officer** if real PHI was exposed to
    unauthorized systems or personnel. Declare an incident.
 
