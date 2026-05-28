@@ -15,7 +15,7 @@ You are almost certainly being asked to install it in a **consumer** repo. Do
 NOT vendor or copy files. Read **one** short doc and follow it:
 
 ```
-gh api "repos/navapbc/ai-transformation-delivery-systems/contents/testing/classifier/AGENT_INSTALL.md?ref=7df95a730b75f9d48a53be86f6d74583decbe279" --jq .content | base64 -d
+gh api "repos/navapbc/ai-transformation-delivery-systems/contents/testing/classifier/AGENT_INSTALL.md?ref=d418fef3721928888b93c117f9d2524fc6734252" --jq .content | base64 -d
 ```
 
 `AGENT_INSTALL.md` is ~40 lines and contains the exact caller workflow (with the
@@ -31,7 +31,7 @@ GitHub API with an authenticated `gh`, and **quote the URL** (the `?ref=` makes
 zsh treat `?` as a glob):
 
 ```
-gh api "repos/navapbc/ai-transformation-delivery-systems/contents/<path>?ref=7df95a730b75f9d48a53be86f6d74583decbe279" --jq .content | base64 -d
+gh api "repos/navapbc/ai-transformation-delivery-systems/contents/<path>?ref=d418fef3721928888b93c117f9d2524fc6734252" --jq .content | base64 -d
 ```
 
 ## Conventions (if you work IN this repo, not just consume it)

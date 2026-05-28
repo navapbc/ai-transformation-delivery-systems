@@ -4,7 +4,7 @@ on:
     types: [opened, synchronize, reopened]
 jobs:
   classify:
-    uses: navapbc/ai-transformation-delivery-systems/.github/workflows/test-classifier.yml@__PIN_SHA__
+    uses: navapbc/ai-transformation-delivery-systems/.github/workflows/test-classifier.yml@d418fef3721928888b93c117f9d2524fc6734252
     with:
       tool: claude
       mode: p0

@@ -16,7 +16,7 @@ the correct SHA — and write its exact bytes to the consumer repo. One command:
 
 ```
 mkdir -p .github/workflows && \
-gh api "repos/navapbc/ai-transformation-delivery-systems/contents/testing/classifier/caller-workflow.yml?ref=__PIN_SHA__" \
+gh api "repos/navapbc/ai-transformation-delivery-systems/contents/testing/classifier/caller-workflow.yml?ref=d418fef3721928888b93c117f9d2524fc6734252" \
   --jq .content | base64 -d > .github/workflows/ai-test-classifier.yml
 ```
 
@@ -30,7 +30,7 @@ on:
     types: [opened, synchronize, reopened]
 jobs:
   classify:
-    uses: navapbc/ai-transformation-delivery-systems/.github/workflows/test-classifier.yml@__PIN_SHA__
+    uses: navapbc/ai-transformation-delivery-systems/.github/workflows/test-classifier.yml@d418fef3721928888b93c117f9d2524fc6734252
     with:
       tool: claude
       mode: p0
@@ -71,4 +71,4 @@ Print this to the user verbatim — these are out-of-band and block the run:
 
 Full guide (humans, or when the above fails): `testing/classifier/docs/SETUP.md`
 at the same SHA. Fetch repo files with (quote the URL — the `?` is a shell glob):
-`gh api "repos/navapbc/ai-transformation-delivery-systems/contents/<path>?ref=7df95a730b75f9d48a53be86f6d74583decbe279" --jq .content | base64 -d`
+`gh api "repos/navapbc/ai-transformation-delivery-systems/contents/<path>?ref=d418fef3721928888b93c117f9d2524fc6734252" --jq .content | base64 -d`
