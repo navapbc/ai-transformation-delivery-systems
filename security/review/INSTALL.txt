@@ -1,0 +1,281 @@
+AI-Assisted Pre-Commit Review — Quick Install
+==============================================
+
+This file is a fast-path reference. For full documentation, see README.md.
+For PR-level review setup (Copilot, GitHub Actions, fine-grained PATs),
+see docs/PR_REVIEW_SETUP.md.
+
+⚠️ MERGE, DON'T OVERWRITE
+==========================
+If your repository already has any of these files, do NOT blindly replace
+them with the bundled version — open the existing file and merge in the
+bundled content by hand. Files at risk of collision:
+  • .pre-commit-config.yaml   (very common)
+  • .gitignore                 (almost always present)
+  • README.md                  (always present; do not overwrite your project README)
+  • .github/copilot-instructions.md  (common; use the BEGIN/END markers in the
+                                      bundled file to merge content cleanly)
+  • .github/instructions/*.instructions.md  (less common)
+  • .github/workflows/ai-pr-review.yml  (unique name, rare collision)
+
+Assumptions:
+  • You have this delivery bundle unpacked into a directory we'll call
+    $BUNDLE (e.g. ~/Downloads/ai-review-hooks/).
+  • You want to install into a git repository at $REPO_ROOT.
+  • Both $BUNDLE and $REPO_ROOT are absolute paths.
+
+Layout note:
+  • .skills/ is the canonical, tool-neutral source of truth and IS committed.
+  • .claude/, .codex/, and .github/copilot/ are PER-DEVELOPER derived
+    directories created locally by scripts/sync-skills.sh based on the
+    developer's AI_REVIEW_TOOL setting. They are gitignored.
+
+Steps:
+
+------------------------------------------------------------------------------
+1. Set variables for the install session
+------------------------------------------------------------------------------
+
+    export BUNDLE=/path/to/this/bundle
+    export REPO_ROOT=/path/to/your/repository
+    cd "$REPO_ROOT"
+
+------------------------------------------------------------------------------
+2. Create directory structure
+------------------------------------------------------------------------------
+
+    mkdir -p .skills/_lib
+    mkdir -p .skills/code-security/scripts
+    mkdir -p .skills/iac-compliance/scripts
+    mkdir -p .skills/pr-review/scripts
+    mkdir -p .skills/codebase-audit/scripts
+    mkdir -p .github/instructions
+    mkdir -p .github/workflows
+    mkdir -p docs
+    mkdir -p scripts
+    # (the derived .claude/, .codex/, or .github/copilot/skills/ directory
+    # is created later by scripts/sync-skills.sh)
+
+------------------------------------------------------------------------------
+3. Copy files into place
+------------------------------------------------------------------------------
+
+    # Top-level
+    cp "$BUNDLE/.pre-commit-config.yaml"  .pre-commit-config.yaml
+    cp "$BUNDLE/README.md"                README.md
+
+    # Append the bundled .gitignore snippet to your existing .gitignore
+    # (or create one if you don't have it yet).
+    cat "$BUNDLE/.gitignore" >> .gitignore
+
+    # Shared dispatch library
+    cp "$BUNDLE/.skills/_lib/ai-review-dispatch.sh" \
+       .skills/_lib/ai-review-dispatch.sh
+
+    # code-security skill
+    cp "$BUNDLE/.skills/code-security/SKILL.md" \
+       .skills/code-security/SKILL.md
+    cp "$BUNDLE/.skills/code-security/scripts/code-security-hook-dispatcher.sh" \
+       .skills/code-security/scripts/code-security-hook-dispatcher.sh
+
+    # iac-compliance skill
+    cp "$BUNDLE/.skills/iac-compliance/SKILL.md" \
+       .skills/iac-compliance/SKILL.md
+    cp "$BUNDLE/.skills/iac-compliance/scripts/iac-compliance-hook-dispatcher.sh" \
+       .skills/iac-compliance/scripts/iac-compliance-hook-dispatcher.sh
+
+    # pr-review skill (PR-level review)
+    cp "$BUNDLE/.skills/pr-review/SKILL.md" \
+       .skills/pr-review/SKILL.md
+    cp "$BUNDLE/.skills/pr-review/scripts/pr-review-dispatcher.sh" \
+       .skills/pr-review/scripts/pr-review-dispatcher.sh
+
+    # codebase-audit skill (full-repo audit)
+    cp "$BUNDLE/.skills/codebase-audit/SKILL.md" \
+       .skills/codebase-audit/SKILL.md
+    cp "$BUNDLE/.skills/codebase-audit/scripts/codebase-audit-dispatcher.sh" \
+       .skills/codebase-audit/scripts/codebase-audit-dispatcher.sh
+
+    # Copilot PR-review instructions
+    # ⚠️ If .github/copilot-instructions.md already exists in your repo, do
+    # NOT overwrite — open both files and merge the BEGIN/END markered
+    # section from the bundle into your existing file.
+    cp "$BUNDLE/.github/copilot-instructions.md" \
+       .github/copilot-instructions.md
+    cp "$BUNDLE/.github/instructions/iac.instructions.md" \
+       .github/instructions/iac.instructions.md
+    cp "$BUNDLE/.github/instructions/auth.instructions.md" \
+       .github/instructions/auth.instructions.md
+    cp "$BUNDLE/.github/instructions/scripts.instructions.md" \
+       .github/instructions/scripts.instructions.md
+
+    # PR-review GitHub Actions workflow (disabled by default; see docs)
+    cp "$BUNDLE/.github/workflows/ai-pr-review.yml" \
+       .github/workflows/ai-pr-review.yml
+
+    # PR-review setup documentation
+    cp "$BUNDLE/docs/PR_REVIEW_SETUP.md" \
+       docs/PR_REVIEW_SETUP.md
+
+    # Sync utility
+    cp "$BUNDLE/scripts/sync-skills.sh" scripts/sync-skills.sh
+
+------------------------------------------------------------------------------
+4. Make scripts executable
+------------------------------------------------------------------------------
+
+    chmod +x .skills/_lib/ai-review-dispatch.sh
+    chmod +x .skills/code-security/scripts/code-security-hook-dispatcher.sh
+    chmod +x .skills/iac-compliance/scripts/iac-compliance-hook-dispatcher.sh
+    chmod +x .skills/pr-review/scripts/pr-review-dispatcher.sh
+    chmod +x .skills/codebase-audit/scripts/codebase-audit-dispatcher.sh
+    chmod +x scripts/sync-skills.sh
+
+------------------------------------------------------------------------------
+5. Install your chosen AI CLI (pick ONE)
+------------------------------------------------------------------------------
+
+    # Option A — Claude Code
+    npm install -g @anthropic-ai/claude-code
+    claude    # authenticate (interactive, one-time)
+
+    # Option B — OpenAI Codex CLI
+    npm install -g @openai/codex
+    codex login
+
+    # Option C — GitHub Copilot CLI (agentic)
+    npm install -g @github/copilot
+    copilot login
+
+------------------------------------------------------------------------------
+6. Set AI_REVIEW_TOOL (persistent, macOS / zsh)
+------------------------------------------------------------------------------
+
+    echo 'export AI_REVIEW_TOOL=claude' >> ~/.zshrc      # or codex / copilot
+    source ~/.zshrc
+    echo "$AI_REVIEW_TOOL"    # should print: claude
+
+    # If you commit from VS Code / JetBrains / GitHub Desktop, put it in
+    # ~/.zshenv instead — non-interactive shells need that file.
+
+------------------------------------------------------------------------------
+7. Sync the canonical skills into your tool's derived directory
+------------------------------------------------------------------------------
+
+    scripts/sync-skills.sh
+
+    # This creates .claude/skills/ (if AI_REVIEW_TOOL=claude), or
+    # .codex/skills/, or .github/copilot/skills/ — only the one you need.
+
+------------------------------------------------------------------------------
+8. Install pre-commit and the hooks
+------------------------------------------------------------------------------
+
+    # Install pre-commit itself (one-time, system-wide)
+    brew install pre-commit          # macOS
+    # OR
+    pip install pre-commit           # any platform
+
+    # Install the hooks into this repo's .git/hooks/
+    pre-commit install
+
+------------------------------------------------------------------------------
+9. Verify
+------------------------------------------------------------------------------
+
+    # Dry run — shows what the dispatcher would do, doesn't call the AI
+    .skills/code-security/scripts/code-security-hook-dispatcher.sh --dry-run
+
+    # Check the skill-sync state for your tool
+    scripts/sync-skills.sh --check
+
+------------------------------------------------------------------------------
+10. Commit everything (only canonical files are committed — derived dirs
+    such as .claude/skills/, .codex/skills/, and .github/copilot/skills/
+    are gitignored. Files under .github/copilot-instructions.md,
+    .github/instructions/, and .github/workflows/ ARE committed.)
+------------------------------------------------------------------------------
+
+    git add .pre-commit-config.yaml .gitignore \
+            .skills/ scripts/ \
+            .github/copilot-instructions.md \
+            .github/instructions/ \
+            .github/workflows/ai-pr-review.yml \
+            docs/ \
+            README.md
+    git commit -m "chore: add AI-assisted code review (pre-commit + PR-level)"
+
+------------------------------------------------------------------------------
+Onboarding new team members
+------------------------------------------------------------------------------
+
+    Each new developer needs to:
+      a. Install pre-commit + their chosen AI CLI
+      b. Set AI_REVIEW_TOOL in their shell (.zshenv recommended on macOS)
+      c. Run: scripts/sync-skills.sh
+      d. Run: pre-commit install
+
+    Developers who want to post PR-review comments locally additionally need:
+      e. Install the GitHub CLI: brew install gh
+      f. Authenticate: gh auth login   (or set a fine-grained PAT as GH_TOKEN —
+         see docs/PR_REVIEW_SETUP.md, section "Fine-grained personal access
+         token setup")
+
+------------------------------------------------------------------------------
+PR-level review setup (optional, configured per-repo, not per-developer)
+------------------------------------------------------------------------------
+
+    PR-level review has its own setup procedure separate from pre-commit.
+    See docs/PR_REVIEW_SETUP.md for the full guide, including:
+
+      • Enabling the GitHub Actions workflow (.github/workflows/ai-pr-review.yml)
+      • Configuring GitHub Copilot PR auto-review (Copilot Enterprise)
+      • Creating a fine-grained PAT with least-privilege permissions
+      • Setting up repository rule sets to require AI review before merge
+
+    Quick summary of what to do next, if you want PR-level review:
+
+      1. Decide which path(s) you want: local pr-review skill, GitHub Actions
+         workflow, GitHub Copilot, or any combination.
+      2. For the workflow path:
+           - Settings → Secrets and variables → Actions → Variables
+             → New variable: AI_REVIEW_TOOL = claude | codex | copilot
+           - Settings → Secrets and variables → Actions → Secrets
+             → New secret: ANTHROPIC_API_KEY or OPENAI_API_KEY (per tool)
+           - Edit .github/workflows/ai-pr-review.yml to uncomment the
+             `pull_request:` trigger (currently disabled by default).
+      3. For the Copilot path:
+           - Confirm your GitHub org has Copilot Enterprise (or Business +
+             Code Review).
+           - Add Copilot as a reviewer on PRs (or as a CODEOWNER for default
+             reviews).
+      4. For the local path, see docs/PR_REVIEW_SETUP.md "Path A".
+
+------------------------------------------------------------------------------
+Codebase audit setup (optional, on-demand only)
+------------------------------------------------------------------------------
+
+    The codebase-audit skill scans the entire repository at rest (rather
+    than reviewing diffs). No installation is required beyond what you've
+    already done above — the skill and its dispatcher are part of the
+    bundle. Usage is on-demand:
+
+        # Audit everything; results in audit-reports/
+        .skills/codebase-audit/scripts/codebase-audit-dispatcher.sh
+
+        # Audit one subtree, only Critical+High findings:
+        .skills/codebase-audit/scripts/codebase-audit-dispatcher.sh \
+          --scope src/ --min-severity high
+
+        # See what would be audited (no AI calls):
+        .skills/codebase-audit/scripts/codebase-audit-dispatcher.sh --list-batches
+
+    See README.md section "Codebase audit" for the full usage guide,
+    expected cost/time, SARIF output, and a sample CI workflow for
+    scheduled monthly audits.
+
+------------------------------------------------------------------------------
+Done. From now on, every git commit runs the pre-commit reviews automatically,
+and PR-level review is available via whichever path(s) you enabled.
+Manual / ad-hoc usage and troubleshooting are documented in README.md and
+docs/PR_REVIEW_SETUP.md.
