@@ -47,11 +47,25 @@ to any file matched by this path pattern.
     breach-list checks removed).
   - "Remember me" tokens stored as plaintext or with weak hashing.
 - **Cryptographic Failures (OWASP A02:2021):**
-  - Password hashing using MD5, SHA-1, SHA-256, or any unsalted hash.
-    Production code must use bcrypt, scrypt, argon2, or PBKDF2.
-  - JWT signing with `none` algorithm allowed (`alg: "none"` accepted).
+  - Password hashing using MD5, SHA-1, raw SHA-2, or any unsalted hash.
+    For federal / FedRAMP / FISMA / HIPAA workloads, password hashing must
+    use **PBKDF2 with HMAC-SHA-256 (or stronger)** per NIST SP 800-132 —
+    it is the only FIPS 140-3-approved password-based KDF. `bcrypt`,
+    `scrypt`, and `argon2` are **not** FIPS-approved and must not be
+    recommended for these systems. Require a random per-credential salt
+    (≥ 128 bits) and an iteration count aligned to current NIST guidance.
+    **NIST IA-5(1), SC-13.**
+  - JWT signing with the `none` algorithm allowed (`alg: "none"` accepted).
+    JWT signing/verification must use a FIPS 186-5-approved algorithm
+    (RS256/384/512, PS256/384/512, ES256/384/512, or EdDSA). **NIST SC-13.**
   - JWT verification that doesn't check the signature, only decodes claims.
-  - TLS certificate verification disabled (`verify=False`, `rejectUnauthorized: false`).
+  - Symmetric encryption with non-FIPS modes (ECB, CBC-without-MAC) or
+    non-FIPS algorithms (RC4, DES, 3DES, Blowfish, ChaCha20-Poly1305 in
+    FIPS-mandated contexts). Use AES-GCM or AES-CCM. **NIST SC-13.**
+  - TLS certificate verification disabled (`verify=False`,
+    `rejectUnauthorized: false`), or TLS < 1.2 negotiated. NIST SP 800-52
+    Rev 2 requires TLS 1.2 or 1.3 with FIPS-approved cipher suites.
+    **NIST SC-8, SC-13.**
 
 ### Medium-severity flags
 

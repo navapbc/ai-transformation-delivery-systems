@@ -164,11 +164,24 @@ if the diff contains only CSS). Be explicit about what was skipped and why.
 - CORS policy changes that broaden allowed origins
 
 **A02 — Cryptographic Failures**
-- Use of deprecated algorithms (MD5, SHA-1, DES, RC4, ECB mode)
-- Hardcoded IVs or salts
-- Sensitive data transmitted over HTTP (not HTTPS)
-- Weak key lengths (RSA < 2048, AES < 128)
-- Missing TLS certificate validation
+- Use of deprecated / prohibited algorithms (MD5, SHA-1, DES, 3DES, RC4,
+  Blowfish, ECB mode, CBC without MAC)
+- Use of non-FIPS-approved primitives in federal / FedRAMP / FISMA / HIPAA
+  contexts: `bcrypt`, `scrypt`, `argon2`, BLAKE2/BLAKE3, ChaCha20-Poly1305.
+  For password hashing, require PBKDF2 with HMAC-SHA-256 or stronger (NIST
+  SP 800-132). For AEAD, require AES-GCM or AES-CCM (NIST SP 800-38D/C).
+- Hardcoded IVs, nonces, or salts; reuse of GCM nonces with the same key
+- Sensitive data transmitted over HTTP (not HTTPS), or TLS < 1.2 permitted
+  (NIST SP 800-52 Rev 2 requires TLS 1.2 / 1.3)
+- Weak key lengths: RSA < 2048, ECC curves below NIST P-256, AES < 128,
+  HMAC keys shorter than the digest output
+- Signature algorithms outside FIPS 186-5 (RSA-PSS / RSA PKCS#1 v1.5,
+  ECDSA on P-256/P-384/P-521, EdDSA on Ed25519/Ed448)
+- Random values for keys, IVs, nonces, salts, or session tokens drawn from
+  non-cryptographic / non-SP 800-90A sources (`Math.random()`, `rand()`,
+  `random.Random`)
+- Missing TLS certificate validation (`verify=False`,
+  `rejectUnauthorized: false`, `InsecureSkipVerify: true`)
 
 **A03 — Injection**
 - SQL: string concatenation or f-string formatting in queries; check for ORM bypass

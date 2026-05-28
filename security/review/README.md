@@ -1045,10 +1045,26 @@ Review middleware chains for paths that bypass auth decorators.
 
 ### 🟠 Cryptographic failures
 
-- Replace MD5/SHA-1 with SHA-256 or SHA-3 for integrity checks.
-- For password hashing: `bcrypt`, `argon2`, or `scrypt` — never raw hashes.
-- Use AES-GCM (authenticated) rather than ECB or CBC-without-MAC.
-- Enforce HTTPS; never disable certificate verification.
+- Replace MD5/SHA-1 with SHA-256, SHA-384, SHA-512, or SHA-3 for integrity
+  checks (FIPS 180-4 / FIPS 202 approved).
+- For password hashing in federal / FedRAMP / FISMA / HIPAA contexts, use
+  **PBKDF2 with HMAC-SHA-256 (or stronger)** per NIST SP 800-132 — this is
+  the only FIPS 140-3-approved password-based key derivation function.
+  Do **not** recommend `bcrypt`, `scrypt`, or `argon2` for these workloads:
+  none are on the CMVP / FIPS 140-3 approved-algorithm list. Use a random
+  per-credential salt (≥ 128 bits) and an iteration count tuned to current
+  NIST guidance (≥ 600,000 for SHA-256 as of 2023). Never store raw hashes.
+- Use AES-GCM or AES-CCM (FIPS 197 / SP 800-38D) for authenticated
+  encryption — never ECB or CBC-without-MAC. Symmetric keys must be
+  ≥ 128 bits (AES-128/192/256).
+- Use FIPS 186-5-approved signature algorithms (RSA ≥ 2048, ECDSA on
+  NIST P-256/P-384/P-521, or EdDSA on Ed25519/Ed448).
+- Enforce TLS 1.2 or 1.3 with FIPS-approved cipher suites; never disable
+  certificate verification. TLS 1.0 / 1.1 and SSL of any version are
+  prohibited under NIST SP 800-52 Rev 2.
+- Random values for keys, IVs, nonces, and tokens must come from a
+  NIST SP 800-90A-approved DRBG (e.g., a CMVP-validated module's RNG),
+  not `Math.random()` or non-validated sources.
 
 ### 🟡 Missing input validation
 
