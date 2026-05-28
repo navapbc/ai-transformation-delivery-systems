@@ -1,0 +1,215 @@
+AI Test Classifier — Quick Install
+===================================
+
+This file is a fast-path reference. For the full pilot playbook (3-scenario
+framing, P0/P1 phasing, metrics loop, security considerations), see
+docs/PLAYBOOK.md. For the step-by-step local + GitHub Actions setup, see
+docs/SETUP.md.
+
+This bundle is the testing-workstream counterpart to security/review/. It
+reuses the same AI_REVIEW_TOOL selection, the same <<<AI_REVIEW_RESULT:...>>>
+result-marker contract, the same canonical-SKILL.md-synced-to-tool-dirs model,
+and the same disabled-by-default / advisory workflow posture.
+
+WHAT IT DOES
+============
+For each failing test on a PR, the classifier tags the failure as:
+  • test-fix   — test failed, app is fine     → fix the TEST
+  • code-fix   — test failed, app regressed    → fix the CODE
+  • no-action  — test passed                   → nothing
+...so the team never generates no-op tests for genuinely broken code.
+
+SCOPE: P0 + P1 ONLY.
+  • P0 = observe-only (classify, record, NO PR comments).
+  • P1 = post a PR comment with the call + rationale + a MANDATORY 👍/👎 ask.
+  • P2 (proposed diffs / merge-rate) and P3 (zero-shot test generation) are
+    FUTURE/STUBS, documented in docs/PLAYBOOK.md only — do NOT build them.
+
+⚠️ MERGE, DON'T OVERWRITE
+==========================
+If your repository already has any of these files, do NOT blindly replace them
+with the bundled version — open the existing file and merge in the bundled
+content by hand. Files at risk of collision:
+  • .github/workflows/ai-test-classifier.yml   (unique name, rare collision)
+  • .github/copilot-instructions.md             (common; the bundled file uses
+                                                 <!-- BEGIN ai-test-classifier
+                                                 instructions --> / <!-- END -->
+                                                 markers so you can merge the
+                                                 classifier block in alongside
+                                                 the security workstream's
+                                                 <!-- BEGIN ai-review-hooks -->
+                                                 block in the same file)
+  • README.md                                   (do not overwrite your project README)
+
+Layout note:
+  • .skills/ is the canonical, tool-neutral source of truth and IS committed.
+  • .claude/, .codex/, and .github/copilot/ are PER-DEVELOPER derived
+    directories created locally by scripts/sync-skills.sh based on the
+    developer's AI_REVIEW_TOOL setting. They are gitignored.
+
+Assumptions:
+  • You have this bundle unpacked into a directory we'll call $BUNDLE.
+  • You want to install into a git repository at $REPO_ROOT.
+  • Both $BUNDLE and $REPO_ROOT are absolute paths.
+
+Steps:
+
+------------------------------------------------------------------------------
+1. Set variables for the install session
+------------------------------------------------------------------------------
+
+    export BUNDLE=/path/to/this/bundle
+    export REPO_ROOT=/path/to/your/repository
+    cd "$REPO_ROOT"
+
+------------------------------------------------------------------------------
+2. Create directory structure
+------------------------------------------------------------------------------
+
+    mkdir -p testing/classifier/docs
+    mkdir -p testing/classifier/.github/workflows
+    mkdir -p testing/classifier/.skills/test-classifier/scripts
+    mkdir -p testing/metrics
+    # (the derived .claude/, .codex/, or .github/copilot/skills/ directory is
+    # created later by scripts/sync-skills.sh)
+
+------------------------------------------------------------------------------
+3. Copy files into place
+------------------------------------------------------------------------------
+
+    # Docs
+    cp "$BUNDLE/testing/classifier/docs/PLAYBOOK.md" \
+       testing/classifier/docs/PLAYBOOK.md
+    cp "$BUNDLE/testing/classifier/docs/SETUP.md" \
+       testing/classifier/docs/SETUP.md
+
+    # Top-level orientation
+    cp "$BUNDLE/testing/classifier/README.md"   testing/classifier/README.md
+    cp "$BUNDLE/testing/classifier/INSTALL.txt"  testing/classifier/INSTALL.txt
+
+    # Canonical classification skill + dispatcher
+    cp "$BUNDLE/testing/classifier/.skills/test-classifier/SKILL.md" \
+       testing/classifier/.skills/test-classifier/SKILL.md
+    cp "$BUNDLE/testing/classifier/.skills/test-classifier/scripts/test-classifier-dispatcher.sh" \
+       testing/classifier/.skills/test-classifier/scripts/test-classifier-dispatcher.sh
+
+    # Copilot test-classification instructions
+    # ⚠️ If .github/copilot-instructions.md already exists, do NOT overwrite —
+    # merge the BEGIN/END ai-test-classifier section into your existing file.
+    cp "$BUNDLE/testing/classifier/.github/copilot-instructions.md" \
+       testing/classifier/.github/copilot-instructions.md
+
+    # GitHub Actions workflow (disabled by default; see docs/SETUP.md)
+    cp "$BUNDLE/testing/classifier/.github/workflows/ai-test-classifier.yml" \
+       testing/classifier/.github/workflows/ai-test-classifier.yml
+
+    # Metrics harvester (👍/👎 → Google Sheet / TSV)
+    cp "$BUNDLE/testing/metrics/test_classifier_comments.sh" \
+       testing/metrics/test_classifier_comments.sh
+
+------------------------------------------------------------------------------
+4. Make scripts executable
+------------------------------------------------------------------------------
+
+    chmod +x testing/classifier/.skills/test-classifier/scripts/test-classifier-dispatcher.sh
+    chmod +x testing/metrics/test_classifier_comments.sh
+
+------------------------------------------------------------------------------
+5. Install your chosen AI CLI (pick ONE) — same as security/review
+------------------------------------------------------------------------------
+
+    # Option A — Claude Code
+    npm install -g @anthropic-ai/claude-code
+    claude    # authenticate (interactive, one-time)
+
+    # Option B — OpenAI Codex CLI
+    npm install -g @openai/codex
+    codex login
+
+    # Option C — GitHub Copilot CLI (agentic)
+    npm install -g @github/copilot
+    copilot login
+
+------------------------------------------------------------------------------
+6. Set AI_REVIEW_TOOL (persistent, macOS / zsh)
+------------------------------------------------------------------------------
+
+    echo 'export AI_REVIEW_TOOL=claude' >> ~/.zshrc      # or codex / copilot
+    source ~/.zshrc
+    echo "$AI_REVIEW_TOOL"    # should print: claude
+
+    # If you run the classifier from VS Code / JetBrains / GitHub Desktop, put
+    # it in ~/.zshenv instead — non-interactive shells need that file.
+
+------------------------------------------------------------------------------
+7. Install the GitHub CLI (needed for PR discovery and P1 posting)
+------------------------------------------------------------------------------
+
+    brew install gh        # macOS — or see https://github.com/cli/cli
+    gh auth login          # or set a fine-grained PAT as GH_TOKEN
+                           # (see docs/SETUP.md "Fine-grained PAT setup")
+
+------------------------------------------------------------------------------
+8. Verify
+------------------------------------------------------------------------------
+
+    # Dry run — shows what the dispatcher would do, makes no AI call:
+    testing/classifier/.skills/test-classifier/scripts/test-classifier-dispatcher.sh \
+      --mode p0 --dry-run
+
+------------------------------------------------------------------------------
+9. Run it (Path A — local)
+------------------------------------------------------------------------------
+
+    # P0 — observe-only (classify, record, post nothing):
+    testing/classifier/.skills/test-classifier/scripts/test-classifier-dispatcher.sh \
+      --mode p0
+
+    # P1 — comment + mandatory 👍/👎 (once P0 precision looks trustworthy):
+    testing/classifier/.skills/test-classifier/scripts/test-classifier-dispatcher.sh \
+      --mode p1 --post-comment
+
+------------------------------------------------------------------------------
+10. Enable the GitHub Actions workflow (Path B — optional, per-repo)
+------------------------------------------------------------------------------
+
+    See docs/SETUP.md "Path B" for the full procedure. Quick summary:
+      a. Copy the workflow into your live workflows dir:
+           cp testing/classifier/.github/workflows/ai-test-classifier.yml \
+              .github/workflows/ai-test-classifier.yml
+      b. Settings → Secrets and variables → Actions → Variables:
+           AI_REVIEW_TOOL  = claude | codex | copilot
+           CLASSIFIER_MODE = p0   (start here; switch to p1 later)
+      c. Settings → Secrets and variables → Actions → Secrets:
+           ANTHROPIC_API_KEY or OPENAI_API_KEY  (per chosen tool)
+      d. Edit .github/workflows/ai-test-classifier.yml to uncomment the
+         `pull_request:` trigger (disabled by default).
+
+------------------------------------------------------------------------------
+11. Configure the metrics sink (👍/👎 harvest)
+------------------------------------------------------------------------------
+
+    # Primary — Google Sheet via service-account bearer token:
+    export CLASSIFIER_SHEET_ID=<target Google Sheet ID>
+    export CLASSIFIER_SHEET_TOKEN=<service-account access token>
+    testing/metrics/test_classifier_comments.sh
+
+    # Fallback — TSV/CSV to stdout (the realistic P0 default):
+    testing/metrics/test_classifier_comments.sh --format tsv
+
+------------------------------------------------------------------------------
+Onboarding new team members
+------------------------------------------------------------------------------
+
+    Each new developer needs to:
+      a. Install their chosen AI CLI
+      b. Set AI_REVIEW_TOOL in their shell (.zshenv recommended on macOS)
+      c. Install gh and authenticate (gh auth login) for P1 posting
+
+------------------------------------------------------------------------------
+Done. The classifier tags every test failure as test-fix / code-fix /
+no-action. Start in P0 (observe-only); graduate to P1 (comment + mandatory
+👍/👎) once P0 precision looks trustworthy. P2/P3 are future direction only —
+see docs/PLAYBOOK.md. Security considerations (no PHI/PII in fixtures or
+prompts, propose-diff-then-approve, secrets out of CI logs, FedRAMP) are in
+docs/PLAYBOOK.md §6 and cross-reference the security/review/ pre-commit hooks.

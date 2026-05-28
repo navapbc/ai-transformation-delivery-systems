@@ -1,0 +1,19 @@
+# ── AI test-classifier — derived skill directories ─────────────────────────
+# .skills/ is the canonical, tool-neutral source of truth and IS committed.
+# The directories below are per-developer derived copies produced by
+# scripts/sync-skills.sh based on the developer's AI_REVIEW_TOOL setting.
+# They are intentionally NOT committed so the repo isn't branded with any
+# particular AI tool's directory name.
+#
+# NOTE: .github/copilot-instructions.md and .github/workflows/ai-test-classifier.yml
+# ARE committed — they configure GitHub Copilot's PR review and the GitHub
+# Actions workflow respectively, and are not derived from any other file. Only
+# the .../skills/ subdirectory under each tool's location is gitignored.
+.claude/skills/
+.codex/skills/
+.github/copilot/skills/
+
+# ── Classifier output ──────────────────────────────────────────────────────
+# The workflow writes the per-run classification (P0 record / P1 audit trail)
+# here before uploading it as a CI artifact. Not source-of-truth — don't commit.
+classifier-out/
