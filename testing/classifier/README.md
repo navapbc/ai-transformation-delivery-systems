@@ -56,7 +56,7 @@ testing/classifier/
 ├── INSTALL.txt                                 ← quick install steps
 ├── docs/
 │   ├── PLAYBOOK.md                             ← the prescriptive pilot playbook
-│   └── SETUP.md                                ← Path A (local) + Path B (Actions) setup
+│   └── SETUP.md                                ← reusable workflow (recommended) + local + vendored setup
 ├── .github/
 │   ├── copilot-instructions.md                 ← Copilot test-classification instructions
 │   └── workflows/
@@ -71,12 +71,41 @@ testing/metrics/
 └── test_classifier_comments.sh                 ← harvests 👍/👎 reactions → Google Sheet / TSV
 ```
 
+## Quickstart (CI) — reusable workflow (recommended)
+
+The recommended way to run the classifier in CI is to call the bundle's
+**reusable workflow** with a single pinned `uses:` line — no files copied into
+your repo. Add this caller to your consumer repo and set the API-key secret:
+
+```yaml
+# .github/workflows/ai-test-classifier.yml in the CONSUMER repo
+name: AI test classifier
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+jobs:
+  classify:
+    uses: navapbc/ai-transformation-delivery-systems/.github/workflows/test-classifier.yml@<commit-sha>
+    with:
+      tool: claude        # claude | codex | copilot
+      mode: p0            # p0 (observe-only) | p1 (posts one PR comment)
+    secrets:
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+```
+
+Pin to a commit SHA (not a branch); upgrading is a one-line SHA bump. Start in
+`mode: p0`, then flip to `p1` once P0 precision looks trustworthy. Vendoring
+the workflow file into your repo is the **fallback** for repos that can't use
+reusable workflows — see `docs/SETUP.md` Path C. Full details for all three
+paths are in `docs/SETUP.md`.
+
 ## Start here
 
 1. Read **`docs/PLAYBOOK.md`** — the four-verdict taxonomy, the P0→P1 phasing, the
    metrics loop, and the embedded security-considerations section.
-2. Follow **`docs/SETUP.md`** — Path A to run locally, Path B to enable the
-   GitHub Actions workflow, with the `MODE` (`p0`/`p1`) configuration.
+2. Follow **`docs/SETUP.md`** — Path A (reusable workflow, recommended), Path B
+   (run locally), Path C (vendored workflow fallback), with the `p0`/`p1`
+   phase configuration.
 3. Use **`INSTALL.txt`** for the fast-path file-copy steps.
 
 ## Dispatcher interface

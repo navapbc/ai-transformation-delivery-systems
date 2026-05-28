@@ -4,16 +4,18 @@ This document covers everything needed to run the AI test classifier — the
 tool that tags each CI test failure as **`APPLICATION_BUG`**, **`TEST_BUG`**,
 **`FLAKY_FAILURE`**, or **`ENVIRONMENT_ISSUE`** (see
 [`PLAYBOOK.md`](./PLAYBOOK.md) for the full framing and
-phasing). There are **two independent paths**, and you can use either or both:
+phasing). There are **three independent paths**, and you can use any or all:
 
 | Path | What it does | Who runs it | Setup effort |
 |---|---|---|---|
-| **A. Local dispatcher run** | Developer runs `test-classifier-dispatcher.sh` on their machine against a PR; classifications print to the terminal and (in P1) post as a PR comment via `gh` CLI | Any developer | Low (per developer) |
-| **B. GitHub Actions workflow** | Workflow runs on every PR, classifies failures, and (in P1) posts a comment requesting a 👍/👎, via `GITHUB_TOKEN` | Repo admin enables once | Medium (one-time) |
+| **A. Reusable workflow (recommended)** | Consumer repo adds a tiny caller workflow that references the bundle's reusable workflow with a pinned SHA — no files copied in. Runs on every PR; in P1 posts a 👍/👎 comment | Repo admin enables once | Low (one-time) |
+| **B. Local dispatcher run** | Developer runs `test-classifier-dispatcher.sh` on their machine against a PR; classifications print to the terminal and (in P1) post as a PR comment via `gh` CLI | Any developer | Low (per developer) |
+| **C. Vendored workflow** | Copy the bundle's workflow file into your repo's live workflows dir. Fallback for repos that can't use reusable workflows | Repo admin enables once | Medium (one-time) |
 
-Most pilots use **A + B**: developers can classify locally while iterating,
-and the workflow provides the consistent, recorded backstop that feeds the
-metrics loop.
+Most pilots use **A + B**: the reusable workflow provides the consistent,
+recorded backstop that feeds the metrics loop, and developers can classify
+locally while iterating. Use **C** only when policy forbids referencing an
+external reusable workflow.
 
 This guide mirrors `security/review/docs/PR_REVIEW_SETUP.md` step for step;
 the difference is the classifier's `--mode` (`p0` / `p1`) input and the
@@ -23,16 +25,82 @@ metrics sink, which the security bundle does not have.
 
 ## Contents
 
-1. [Path A — Local dispatcher run](#path-a--local-dispatcher-run)
-2. [Path B — GitHub Actions workflow](#path-b--github-actions-workflow)
-3. [Choosing a phase: `p0` vs `p1`](#choosing-a-phase-p0-vs-p1)
-4. [Fine-grained personal access token setup](#fine-grained-personal-access-token-setup)
-5. [Metrics sink configuration](#metrics-sink-configuration)
-6. [Troubleshooting](#troubleshooting)
+1. [Path A — Reusable workflow (recommended)](#path-a--reusable-workflow-recommended)
+2. [Path B — Local dispatcher run](#path-b--local-dispatcher-run)
+3. [Path C — Vendored workflow](#path-c--vendored-workflow)
+4. [Choosing a phase: `p0` vs `p1`](#choosing-a-phase-p0-vs-p1)
+5. [Fine-grained personal access token setup](#fine-grained-personal-access-token-setup)
+6. [Metrics sink configuration](#metrics-sink-configuration)
+7. [Troubleshooting](#troubleshooting)
 
 ---
 
-## Path A — Local dispatcher run
+## Path A — Reusable workflow (recommended)
+
+This is the recommended way to use the classifier in CI. The bundle ships a
+**reusable workflow** at the repo root —
+`.github/workflows/test-classifier.yml` (with `on: workflow_call`) — that your
+repo calls with a single pinned `uses:` line. **No files are copied into your
+repo.** Upgrading is a one-line SHA bump; there is no vendored copy to drift,
+and provenance is unambiguous.
+
+### Step 1 — Add the caller workflow
+
+Create `.github/workflows/ai-test-classifier.yml` in your **consumer** repo:
+
+```yaml
+# .github/workflows/ai-test-classifier.yml in the CONSUMER repo
+name: AI test classifier
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+jobs:
+  classify:
+    uses: navapbc/ai-transformation-delivery-systems/.github/workflows/test-classifier.yml@<commit-sha>
+    with:
+      tool: claude        # claude | codex | copilot
+      mode: p0            # p0 (observe-only) | p1 (posts one PR comment)
+    secrets:
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+```
+
+**Pin to a commit SHA, not a branch.** A branch ref moves under you; a SHA is
+reproducible and is the only ref that gives you a clear, auditable provenance.
+To upgrade, bump the SHA. That is the entire upgrade procedure — no file copy,
+no merge.
+
+In this path, `tool` and `mode` are **workflow inputs** in the caller's
+`with:` block — **not** repository variables. (Repository variables only apply
+to the local and vendored paths below.)
+
+### Step 2 — Set the API-key secret
+
+Even though no files are vendored, the consumer repo **must still set the
+API-key secret** for the chosen tool, and pass it through the caller's
+`secrets:` block as shown above.
+
+1. **Settings** → **Secrets and variables** → **Actions** → **Secrets** tab.
+2. **New repository secret**, matching your chosen tool:
+
+| Tool | Secret name | Pass through as | Where to get the value |
+|---|---|---|---|
+| `claude`  | `ANTHROPIC_API_KEY` | `ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}` | <https://console.anthropic.com/settings/keys> |
+| `codex`   | `OPENAI_API_KEY`    | `OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}` | <https://platform.openai.com/api-keys> |
+| `copilot` | (none — uses `GITHUB_TOKEN`) | n/a | n/a |
+
+Only set the secret matching your chosen `tool` input.
+
+### Step 3 — Start in `p0`, then flip to `p1`
+
+Start with `mode: p0` (observe-only — records, posts nothing). Once P0
+precision looks trustworthy (see [Choosing a phase](#choosing-a-phase-p0-vs-p1)
+and the metrics loop in PLAYBOOK §5), flip the caller's `mode:` input to `p1`
+and push. There is no repository variable to change in this path — the phase
+lives in the caller workflow.
+
+---
+
+## Path B — Local dispatcher run
 
 This is the developer-initiated path: a developer working on a branch runs the
 local dispatcher to classify the failing tests on the PR they're working on.
@@ -127,7 +195,12 @@ Plus the shared dispatcher-library flags (identical to security/review):
 
 ---
 
-## Path B — GitHub Actions workflow
+## Path C — Vendored workflow
+
+> **Fallback path.** Use this only for repos that can't use reusable workflows
+> (e.g. policy forbids referencing an external `uses:`). It requires copying the
+> bundle's workflow file into your repo. If you can, prefer
+> [Path A — Reusable workflow](#path-a--reusable-workflow-recommended) instead.
 
 A workflow file lives at
 `testing/classifier/.github/workflows/ai-test-classifier.yml`. It is
@@ -170,14 +243,14 @@ a secret.
 
 Only set the secret matching your chosen tool. The others can remain blank.
 
-### Step 4 — Set the phase via `CLASSIFIER_MODE`
+### Step 4 — Set the phase via `AI_CLASSIFIER_MODE`
 
 The classifier's phase is a repository **variable** read by the `pull_request`
 trigger, and is also exposed as a `workflow_dispatch` input for manual runs.
 
 1. **Settings** → **Secrets and variables** → **Actions** → **Variables**.
 2. **New repository variable**.
-3. Name: `CLASSIFIER_MODE`
+3. Name: `AI_CLASSIFIER_MODE`
 4. Value: `p0` (observe-only) or `p1` (comment + mandatory 👍/👎).
 
 **Start in `p0`.** Switch to `p1` only after P0 precision looks trustworthy
@@ -228,7 +301,7 @@ on:
 ```
 
 Commit and push. The next PR triggers a classification at whatever phase
-`CLASSIFIER_MODE` is set to.
+`AI_CLASSIFIER_MODE` is set to.
 
 ### Step 7 — Optional: enable gating (out of pilot scope)
 
@@ -240,7 +313,7 @@ workflow's run step:
 ```yaml
 testing/classifier/.skills/test-classifier/scripts/test-classifier-dispatcher.sh \
   --pr "${PR_NUMBER}" \
-  --mode "${CLASSIFIER_MODE}" \
+  --mode "${AI_CLASSIFIER_MODE}" \
   --post-comment
   # --gate
 ```
@@ -264,7 +337,8 @@ makes the classifier a true merge gate. Use with care — a false
 
 **Graduation rule of thumb:** run `p0` until you have enough recorded
 classifications to read a stable per-class precision (see PLAYBOOK §5), then
-flip `CLASSIFIER_MODE` to `p1`. Do not skip P0 — a P1 comment a team doesn't
+flip the phase to `p1` (the caller's `mode:` input in Path A, or the
+`AI_CLASSIFIER_MODE` variable in Path C). Do not skip P0 — a P1 comment a team doesn't
 trust trains them to ignore the bot, which poisons the 👍/👎 signal.
 
 ---
@@ -389,7 +463,7 @@ Check the workflow logs:
 
 - `AI_REVIEW_TOOL` variable not set → the validation step fails fast.
 - API key secret not set → the AI CLI errors.
-- `CLASSIFIER_MODE` is `p0` → posting is intentionally skipped (observe-only).
+- `AI_CLASSIFIER_MODE` is `p0` → posting is intentionally skipped (observe-only).
 - AI returned no result marker (`<<<AI_REVIEW_RESULT:...>>>`) → the dispatcher
   errors and exits non-zero. This can happen on transient model issues; retry.
 

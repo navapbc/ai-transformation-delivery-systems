@@ -247,23 +247,50 @@ and a fuller troubleshooting matrix, see [`SETUP.md`](./SETUP.md).
   programmatically (most teams already have this).
 - You have picked an AI tool: `claude`, `codex`, or `copilot`.
 
-### Step 1 — Copy the workflow into place
+### Step 1 — Wire up the workflow (recommended: reusable workflow)
 
-The bundle ships a workflow at
-`testing/classifier/.github/workflows/ai-test-classifier.yml`. Copy it to your
-repo's live workflows directory:
+The recommended approach copies **nothing** into your repo. The bundle ships a
+**reusable workflow** at the repo root —
+`.github/workflows/test-classifier.yml` (`on: workflow_call`) — that your repo
+calls with a single pinned `uses:` line. Add this caller to your consumer repo:
 
-```bash
-cp testing/classifier/.github/workflows/ai-test-classifier.yml \
-   .github/workflows/ai-test-classifier.yml
+```yaml
+# .github/workflows/ai-test-classifier.yml in the CONSUMER repo
+name: AI test classifier
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+jobs:
+  classify:
+    uses: navapbc/ai-transformation-delivery-systems/.github/workflows/test-classifier.yml@<commit-sha>
+    with:
+      tool: claude        # claude | codex | copilot
+      mode: p0            # p0 (observe-only) | p1 (posts one PR comment)
+    secrets:
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
 ```
 
-> **Merge, don't overwrite.** If you already have a workflow with that
-> name, open both files and merge — don't clobber an existing one.
+Pin to a commit SHA, not a branch — a SHA is reproducible and gives clear
+provenance. Upgrading is a one-line SHA bump: no vendored copy to drift, no
+merge. In this path `tool` and `mode` are **workflow inputs** in the caller's
+`with:` block, not repository variables; you can skip Step 2 and Step 4 below
+(they apply only to the vendored fallback). You still set the API-key secret
+(Step 3) and pass it through `secrets:` as shown.
 
-The workflow ships **disabled**: its only trigger is `workflow_dispatch`, with
-a commented-out `pull_request:` block and a banner explaining how to enable it.
-This is identical to the security workstream's posture.
+> **Fallback — vendoring.** If your repo can't reference an external reusable
+> workflow (e.g. policy forbids it), copy the bundle's workflow file in instead:
+>
+> ```bash
+> cp testing/classifier/.github/workflows/ai-test-classifier.yml \
+>    .github/workflows/ai-test-classifier.yml
+> ```
+>
+> **Merge, don't overwrite** if you already have a workflow with that name. The
+> vendored workflow ships **disabled** (only `workflow_dispatch`, with a
+> commented-out `pull_request:` block and a banner explaining how to enable it),
+> identical to the security workstream's posture. The remaining steps below
+> (variables, enabling the trigger) apply to this vendored fallback; see
+> [`SETUP.md`](./SETUP.md) Path C for the full vendored walkthrough.
 
 ### Step 2 — Set the AI tool as a repository variable
 
@@ -296,14 +323,14 @@ this two ways:
 
 - As a `workflow_dispatch` **input** named `mode` (default `p0`) so you can run
   a manual classification at either phase without editing the file.
-- As a repository **variable** `CLASSIFIER_MODE` that the `pull_request`
+- As a repository **variable** `AI_CLASSIFIER_MODE` that the `pull_request`
   trigger reads, so the automatic path has a phase too.
 
 **Start every pilot in `p0`.** Only switch to `p1` once P0 precision looks
 trustworthy (see §5). To switch:
 
 1. **Settings** → **Secrets and variables** → **Actions** → **Variables**.
-2. Add/edit `CLASSIFIER_MODE` = `p0` (observe-only) or `p1` (comment + 👍/👎).
+2. Add/edit `AI_CLASSIFIER_MODE` = `p0` (observe-only) or `p1` (comment + 👍/👎).
 
 ### Step 5 — Confirm workflow permissions (least privilege)
 
@@ -350,7 +377,7 @@ on:
 ```
 
 Commit and push. The next PR triggers a classification at whatever phase
-`CLASSIFIER_MODE` is set to.
+`AI_CLASSIFIER_MODE` is set to.
 
 ### Step 7 — (Optional, later) enable gating
 
@@ -362,7 +389,7 @@ workflow's run step:
 ```yaml
 testing/classifier/.skills/test-classifier/scripts/test-classifier-dispatcher.sh \
   --pr "${PR_NUMBER}" \
-  --mode "${CLASSIFIER_MODE}" \
+  --mode "${AI_CLASSIFIER_MODE}" \
   --post-comment
   # --gate
 ```

@@ -182,7 +182,7 @@ Steps:
               .github/workflows/ai-test-classifier.yml
       b. Settings → Secrets and variables → Actions → Variables:
            AI_REVIEW_TOOL  = claude | codex | copilot
-           CLASSIFIER_MODE = p0   (start here; switch to p1 later)
+           AI_CLASSIFIER_MODE = p0   (start here; switch to p1 later)
       c. Settings → Secrets and variables → Actions → Secrets:
            ANTHROPIC_API_KEY or OPENAI_API_KEY  (per chosen tool)
       d. Edit .github/workflows/ai-test-classifier.yml to uncomment the
