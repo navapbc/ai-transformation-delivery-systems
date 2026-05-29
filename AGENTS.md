@@ -12,26 +12,26 @@ for Nava delivery teams. Two independent workstreams, each consumed separately:
 ## If your task is "set up / add / use the test classifier in this repo"
 
 You are almost certainly being asked to install it in a **consumer** repo. Do
-NOT vendor or copy files. Read **one** short doc and follow it:
+NOT vendor or copy files. Read **one** short doc and follow it (this repo is
+public — fetch the raw URL directly, no auth):
 
 ```
-gh api "repos/navapbc/ai-transformation-delivery-systems/contents/testing/classifier/AGENT_INSTALL.md?ref=test-classifier-v0" --jq .content | base64 -d
+curl -fsSL https://raw.githubusercontent.com/navapbc/ai-transformation-delivery-systems/test-classifier-v0/testing/classifier/AGENT_INSTALL.md
 ```
 
-`AGENT_INSTALL.md` is ~40 lines and contains the exact caller workflow (with the
-pinned SHA already filled in), the two manual steps to relay to the human, and
-the success criteria. It is the whole task. Only fall back to
-`testing/classifier/docs/SETUP.md` (long-form, for humans) if the install doc
-doesn't cover your case.
+`AGENT_INSTALL.md` is ~40 lines and contains the exact caller workflow (pinned to
+the `test-classifier-v0` tag), the manual step to relay to the human (set the
+`ANTHROPIC_API_KEY` secret), and the success criteria. It is the whole task.
+Only fall back to `testing/classifier/docs/SETUP.md` (long-form, for humans) if
+the install doc doesn't cover your case.
 
-## Fetching files from this (private) repo
+## Fetching files from this repo
 
-This repo is private, so `WebFetch` of github.com blob URLs returns 404. Use the
-GitHub API with an authenticated `gh`, and **quote the URL** (the `?ref=` makes
-zsh treat `?` as a glob):
+This repo is **public**, so fetch raw files directly over HTTPS — no `gh`, no
+auth, no base64. Pin to the release tag `test-classifier-v0`:
 
 ```
-gh api "repos/navapbc/ai-transformation-delivery-systems/contents/<path>?ref=test-classifier-v0" --jq .content | base64 -d
+curl -fsSL https://raw.githubusercontent.com/navapbc/ai-transformation-delivery-systems/test-classifier-v0/<path>
 ```
 
 ## Conventions (if you work IN this repo, not just consume it)
