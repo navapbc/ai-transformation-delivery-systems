@@ -29,6 +29,9 @@
 #   scripts/sync-skills.sh --check            # exit non-zero if a sync is
 #                                             # needed but hasn't been run;
 #                                             # only checks resolved targets
+#   scripts/sync-skills.sh --dry-run          # alias for --check (matches the
+#                                             # naming used by every other
+#                                             # dispatcher in this project)
 #   scripts/sync-skills.sh --targets all      # one-shot override of targets
 #   scripts/sync-skills.sh --targets claude,codex --check
 
@@ -65,7 +68,11 @@ TARGETS_ARG=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --check)
+    --check|-n|--dry-run)
+      # --dry-run / -n is an alias for --check, matching the naming used by
+      # every other dispatcher in this project (.skills/*/scripts/*.sh).
+      # Behavior is identical: report drift, exit non-zero if any, write
+      # nothing.
       CHECK_ONLY=1
       shift
       ;;
@@ -82,7 +89,7 @@ while [[ $# -gt 0 ]]; do
       shift
       ;;
     -h|--help)
-      sed -n '2,33p' "$0" | sed 's/^# \{0,1\}//'
+      sed -n '2,36p' "$0" | sed 's/^# \{0,1\}//'
       exit 0
       ;;
     *)
