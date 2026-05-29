@@ -22,10 +22,11 @@
 #         ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
 #         # OPENAI_API_KEY:  ${{ secrets.OPENAI_API_KEY }}   # only if tool=codex
 #
-# Pin to a SHA (not a branch) for reproducibility: the consumer always runs an
-# exact, reviewed version of the dispatcher, and there is nothing copied into
-# their repo to drift. To update, bump the SHA in the caller — that is the whole
-# upgrade procedure.
+# Pin to the release tag (test-classifier-v0) for a reproducible, reviewed
+# version, with nothing copied into the consumer repo to drift. To upgrade,
+# bump the tag in the caller — that is the whole upgrade procedure. (The source
+# repo is public, so the consumer's default token can both resolve this
+# reusable workflow and check out its scripts; no PAT or access setting needed.)
 
 name: AI test classifier (reusable)
 
@@ -42,9 +43,10 @@ on:
         default: 'p0'
       ref:
         description: >
-          Git ref of THIS repo to fetch the classifier scripts from. Defaults to
-          the ref the caller pinned via uses:@<ref>. Override only to test an
-          unreleased bundle version.
+          Git ref (tag/branch/SHA) of the source repo to check out the
+          classifier scripts from. Defaults to the release tag
+          'test-classifier-v0'. Override only to test an unreleased version;
+          keep it in sync with the tag you pinned the uses: line to.
         type: string
         default: ''
     secrets:
@@ -82,34 +84,27 @@ jobs:
           fetch-depth: 0
           ref: ${{ github.event.pull_request.head.sha }}
 
-      # 2. THIS bundle's scripts, pinned to the same version the caller referenced
-      #    (or an explicit override). We fetch a source tarball via the GitHub
-      #    API rather than a second `actions/checkout`, because checkout's token
-      #    is scoped to the CALLER's repo and cannot read this (possibly private)
-      #    source repo. The API tarball is fetched with the same GITHUB_TOKEN,
-      #    which works once the org's Actions "accessibility" setting allows this
-      #    repo's reusable workflow to be called by other org repos — the same
-      #    prerequisite the `uses:` reference itself already requires. No PAT.
-      #
-      #    The bundle's testing/ tree is staged into the caller's workspace so
-      #    every repo-relative path the dispatcher and its prompt use (e.g.
-      #    testing/classifier/.skills/test-classifier/SKILL.md) resolves exactly
-      #    as in a local or vendored install — one dispatcher code path for all.
-      - name: Fetch and stage the classifier bundle (pinned)
-        env:
-          GH_TOKEN: ${{ github.token }}
-          BUNDLE_REF: ${{ inputs.ref != '' && inputs.ref || github.sha }}
+      # 2. THIS bundle's scripts. The source repo is public, so a plain
+      #    actions/checkout of it works with the default token — no tarball, no
+      #    PAT, no access gymnastics. We pin to `inputs.ref` (a tag/SHA the
+      #    caller can override), defaulting to the release tag so the scripts
+      #    match the workflow version. Lands in ./.classifier-bundle.
+      - name: Check out the classifier bundle (pinned)
+        uses: actions/checkout@v4
+        with:
+          repository: navapbc/ai-transformation-delivery-systems
+          ref: ${{ inputs.ref != '' && inputs.ref || 'test-classifier-v0' }}
+          path: .classifier-bundle
+          fetch-depth: 1
+
+      # Stage the bundle's testing/ tree into the caller's workspace so every
+      # repo-relative path the dispatcher and its prompt use (e.g.
+      # testing/classifier/.skills/test-classifier/SKILL.md) resolves exactly as
+      # in a local or vendored install — one dispatcher code path for all.
+      - name: Stage the bundle into the workspace
         run: |
           set -euo pipefail
-          tmp="$(mktemp -d)"
-          # Tarball of the source repo at the pinned ref. The archive's single
-          # top-level dir is named <owner>-<repo>-<sha>; strip it on extract.
-          gh api "repos/navapbc/ai-transformation-delivery-systems/tarball/${BUNDLE_REF}" \
-            > "$tmp/bundle.tgz"
-          mkdir -p "$tmp/extract"
-          tar -xzf "$tmp/bundle.tgz" -C "$tmp/extract" --strip-components=1
-          cp -R "$tmp/extract/testing" "$GITHUB_WORKSPACE/testing"
-          rm -rf "$tmp"
+          cp -R .classifier-bundle/testing "$GITHUB_WORKSPACE/testing"
           chmod +x testing/classifier/.skills/_lib/ai-classifier-dispatch.sh
           chmod +x testing/classifier/.skills/test-classifier/scripts/test-classifier-dispatcher.sh
           chmod +x testing/classifier/scripts/sync-skills.sh
