@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 
 aws securityhub get-findings \
     --filters '{
