@@ -16,8 +16,8 @@ the correct SHA — and write its exact bytes to the consumer repo. One command:
 
 ```
 mkdir -p .github/workflows && \
-gh api "repos/navapbc/ai-transformation-delivery-systems/contents/testing/classifier/caller-workflow.yml?ref=test-classifier-v0" \
-  --jq .content | base64 -d > .github/workflows/ai-test-classifier.yml
+curl -fsSL https://raw.githubusercontent.com/navapbc/ai-transformation-delivery-systems/test-classifier-v0/testing/classifier/caller-workflow.yml \
+  -o .github/workflows/ai-test-classifier.yml
 ```
 
 That writes `.github/workflows/ai-test-classifier.yml` verbatim — no retyping,
@@ -71,4 +71,4 @@ Print this to the user verbatim — these are out-of-band and block the run:
 
 Full guide (humans, or when the above fails): `testing/classifier/docs/SETUP.md`
 at the same SHA. Fetch repo files with (quote the URL — the `?` is a shell glob):
-`gh api "repos/navapbc/ai-transformation-delivery-systems/contents/<path>?ref=test-classifier-v0" --jq .content | base64 -d`
+`curl -fsSL https://raw.githubusercontent.com/navapbc/ai-transformation-delivery-systems/test-classifier-v0/<path>`
