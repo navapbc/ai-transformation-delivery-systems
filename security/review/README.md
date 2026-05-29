@@ -759,7 +759,7 @@ Output goes to `audit-reports/`:
 
 ```
 audit-reports/
-├── _INDEX.md                                ← cross-batch summary, severity totals
+├── _INDEX.md                                ← start here; findings-first triage view
 ├── _findings.sarif                          ← if --sarif (merged across batches)
 ├── src__api__auth.md                        ← per-directory finding reports
 ├── src__api__users.md                       ← (slashes in paths → __ in filenames)
@@ -769,9 +769,23 @@ audit-reports/
 
 ### Reading the output
 
-Start at `audit-reports/_INDEX.md`. It contains a table with one row per
-directory, columns for each severity, and grand totals. Recommended
-triage order:
+Start at `audit-reports/_INDEX.md`. It's built **findings-first** so you
+never have to hunt through the clean reports:
+
+- A **"Directories with findings"** table at the top lists *only* the
+  directories that have findings, sorted **worst-first** (by Critical, then
+  High, Medium, Low), with per-severity columns and grand totals. Each
+  directory links straight to its report's findings (`…/<dir>.md#findings`).
+- The **clean directories** are reduced to a count and a collapsed
+  `<details>` list at the bottom — present for completeness, out of the way.
+- A header line summarizes the split, e.g. `Directories audited: 152 (8
+  with findings, 144 clean)`.
+
+So in a typical repo where most directories are clean, you open one file and
+immediately see the handful that need attention, highest severity first. If
+nothing was found, the top section is replaced with a ✅ clean-bill note.
+
+Recommended triage order (the index repeats this):
 
 1. **All Critical findings, every directory** — same-day attention
 2. **High findings in security-sensitive directories** (auth, payments,
@@ -780,6 +794,12 @@ triage order:
 4. **Medium and Low findings** — review for patterns; a single recurring
    Medium across many files often indicates a systemic gap worth a
    focused improvement project rather than per-instance fixes
+
+> **Tip:** to list the report files that contain findings directly from the
+> shell (clean reports have no finding entries):
+> ```bash
+> grep -rl '^#### ' audit-reports/
+> ```
 
 ### Resume mode (default)
 
