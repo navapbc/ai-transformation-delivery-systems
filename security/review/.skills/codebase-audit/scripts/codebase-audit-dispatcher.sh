@@ -207,7 +207,10 @@ audit::is_reviewable_extension() {
   esac
 
   # Binary-by-extension — skip
-  case "${path,,}" in
+  # (lowercase the path; bash 3.2 has no ${var,,} expansion)
+  local lower
+  lower="$(printf '%s' "${path}" | tr '[:upper:]' '[:lower:]')"
+  case "${lower}" in
     *.png|*.jpg|*.jpeg|*.gif|*.ico|*.svg|*.webp|*.bmp|*.tiff|\
     *.mp3|*.mp4|*.mov|*.avi|*.webm|*.ogg|*.wav|\
     *.pdf|*.zip|*.tar|*.tar.gz|*.tgz|*.gz|*.bz2|*.xz|*.7z|*.rar|\
@@ -223,9 +226,12 @@ audit::is_reviewable_extension() {
 }
 
 audit::plan_batches() {
-  # Emit one line per batch: <dir>\t<file>\t<file>\t...
-  # First, accumulate files per directory.
-  local -A dir_files=()
+  # Emit one line per batch: <dir>\t<file>|<file>|...
+  #
+  # bash 3.2 compatible: macOS ships bash 3.2, which has no associative
+  # arrays or `mapfile`. Instead of accumulating files into a dir-keyed map,
+  # we emit <dir>\t<file> pairs, sort by directory (a tab-led sort groups
+  # each directory's files together), and coalesce adjacent rows with awk.
   local file dir
   while IFS= read -r file; do
     [[ -z "${file}" ]] && continue
@@ -233,24 +239,18 @@ audit::plan_batches() {
     if ! audit::is_reviewable_extension "${file}"; then continue; fi
     dir="$(dirname "${file}")"
     [[ "${dir}" == "." ]] && dir="(root)"
-    if [[ -z "${dir_files[${dir}]+x}" ]]; then
-      dir_files[${dir}]="${file}"
-    else
-      dir_files[${dir}]+=$'\n'"${file}"
-    fi
-  done < <(audit::list_files)
-
-  # Handle empty result safely (set -u guard for empty associative arrays).
-  if (( ${#dir_files[@]} == 0 )); then
-    return 0
-  fi
-
-  # Emit batches in sorted-directory order.
-  local -a sorted_dirs=()
-  mapfile -t sorted_dirs < <(printf '%s\n' "${!dir_files[@]}" | LC_ALL=C sort)
-  for dir in "${sorted_dirs[@]}"; do
-    printf '%s\t%s\n' "${dir}" "$(echo "${dir_files[${dir}]}" | tr '\n' '|')"
-  done
+    printf '%s\t%s\n' "${dir}" "${file}"
+  done < <(audit::list_files) | LC_ALL=C sort | awk -F'\t' '
+    {
+      if ($1 != cur) {
+        if (cur != "") { print cur "\t" files }
+        cur = $1; files = $2
+      } else {
+        files = files "|" $2
+      }
+    }
+    END { if (cur != "") print cur "\t" files }
+  '
 }
 
 # ── Output path helper ──────────────────────────────────────────────────────
@@ -486,8 +486,13 @@ main() {
   mkdir -p "${OUTPUT_DIR}"
 
   # Build the batch plan.
+  # (bash 3.2 has no `mapfile`; read the lines into the array by hand.)
   local -a batches=()
-  mapfile -t batches < <(audit::plan_batches)
+  local _batch_line
+  while IFS= read -r _batch_line; do
+    [[ -z "${_batch_line}" ]] && continue
+    batches+=("${_batch_line}")
+  done < <(audit::plan_batches)
 
   if (( ${#batches[@]} == 0 )); then
     ai_review::warn "No reviewable directories found under ${SCOPE_ROOT:-the repo root}."
