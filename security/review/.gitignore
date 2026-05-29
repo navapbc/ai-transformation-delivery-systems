@@ -1,0 +1,20 @@
+# ── AI-assisted review hooks — derived skill directories ───────────────────
+# .skills/ is the canonical, tool-neutral source of truth and IS committed.
+# The directories below are per-developer derived copies produced by
+# scripts/sync-skills.sh based on the developer's AI_REVIEW_TOOL setting.
+# They are intentionally NOT committed so the repo isn't branded with any
+# particular AI tool's directory name.
+#
+# NOTE: .github/copilot-instructions.md, .github/instructions/, and
+# .github/workflows/ai-pr-review.yml ARE committed — they configure GitHub
+# Copilot's PR auto-review and the GitHub Actions workflow respectively,
+# and they are not derived from any other file. Only the .../skills/
+# subdirectory under each tool's location is gitignored.
+.claude/skills/
+.codex/skills/
+.github/copilot/skills/
+
+# ── Codebase audit output ──────────────────────────────────────────────────
+# Audit reports are for human triage, not source-of-truth. Remove this line
+# if your team prefers to commit audit baselines for historical comparison.
+audit-reports/

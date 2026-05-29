@@ -1,0 +1,98 @@
+# .pre-commit-config.yaml
+#
+# Pre-commit hooks for AI-assisted code security and IaC compliance review.
+#
+# Hooks:
+#   • code-security      — runs the code-security skill on every commit
+#   • iac-compliance     — runs the iac-compliance skill when IaC files are
+#                          present in the staged diff
+#   • skills-in-sync     — fails if SKILL.md was edited but sync-skills.sh
+#                          was not run (keeps .claude/, .codex/, and
+#                          .github/copilot/ copies identical)
+#
+# Setup instructions: see README.md
+#
+# To install hooks:    pre-commit install
+# To run manually:     pre-commit run code-security
+#                  or: pre-commit run code-security --all-files
+#
+# Both review hooks require the AI_REVIEW_TOOL environment variable to be set
+# to one of: claude | codex | copilot. See README.md, section "AI tool
+# selection (AI_REVIEW_TOOL)".
+
+repos:
+  - repo: local
+    hooks:
+
+      # ── Code security review ──────────────────────────────────────────
+      - id: code-security
+        name: AI-assisted code security review
+        language: script
+        entry: .skills/code-security/scripts/code-security-hook-dispatcher.sh
+        # The dispatcher itself decides what to do based on the staged diff.
+        # We do not constrain by file type — secrets / PII / PHI can appear
+        # in any file.
+        types: []
+        pass_filenames: false
+        always_run: true
+        verbose: true
+        stages: [pre-commit]
+
+      # ── IaC compliance review ─────────────────────────────────────────
+      - id: iac-compliance
+        name: AI-assisted IaC compliance review (CMS ARS 5.1 / NIST 800-53 Rev 5)
+        language: script
+        entry: .skills/iac-compliance/scripts/iac-compliance-hook-dispatcher.sh
+        # File filter at the pre-commit layer for fast short-circuit; the
+        # dispatcher's own filter is a defense-in-depth second check.
+        types: []
+        files: >-
+          (?x)^(
+            .*\.tf$|
+            .*\.tfvars$|
+            .*\.tf\.json$|
+            .*\.bicep$|
+            .*\.bicepparam$|
+            .*\.hcl$|
+            .*\.template\.json$|
+            .*\.template\.ya?ml$|
+            .*\.ya?ml$|
+            cdk\.json$|
+            Pulumi\.ya?ml$
+          )$
+        pass_filenames: false
+        always_run: false
+        verbose: true
+        stages: [pre-commit]
+
+      # ── Skill-file synchronization guard ──────────────────────────────
+      # The canonical SKILL.md lives under .skills/<skill>/ (tool-neutral
+      # source of truth). The .claude/, .codex/, and .github/copilot/
+      # copies are derived — materialized by scripts/sync-skills.sh for
+      # whichever AI tool(s) the developer has selected via
+      # AI_REVIEW_TOOL / AI_REVIEW_SYNC_TARGETS. This hook runs sync-
+      # skills.sh in --check mode and fails if any derived copy is out
+      # of date, so a SKILL.md edit can't slip in without re-running
+      # scripts/sync-skills.sh.
+      - id: skills-in-sync
+        name: Skill files in sync across AI-tool locations
+        language: script
+        entry: scripts/sync-skills.sh
+        args: ['--check']
+        # Fire on edits to the canonical file (the common case) AND on
+        # edits to any derived copy (rare but possible — e.g., a developer
+        # accidentally hand-edits a derived file instead of the canonical).
+        # Including the canonical pattern is essential: the documented
+        # workflow has developers edit .skills/<skill>/SKILL.md, so without
+        # it the hook would silently let drift slip through.
+        files: >-
+          (?x)^(
+            \.skills/[^/]+/SKILL\.md$|
+            \.claude/skills/[^/]+/SKILL\.md$|
+            \.codex/skills/[^/]+/SKILL\.md$|
+            \.github/copilot/skills/[^/]+/SKILL\.md$
+          )$
+        pass_filenames: false
+        always_run: false
+        verbose: true
+        stages: [pre-commit]
