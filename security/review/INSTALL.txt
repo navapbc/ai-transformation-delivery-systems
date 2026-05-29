@@ -50,23 +50,20 @@ Steps:
     mkdir -p .skills/pr-review/scripts
     mkdir -p .skills/codebase-audit/scripts
     mkdir -p .github/instructions
-    mkdir -p .github/workflows
-    mkdir -p docs
     mkdir -p scripts
     # (the derived .claude/, .codex/, or .github/copilot/skills/ directory
     # is created later by scripts/sync-skills.sh)
 
 ------------------------------------------------------------------------------
-3. Copy files into place
+3. Copy files into place (or merge!)
 ------------------------------------------------------------------------------
 
     # Top-level
     cp "$BUNDLE/.pre-commit-config.yaml"  .pre-commit-config.yaml
-    cp "$BUNDLE/README.md"                README.md
 
     # Append the bundled .gitignore snippet to your existing .gitignore
     # (or create one if you don't have it yet).
-    cat "$BUNDLE/.gitignore" >> .gitignore
+    cat "$BUNDLE/.gitignore" >> .gitignore 
 
     # Shared dispatch library
     cp "$BUNDLE/.skills/_lib/ai-review-dispatch.sh" \
@@ -109,14 +106,6 @@ Steps:
     cp "$BUNDLE/.github/instructions/scripts.instructions.md" \
        .github/instructions/scripts.instructions.md
 
-    # PR-review GitHub Actions workflow (disabled by default; see docs)
-    cp "$BUNDLE/.github/workflows/ai-pr-review.yml" \
-       .github/workflows/ai-pr-review.yml
-
-    # PR-review setup documentation
-    cp "$BUNDLE/docs/PR_REVIEW_SETUP.md" \
-       docs/PR_REVIEW_SETUP.md
-
     # Sync utility
     cp "$BUNDLE/scripts/sync-skills.sh" scripts/sync-skills.sh
 
@@ -132,7 +121,7 @@ Steps:
     chmod +x scripts/sync-skills.sh
 
 ------------------------------------------------------------------------------
-5. Install your chosen AI CLI (pick ONE)
+5. Install your chosen AI CLI (if not already installed - pick ONE)
 ------------------------------------------------------------------------------
 
     # Option A — Claude Code
@@ -201,8 +190,6 @@ Steps:
             .github/copilot-instructions.md \
             .github/instructions/ \
             .github/workflows/ai-pr-review.yml \
-            docs/ \
-            README.md
     git commit -m "chore: add AI-assisted code review (pre-commit + PR-level)"
 
 ------------------------------------------------------------------------------
@@ -212,8 +199,9 @@ Onboarding new team members
     Each new developer needs to:
       a. Install pre-commit + their chosen AI CLI
       b. Set AI_REVIEW_TOOL in their shell (.zshenv recommended on macOS)
-      c. Run: scripts/sync-skills.sh
-      d. Run: pre-commit install
+      c. Run: scripts/sync-skills.sh *
+      d. Run: pre-commit install *
+      * Necessary for a fresh clone as well
 
     Developers who want to post PR-review comments locally additionally need:
       e. Install the GitHub CLI: brew install gh
