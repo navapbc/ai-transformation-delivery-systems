@@ -63,8 +63,9 @@ dispatcher:
      b. Otherwise, invoke AI with this skill + the directory scope
      c. AI produces a per-directory report
      d. dispatcher writes audit-reports/<dir>.md
-  3. After all directories: produce audit-reports/_INDEX.md summarizing
-     findings across the whole audit
+  3. After all directories: produce audit-reports/_INDEX.md — a
+     findings-first triage view that lists directories with findings
+     worst-first and collapses the clean ones out of the way
   4. Optionally also emit audit-reports/_findings.sarif
 ```
 

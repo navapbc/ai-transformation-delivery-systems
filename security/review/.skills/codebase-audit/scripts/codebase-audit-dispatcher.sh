@@ -368,13 +368,18 @@ audit::write_index() {
   local index_path="${OUTPUT_DIR}/_INDEX.md"
   local total_crit=0 total_high=0 total_med=0 total_low=0
   local total_findings=0
-  local rows=""
+  # findings_data: one "<sortkey>\t<markdown row>" line per directory that
+  # has findings. clean_list: a markdown bullet per clean directory.
+  local findings_data=""
+  local clean_list=""
+  local findings_count=0 clean_count=0 audited_count=0
 
   for report in "${OUTPUT_DIR}"/*.md; do
     [[ -f "${report}" ]] || continue
     local base
     base="$(basename "${report}" .md)"
     [[ "${base}" == "_INDEX" ]] && continue
+    audited_count=$(( audited_count + 1 ))
 
     local crit=0 high=0 med=0 low=0
     while IFS= read -r line; do
@@ -398,32 +403,80 @@ audit::write_index() {
     total_findings=$(( total_findings + subtotal ))
 
     # Convert filename back to directory representation for the index.
-    local dir_repr="${base//__/\/}"
+    # (Use //__// not //__/\/ — the escaped form leaks a literal backslash
+    # under bash 3.2, which then renders inside the markdown code span.)
+    local dir_repr="${base//__//}"
     [[ "${dir_repr}" == "_root" ]] && dir_repr="(repo root)"
 
-    rows+="| [\`${dir_repr}\`](./${base}.md) | ${crit} | ${high} | ${med} | ${low} | ${subtotal} |"$'\n'
+    if (( subtotal > 0 )); then
+      findings_count=$(( findings_count + 1 ))
+      # Sort key: zero-padded severities so a plain reverse sort orders the
+      # table worst-first — by Critical, then High, Medium, Low.
+      local sortkey
+      sortkey="$(printf '%05d%05d%05d%05d' "${crit}" "${high}" "${med}" "${low}")"
+      # The link targets the report's Findings section (#findings) so a click
+      # jumps straight to the findings, not the report's summary header.
+      findings_data+="${sortkey}"$'\t'"| [\`${dir_repr}\`](./${base}.md#findings) | ${crit} | ${high} | ${med} | ${low} | ${subtotal} |"$'\n'
+    else
+      clean_count=$(( clean_count + 1 ))
+      clean_list+="- \`${dir_repr}\`"$'\n'
+    fi
   done
+
+  # Sort the findings rows worst-first and strip the sort key.
+  local findings_rows=""
+  if [[ -n "${findings_data}" ]]; then
+    findings_rows="$(printf '%s' "${findings_data}" | LC_ALL=C sort -r | cut -f2-)"
+  fi
+
+  # Build the findings section (a worst-first table, or a clean-bill note).
+  local findings_section=""
+  if (( findings_count > 0 )); then
+    findings_section="## ⚠️  Directories with findings (${findings_count})
+
+Sorted worst-first — by Critical, then High, Medium, Low. Each directory
+links straight to its findings.
+
+| Directory | Critical | High | Medium | Low | Total |
+|---|---:|---:|---:|---:|---:|
+${findings_rows}
+| **Totals** | **${total_crit}** | **${total_high}** | **${total_med}** | **${total_low}** | **${total_findings}** |"
+  else
+    findings_section="## ✅  No findings
+
+No findings at or above the **${MIN_SEVERITY}** threshold across the
+${audited_count} audited directories. Nothing to triage."
+  fi
+
+  # Build the collapsed clean-directories section (omitted if none).
+  local clean_section=""
+  if (( clean_count > 0 )); then
+    clean_section="## Clean directories (${clean_count})
+
+<details>
+<summary>${clean_count} directories had no findings at or above the threshold — expand to list</summary>
+
+${clean_list}
+</details>"
+  fi
 
   cat > "${index_path}" <<EOF
 # Audit Index
 
-**Date generated:** $(date -u +"%Y-%m-%d %H:%M UTC")
-**AI tool:**       ${AI_REVIEW_TOOL_RESOLVED}
-**Min severity:**  ${MIN_SEVERITY}
-**Scope root:**    ${SCOPE_ROOT:-<entire repo>}
-**Total batches:** $(ls -1 "${OUTPUT_DIR}"/*.md 2>/dev/null | grep -v '_INDEX' | wc -l | tr -d ' ')
+**Date generated:**      $(date -u +"%Y-%m-%d %H:%M UTC")
+**AI tool:**             ${AI_REVIEW_TOOL_RESOLVED}
+**Min severity:**        ${MIN_SEVERITY}
+**Scope root:**          ${SCOPE_ROOT:-<entire repo>}
+**Directories audited:** ${audited_count}  (${findings_count} with findings, ${clean_count} clean)
 
-## Findings by directory
-
-| Directory | Critical | High | Medium | Low | Total |
-|---|---:|---:|---:|---:|---:|
-${rows}| **Totals** | **${total_crit}** | **${total_high}** | **${total_med}** | **${total_low}** | **${total_findings}** |
+${findings_section}
 
 ## How to read this audit
 
-Open each per-directory report in the table above. Findings are grouped by
-severity. Findings at severity below the threshold (${MIN_SEVERITY}) were
-filtered out and are not present in any report.
+The table above lists **only** directories with findings, worst-first; the
+${clean_count} clean directories are collapsed at the bottom of this file so
+they stay out of the way. Findings below the threshold (${MIN_SEVERITY})
+were filtered out and appear in no report.
 
 Recommended triage order:
 
@@ -437,6 +490,8 @@ Recommended triage order:
 4. **Medium and Low findings** — review for patterns; a single recurring
    Medium across many files may indicate a systemic gap worth a focused
    improvement project.
+
+${clean_section}
 EOF
 }
 
