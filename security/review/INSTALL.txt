@@ -271,25 +271,33 @@ Codebase audit setup (optional, on-demand only)
     scheduled monthly audits.
 
 ------------------------------------------------------------------------------
-Second-opinion adjudication (optional — on by default, no setup required)
+Adjudication / false-positive reduction (optional — on by default, no setup)
 ------------------------------------------------------------------------------
 
-    When a pre-commit review would BLOCK a commit, an independent second pass
-    re-inspects the finding-bearing files and drops false positives before the
-    result is decided. It is ON by default and needs no configuration. A clean
-    (PASS) or low-severity-only (WARN) first pass triggers no second call —
-    only BLOCK does. (Codebase-audit adjudicates any directory with findings.)
+    Reviews reduce false positives before deciding the gate. Mode is set by
+    AI_ADJUDICATION (default "self") — same for pre-commit and codebase-audit:
 
-    Two optional environment variables tune it (full details in README.md,
-    section "Adjudication settings"):
+      • self         (DEFAULT) Single-pass self-adjudication: the review
+                     re-examines its own findings and reports only confirmed
+                     ones, in ONE AI call. Fast and cheap; needs no setup.
+      • independent  An extra fresh-agent second pass on a BLOCKing result —
+                     a stronger but ~2x slower/costlier independent opinion.
+                     Honors AI_ADJUDICATION_MODEL to run it on a different model
+                     of the same AI_REVIEW_TOOL CLI.
+      • off          No adjudication (raw first-pass findings).
 
-      • AI_ADJUDICATION=0          disable the second pass entirely
-      • AI_ADJUDICATION_MODEL=...  run the second opinion on a different model
-                                   of the same AI_REVIEW_TOOL CLI (e.g. a
-                                   stronger model for an independent check);
-                                   unset = the tool's default model
+    Skipping adjudication never lowers detection — it can only confirm, dismiss,
+    or downgrade — so "off" is the stricter (block-more) direction.
 
-    Per-run, the --no-adjudicate flag skips the pass for a single invocation.
+    Examples (full details in README.md, section "Adjudication settings"):
+
+      • AI_ADJUDICATION=independent          opt into the fresh-agent 2nd pass
+      • AI_ADJUDICATION=independent \
+        AI_ADJUDICATION_MODEL=<model>        ...on a different model
+      • AI_ADJUDICATION=off                  disable entirely
+
+    Per-run, the --no-adjudicate flag disables adjudication for one invocation.
+    (Back-compat: AI_ADJUDICATION=1 → independent, =0 → off.)
 
 ------------------------------------------------------------------------------
 Pre-commit performance for large commits (optional — sensible defaults)

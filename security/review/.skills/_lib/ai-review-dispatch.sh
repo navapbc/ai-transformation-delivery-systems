@@ -37,19 +37,20 @@
 #   1  — BLOCK or unrecoverable error (commit must be rejected)
 #   2  — Configuration error (AI_REVIEW_TOOL unset or invalid)
 #
-# Adjudication (second opinion):
-#   When a first pass yields BLOCK, an independent adjudication pass
-#   (finding-adjudication skill) re-inspects the cited code and confirms,
-#   dismisses, or downgrades each finding; the gate is then decided by the
-#   adjudicated marker. PASS and WARN first passes are final and incur no second
-#   call — a WARN commit proceeds regardless (exit 0), so adjudicating it could
-#   only move WARN→WARN or WARN→PASS, both non-blocking, i.e. pure latency with
-#   no effect on the gate. To keep the cited code small (and the second pass
-#   fast), adjudication is scoped to just the files referenced in the first-pass
-#   findings; if none can be parsed it falls back to the whole diff. Controlled
-#   by AI_ADJUDICATION (default on) and AI_ADJUDICATION_MODEL (optional model
-#   override for the same CLI). If the adjudication pass fails or returns no
-#   marker, the stricter first-pass result stands (fail-safe).
+# Adjudication (false-positive reduction), via AI_ADJUDICATION:
+#   self        (DEFAULT) Single-pass self-adjudication — the review prompt tells
+#               the model to re-examine its own candidate findings as a skeptic
+#               and report only confirmed ones, in ONE call. Fast and cheap.
+#   independent An additional fresh-agent second pass re-inspects a BLOCK result
+#               (scoped to the finding-bearing files; honors AI_ADJUDICATION_MODEL
+#               so the second opinion can run on a different model of the same
+#               CLI). Strongest, but ~doubles time/cost on finding-bearing reviews.
+#               If the pass fails or returns no marker, the first-pass result
+#               stands (fail-safe).
+#   off         No adjudication (raw first-pass findings; --no-adjudicate forces this).
+#   Skipping adjudication never lowers detection (it can only confirm / dismiss /
+#   downgrade), so "off" is the stricter (block-more) direction. The default is
+#   "self" for both pre-commit and codebase-audit.
 
 set -euo pipefail
 
@@ -174,9 +175,9 @@ Options:
                        but do not invoke the AI. Exits 0.
   --no-block           Run the full review but always exit 0, regardless of
                        findings (useful for testing in CI without blocking).
-  --no-adjudicate      Skip the independent second-opinion adjudication pass
-                       even when the first pass reports findings. Equivalent to
-                       AI_ADJUDICATION=0.
+  --no-adjudicate      Disable adjudication entirely (no self-critique, no
+                       second pass) — raw first-pass findings. Same as
+                       AI_ADJUDICATION=off.
   --against <ref>      Review the diff between <ref> and HEAD (or working tree)
                        instead of the staged changes. Useful for ad-hoc review,
                        e.g.  --against HEAD~1   or  --against main
@@ -189,18 +190,21 @@ Options:
 
 Environment variables:
   AI_REVIEW_TOOL         Required. One of: claude | codex | copilot.
-  AI_ADJUDICATION        If "0", disable the second-opinion adjudication pass.
-                         Default: enabled. When enabled, a BLOCK first pass
-                         triggers a fresh, independent review (scoped to the
-                         finding-bearing files) that confirms, dismisses, or
-                         downgrades each finding before the gate is decided.
-                         PASS and WARN first passes never trigger it — a WARN
-                         commit proceeds regardless, so a second pass could not
-                         change the outcome.
+  AI_ADJUDICATION        False-positive reduction mode (default "self"):
+                           self        single-pass self-adjudication — the review
+                                       re-examines its own findings and reports
+                                       only confirmed ones, in ONE call (fast,
+                                       cheap; the default for pre-commit & audit).
+                           independent an extra fresh-agent second pass on a BLOCK
+                                       result (scoped to the finding-bearing
+                                       files; honors AI_ADJUDICATION_MODEL).
+                                       Strongest, ~doubles time/cost on findings.
+                           off         no adjudication (raw first-pass findings).
+                         (Back-compat: "1" maps to independent, "0" to off.)
   AI_ADJUDICATION_MODEL  Optional. Model name passed to the same AI_REVIEW_TOOL
-                         CLI for the adjudication pass only (e.g. a different
-                         model for an independent second opinion). If unset, the
-                         tool's default model is used.
+                         CLI for the independent adjudication pass only (a
+                         different model for the second opinion). Has no effect in
+                         "self" mode. If unset, the tool's default model is used.
   AI_REVIEW_JOBS         Concurrent workers for the parallel fan-out (default 4;
                          overridden by --jobs). 1 = serial.
   AI_REVIEW_BATCH_BY     "dir" (default) groups changed files by directory — one
@@ -400,15 +404,73 @@ ai_review::parse_result() {
   fi
 }
 
-# ── Adjudication (independent second-opinion pass) ──────────────────────────
-# When a first pass reports findings, a fresh agent re-inspects the cited code
-# and confirms / dismisses / downgrades each finding. This removes false
-# positives before they reach the developer, with no manual suppression list.
-# It runs ONLY when the first pass found something, so clean commits stay
-# single-pass and fast — cost scales with noise, not commit volume.
+# ── Adjudication: false-positive reduction ──────────────────────────────────
+# Two modes plus off, selected by AI_ADJUDICATION (default "self"):
+#
+#   self        Single-pass self-adjudication (DEFAULT, both pre-commit and
+#               audit). The review prompt itself instructs the model to re-examine
+#               its own candidate findings as a skeptic before reporting — one AI
+#               call, no second invocation. Fastest/cheapest; catches the factual
+#               false positives (synthetic/test data, already-mitigated,
+#               misclassified) but is less independent than a fresh reviewer.
+#   independent An additional fresh-agent second pass re-inspects a BLOCK/FINDINGS
+#               result (the original behavior; honors AI_ADJUDICATION_MODEL so the
+#               second opinion can run on a different model of the same CLI).
+#               Strongest, but ~doubles time and cost on finding-bearing reviews.
+#   off         No adjudication at all — raw first-pass findings, no self-critique.
+#
+# The --no-adjudicate flag (AI_REVIEW_NO_ADJUDICATE=1) forces "off". Skipping
+# adjudication never lowers detection — it can only confirm/dismiss/downgrade —
+# so "off" is the stricter (block-more) direction.
 
-ai_review::adjudication_enabled() {
-  [[ "${AI_REVIEW_NO_ADJUDICATE:-0}" != "1" ]] && [[ "${AI_ADJUDICATION:-1}" != "0" ]]
+# ai_review::adjudication_mode  → prints one of: self | independent | off
+# AI_ADJUDICATION accepts: self|inline, independent|fresh, off|0|no|none, and
+# (back-compat) 1 → independent. Unknown values fall back to the safe default.
+ai_review::adjudication_mode() {
+  if [[ "${AI_REVIEW_NO_ADJUDICATE:-0}" == "1" ]]; then
+    echo "off"; return 0
+  fi
+  local v
+  v="$(printf '%s' "${AI_ADJUDICATION:-self}" | tr '[:upper:]' '[:lower:]')"
+  case "${v}" in
+    self|inline)         echo "self" ;;
+    independent|fresh|1) echo "independent" ;;
+    off|0|no|none|false) echo "off" ;;
+    *)                   echo "self" ;;
+  esac
+}
+
+# ai_review::self_adjudication_instructions
+# Appended to every first-pass review prompt. The model applies it only when the
+# AI_REVIEW_ADJUDICATION_MODE environment variable is "self" (the dispatchers
+# export the resolved mode before invoking), so "independent"/"off" first passes
+# report raw findings — independent runs its own separate pass, off skips it.
+ai_review::self_adjudication_instructions() {
+  cat <<'BLOCK'
+SELF-ADJUDICATION — applies ONLY when the AI_REVIEW_ADJUDICATION_MODE environment
+variable is "self" (its default). If that variable is "independent" or "off",
+ignore this section and report your findings directly.
+
+Before finalizing, re-examine your own candidate findings as a skeptical, second
+reviewer. Inspect the actual cited code for each one and classify it:
+  • CONFIRMED      — genuinely real at the stated severity; keep it.
+  • OVERSTATED     — real but the severity is too high; keep it at the corrected
+                     lower severity.
+  • FALSE_POSITIVE — not a genuine issue; drop it.
+The only legitimate grounds to dismiss or downgrade (do not invent others):
+  • Synthetic / placeholder / obvious test data (example.com, 555 phone numbers,
+    000-00-0000, AKIA…EXAMPLE keys, fixtures that are clearly not real secrets).
+  • Already mitigated in the cited code (parameterized query, escaping/sanitizer,
+    an authn/authz check that already guards the path).
+  • Misclassification (a public identifier mistaken for a secret, and the like).
+Keep any finding you cannot positively show to be benign — when in doubt, keep
+it. Do NOT introduce new findings in this step.
+
+Then report ONLY the confirmed findings, each at its final severity, and add a
+short "Dismissed / downgraded (self-adjudication)" section listing what you
+removed or lowered and why. Compute your end-of-response result marker from the
+CONFIRMED findings only.
+BLOCK
 }
 
 # Strip any result marker lines so an embedded first-pass report cannot be
@@ -740,6 +802,12 @@ ai_review::worker_main() {
   export AI_REVIEW_CONTEXT_BUDGET
   AI_REVIEW_CONTEXT_BUDGET="$(ai_review::context_budget "${nfiles}")"
   export AI_REVIEW_AGAINST
+  # Tell the prompt which adjudication mode is in effect (self-critique applies
+  # only in "self"). The first pass self-adjudicates in self mode; in
+  # independent mode it reports raw and we run a separate pass below.
+  local _adj_mode
+  _adj_mode="$(ai_review::adjudication_mode)"
+  export AI_REVIEW_ADJUDICATION_MODE="${_adj_mode}"
 
   local output rc=0 marker="UNPARSEABLE"
   output="$(ai_review::invoke_ai)" || rc=$?
@@ -747,9 +815,9 @@ ai_review::worker_main() {
     ai_review::err "[${key}] AI invocation failed (rc=${rc})." >&2
   else
     marker="$(ai_review::parse_result "${output}")"
-    # Per-worker second opinion — same BLOCK-only policy as run().
-    if [[ "${marker}" == "BLOCK" ]] && ai_review::adjudication_enabled; then
-      ai_review::info "[${key}] BLOCK — running adjudication (second opinion)..." >&2
+    # Independent second opinion — only in independent mode, only on BLOCK.
+    if [[ "${marker}" == "BLOCK" && "${_adj_mode}" == "independent" ]]; then
+      ai_review::info "[${key}] BLOCK — running independent adjudication (second opinion)..." >&2
       local adj_output adj_rc=0 adj_marker=""
       adj_output="$(ai_review::adjudicate "${output}" "pre-commit")" || adj_rc=$?
       if (( adj_rc == 0 )); then
@@ -881,6 +949,14 @@ ai_review::run() {
   # which git diff range to use; the skill consults this variable).
   export AI_REVIEW_AGAINST
 
+  # Resolve the adjudication mode once. The prompt's self-adjudication block
+  # applies only when AI_REVIEW_ADJUDICATION_MODE is "self"; the independent
+  # second pass below runs only in "independent" mode. (Fan-out workers resolve
+  # and export this themselves; we export here for the single-call path.)
+  local _adj_mode
+  _adj_mode="$(ai_review::adjudication_mode)"
+  export AI_REVIEW_ADJUDICATION_MODE="${_adj_mode}"
+
   local result
 
   if ai_review::should_batch "${_nfiles}" "${_nbatches}"; then
@@ -918,12 +994,11 @@ ai_review::run() {
 
     result="$(ai_review::parse_result "${review_output}")"
 
-    # Independent second-opinion adjudication. Runs only when the first pass
-    # would BLOCK and adjudication is enabled. PASS and WARN are final and skip
-    # it: a WARN commit proceeds regardless (exit 0), so a second pass could
-    # only move it WARN→WARN or WARN→PASS — both non-blocking — making it pure
-    # latency with no effect on the gate.
-    if [[ "${result}" == "BLOCK" ]] && ai_review::adjudication_enabled; then
+    # Independent second-opinion adjudication. Runs only in "independent" mode
+    # and only on a BLOCK first pass (PASS/WARN proceed regardless, so a second
+    # pass could not change the gate). In the default "self" mode the first pass
+    # has already self-adjudicated in a single call, so there is no second call.
+    if [[ "${result}" == "BLOCK" && "${_adj_mode}" == "independent" ]]; then
       ai_review::info "First pass result: ${result}. Running independent adjudication (second opinion)${AI_ADJUDICATION_MODEL:+ via model ${AI_ADJUDICATION_MODEL}}..."
       local adj_output adj_rc=0
       adj_output="$(ai_review::adjudicate "${review_output}" "pre-commit")" || adj_rc=$?

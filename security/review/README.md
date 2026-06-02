@@ -174,45 +174,25 @@ You can use any combination of paths; most teams pair Path A + Path B.
 The codebase-audit layer is documented in this README under
 [Codebase audit](#codebase-audit).
 
-### Second-opinion adjudication (false-positive reduction)
+### Adjudication (false-positive reduction)
 
-The **pre-commit** and **codebase-audit** layers are wrapped by an independent
-**adjudication pass** that cuts false positives before they reach you — no
-suppression files, no inline annotations, no manual bookkeeping.
+Both review layers cut false positives before they reach you — no suppression
+files, no inline annotations, no manual bookkeeping. The adjudicator may only
+**confirm, dismiss, or downgrade** findings — never escalate or invent them, and
+it keeps anything it cannot positively show to be benign. There are three modes,
+selected by `AI_ADJUDICATION`:
 
-When a first-pass review would **block** the commit, the dispatcher invokes the
-`finding-adjudication` skill: a **fresh agent**, with no memory of the first
-pass, re-inspects the cited code and classifies each finding as **confirmed**,
-**false positive**, or **overstated** (downgraded), each with a one-line reason.
-The gate is then decided from the confirmed findings only, and the dismissed /
-downgraded findings are shown in a transparency section so nothing is silently
-hidden.
+| `AI_ADJUDICATION` | What happens | Cost |
+|---|---|---|
+| **`self`** *(default, both layers)* | **Single-pass self-adjudication.** The review prompt itself instructs the model to re-examine its own candidate findings as a skeptic and report only the confirmed ones — in **one** AI call. | ~1× (no second call) |
+| `independent` | An additional **fresh agent**, with no memory of the first pass, re-inspects a blocking result and re-classifies each finding. Scoped to the finding-bearing files; honors `AI_ADJUDICATION_MODEL` so the second opinion can run on a *different model* of the same CLI. | ~2× on finding-bearing reviews |
+| `off` | No adjudication — raw first-pass findings. (`--no-adjudicate` is the same.) | ~1× |
 
-Key properties:
+**Why `self` is the default.** It catches the *factual* false positives — synthetic/test data, an already-mitigated pattern in the cited code, a misclassified public identifier — which are the bulk of the noise, without paying for a second invocation. The trade vs. `independent` is rigor on *borderline judgment* calls: a fresh agent is a stronger skeptic than a model reviewing its own work. Choose `independent` (optionally with a stronger `AI_ADJUDICATION_MODEL`) for high-stakes review where that extra independence is worth roughly double the time and cost.
 
-- **Only blocking results are adjudicated.** A `PASS`/`CLEAN` first pass is final
-  (no second call). For pre-commit, a `WARN` (low-severity only) first pass is
-  **also** final and skips adjudication — a `WARN` commit proceeds regardless, so
-  a second pass could only move it `WARN→WARN` or `WARN→PASS`, both non-blocking:
-  pure latency with no effect on the gate. The second pass runs only on `BLOCK`,
-  which is exactly when a second opinion changes the outcome. (Codebase-audit,
-  which has no non-blocking tier, adjudicates any directory with findings.)
-- **The second pass is scoped to the finding-bearing files.** It is confirming
-  findings the first pass already cited — not hunting new ones — so for diff-mode
-  reviews it reads only the files referenced in the findings (`git diff --cached
-  -- <those files>`), not the whole diff. Smaller input, faster, same model. If
-  no file paths can be parsed from the report it falls back to the whole diff.
-- **Tool-neutral.** It runs on the same `AI_REVIEW_TOOL` CLI as the first pass.
-  Set `AI_ADJUDICATION_MODEL` to run the second opinion on a *different model*
-  of that same CLI for stronger independence; leave it unset to use the default.
-- **Security-first.** The adjudicator may only confirm, dismiss, or downgrade —
-  never escalate or invent findings — and must keep any finding it cannot
-  positively show to be benign. If the pass fails or returns no marker, the
-  stricter first-pass result stands.
-- **Opt-out.** Disable with `AI_ADJUDICATION=0` (env) or `--no-adjudicate` (flag).
+**It never lowers detection.** Adjudication only *removes* findings, so `off` is the *stricter* (block-more) direction — you may see more false-positive blocks, never a missed true finding. If an `independent` pass fails or returns no marker, the stricter first-pass result stands (fail-safe).
 
-PR-level review is **not** adjudicated (the Copilot path can't be customized for
-it). The full skill contract is in `.skills/finding-adjudication/SKILL.md`.
+> **Mechanics.** The dispatcher exports `AI_REVIEW_ADJUDICATION_MODE`; the review prompt applies its self-critique step only when that is `self`. In `independent` mode the first pass reports raw and a separate pass adjudicates (scoped to the cited files, falling back to the whole diff if none parse). PR-level review is **not** adjudicated (the Copilot path can't be customized for it). The independent-pass contract is in `.skills/finding-adjudication/SKILL.md`.
 
 ---
 
@@ -222,14 +202,14 @@ A clean or low-severity commit is a **single** AI pass — that one pass is the
 floor and typically the bulk of the wait. Two mechanisms keep larger or
 finding-bearing commits from dragging:
 
-1. **`BLOCK`-only, scoped adjudication** (above) — the common `PASS`/`WARN`
-   commit never pays for a second pass, and when a second pass does run it reads
-   only the finding-bearing files.
+1. **Single-pass self-adjudication by default** (above) — false-positive
+   reduction happens *inside* the one review call, so no commit pays for a second
+   invocation unless you opt into `AI_ADJUDICATION=independent`.
 2. **Parallel fan-out for multi-file commits.** When a commit changes enough
    files across enough directories, the diff is split into independent batches
    reviewed **concurrently**, then their gate results are folded worst-of (any
-   `BLOCK` blocks). Each batch runs the same first-pass → adjudication sequence,
-   so the gate decision is unchanged — only wall-clock drops.
+   `BLOCK` blocks). Each batch runs the same review (and, in `independent` mode,
+   its own second pass), so the gate decision is unchanged — only wall-clock drops.
 
 | Variable / flag | Default | Effect |
 |---|---|---|
@@ -464,18 +444,17 @@ code 2 (configuration error) and refuses to run.
 
 ### Adjudication settings (optional)
 
-Two optional variables tune the [second-opinion adjudication
-pass](#second-opinion-adjudication-false-positive-reduction):
+Two optional variables tune [adjudication](#adjudication-false-positive-reduction):
 
 | Variable | Default | Effect |
 |---|---|---|
-| `AI_ADJUDICATION` | enabled | Set to `0` to disable the adjudication pass entirely (first-pass results then stand). |
-| `AI_ADJUDICATION_MODEL` | unset | Model name passed to the **same** `AI_REVIEW_TOOL` CLI for the adjudication pass only. Unset = the tool's default model. Use it to get a second opinion from a different model on the same CLI — e.g. a Claude shop running the first pass on one model and adjudication on another. (Confirm your CLI's accepted model names: `claude --model`, `codex exec --model`, or the Copilot equivalent.) |
+| `AI_ADJUDICATION` | `self` | `self` = single-pass self-adjudication (one call, the default for both layers); `independent` = an extra fresh-agent second pass on a blocking result; `off` = none. (Back-compat: `1`→`independent`, `0`→`off`.) |
+| `AI_ADJUDICATION_MODEL` | unset | Model name for the **`independent`** pass only — runs that second opinion on a different model of the **same** `AI_REVIEW_TOOL` CLI (e.g. a stronger model for the independent check). No effect in `self` mode. Unset = the tool's default model. (Confirm accepted names: `claude --model`, `codex exec --model`, or the Copilot equivalent.) |
 
-Both are optional; the system works out of the box with adjudication on and the
-default model. For pre-commit, adjudication fires only on a `BLOCK` first pass
-(not on `PASS` or `WARN`) and reads only the finding-bearing files, so leaving it
-on adds no cost to clean or low-severity commits — see [Pre-commit
+Both are optional; out of the box, adjudication is **`self`** (one AI call) for
+both pre-commit and codebase-audit, so clean/low commits and the common blocking
+commit stay single-pass. Opt into `AI_ADJUDICATION=independent` for the stronger
+fresh-agent second opinion when you want it — see [Pre-commit
 performance](#pre-commit-performance-keeping-the-hook-fast).
 
 Concurrency and batching for large diffs are tuned separately via
@@ -1596,13 +1575,13 @@ but does not replace static analysis. Run these in CI alongside it:
 
 ## False positives
 
-**Most false positives are removed automatically** by the second-opinion
-adjudication pass (see
-[Second-opinion adjudication](#second-opinion-adjudication-false-positive-reduction)).
-When a first pass flags something, a fresh independent agent re-inspects the code
-and dismisses or downgrades findings that aren't genuine — synthetic test data,
-already-mitigated patterns, controls satisfied elsewhere — before the gate is
-decided. The dismissed findings are listed in the report's "Dismissed /
+**Most false positives are removed automatically** by
+[adjudication](#adjudication-false-positive-reduction). By default (`self` mode)
+the review re-examines its own findings in a single pass and dismisses or
+downgrades the ones that aren't genuine — synthetic test data, already-mitigated
+patterns, controls satisfied elsewhere — before the gate is decided; opt into
+`AI_ADJUDICATION=independent` for a fresh-agent second opinion. The dismissed
+findings are listed in the report's "Dismissed /
 Downgraded by adjudication" section with the reason, so you can see what was
 filtered and why.
 
@@ -1775,12 +1754,12 @@ the prompt is intact, and run the CLI interactively (`claude` / `codex` /
 - The first call after a CLI auth refresh can be slow.
 - Network conditions affect all three tools.
 - Verify your AI CLI works interactively to rule out a CLI-side problem.
-- **Blocking commits run a second (adjudication) pass.** Only a `BLOCK` first
-  pass triggers it (not `PASS` or `WARN`), and it reads only the finding-bearing
-  files, so it adds time to commits that have blocking findings — clean and
-  low-severity commits are unaffected. If you need the fastest possible
-  turnaround on a noisy commit, `--no-adjudicate` (or `AI_ADJUDICATION=0`) skips
-  it; you then see the raw first-pass findings, false positives included.
+- **Adjudication is single-pass by default** (`AI_ADJUDICATION=self`), so a
+  review is one AI call — false-positive reduction happens inside it. Only
+  `AI_ADJUDICATION=independent` adds a second call (on a `BLOCK`), which roughly
+  doubles time on finding-bearing commits in exchange for a fresh-agent second
+  opinion. `--no-adjudicate` (or `AI_ADJUDICATION=off`) turns it off entirely —
+  raw first-pass findings, false positives included.
 - **Large commits fan out across workers.** A commit touching many files across
   several directories is reviewed in parallel (default `--jobs 4`); a few files
   in one directory still run as a single call. Tune or inspect this via
