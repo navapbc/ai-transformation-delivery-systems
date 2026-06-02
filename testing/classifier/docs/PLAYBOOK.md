@@ -22,7 +22,7 @@ it top to bottom and run with zero guessing.
 
 1. [What the classifier is](#1-what-the-classifier-is)
 2. [The four-verdict taxonomy](#2-the-four-verdict-taxonomy)
-3. [Phasing: P0 → P1 → (future) P2 → P3](#3-phasing-p0--p1--future-p2--p3)
+3. [Future direction (not built in the pilot)](#3-future-direction-not-built-in-the-pilot)
 4. [How to drop the GitHub Action into your repo](#4-how-to-drop-the-github-action-into-your-repo)
 5. [The metrics loop (👍/👎 and precision inputs)](#5-the-metrics-loop)
 6. [Security considerations for AI-enabled PR/test workflows](#6-security-considerations-for-ai-enabled-prtest-workflows)
@@ -62,7 +62,7 @@ It mirrors the security workstream exactly in its plumbing:
 
 What is *different* is the domain: this skill classifies test-vs-code rather
 than reviewing for security/compliance findings, and it asks the developer for
-a tuning signal (see P1 below).
+a tuning signal — a mandatory 👍/👎 on the comment it posts.
 
 ### Where it sits in the toolchain
 
@@ -75,7 +75,7 @@ a tuning signal (see P1 below).
 │      │                                                                │
 │      ▼                                                                │
 │  testing/classifier/.skills/test-classifier/scripts/                  │
-│      test-classifier-dispatcher.sh --pr <n> --mode <p0|p1>            │
+│      test-classifier-dispatcher.sh --pr <n> --post-comment            │
 │      │                                                                │
 │      reads AI_REVIEW_TOOL                                             │
 │      │                                                                │
@@ -90,12 +90,11 @@ a tuning signal (see P1 below).
 │   emits rationale + JSON,                                             │
 │   ends with: <<<AI_REVIEW_RESULT:CLASSIFIED>>>                        │
 │                     │                                                 │
-│         ┌───────────┴───────────┐                                     │
-│         ▼ (P0)                   ▼ (P1)                                │
-│   record only,             post PR comment with the call +            │
-│   no PR comment            rationale + a MANDATORY 👍/👎 ask           │
-│         │                          │                                  │
-│         └───────────┬──────────────┘                                  │
+│                     ▼                                                 │
+│   post ONE PR comment with the verdicts +                             │
+│   rationale + a MANDATORY 👍/👎 ask (non-blocking);                   │
+│   the full report is also uploaded as a CI artifact                   │
+│                     │                                                 │
 │                     ▼                                                 │
 │   metrics harvest (testing/metrics/) → Google Sheet / TSV             │
 └──────────────────────────────────────────────────────────────────────┘
@@ -106,16 +105,17 @@ The dispatcher interface a team integrates against is:
 ```bash
 testing/classifier/.skills/test-classifier/scripts/test-classifier-dispatcher.sh \
   --pr <number> \
-  --mode <p0|p1> \
-  [--post-comment]
+  [--post-comment] \
+  [--gate]
 ```
 
 - `--pr <number>` — the pull request to classify against (auto-discovered via
   `gh pr view` if omitted, exactly like the security dispatcher).
-- `--mode <p0|p1>` — the phase. `p0` records only; `p1` posts the PR comment
-  and requests the 👍/👎 reaction.
-- `--post-comment` — actually post to GitHub via `gh api`. In `p0` this flag
-  is a no-op by design (P0 is observe-only); in `p1` it is required to post.
+- `--post-comment` — post the verdicts to GitHub via `gh api` as one PR comment
+  with the mandatory 👍/👎 ask. Without it, the report prints to the terminal /
+  uploads as a CI artifact only.
+- `--gate` — exit non-zero on an unconfirmed triaged failure, to make the
+  classifier a build gate (off by default; advisory is the pilot posture).
 
 ---
 
@@ -142,8 +142,8 @@ verdicts, **with a short rationale**, so teams never generate no-op tests for
 genuinely broken code. That last clause is the whole point: a naive "AI fixes
 failing tests" loop will happily edit the test to match the broken code,
 turning a real regression green. The classifier refuses to make that move
-silently — it surfaces the call and the reasoning, and (in P1) makes a human
-confirm it.
+silently — it surfaces the call and the reasoning, and asks a human to confirm
+it with a 👍/👎.
 
 ### How the AI is expected to reason
 
@@ -179,55 +179,51 @@ explain an infra failure or a flake.)
 
 ---
 
-## 3. Phasing: P0 → P1 → (future) P2 → P3
+## 3. Future direction (not built in the pilot)
 
-The pilot is scoped to **P0 and P1 only**. P2 and P3 are documented here as
-direction, not as shipped capability. Do not build them as part of the pilot.
+The pilot ships **one behavior**: when a PR's tests fail, the classifier
+triages each failure and posts **one PR comment** with the verdicts and a
+mandatory 👍/👎 ask. That is it — there is no observe-only phase, no mode to
+set, nothing to graduate between.
 
-### P0 — Observe-only  (in scope)
+### The one behavior (what the pilot ships)
 
-- The classifier runs in CI and **classifies every failure**.
-- It **records** each call + rationale to the metrics sink (Google Sheet / TSV).
-- It posts **no PR-facing comments**. Developers are not interrupted.
-- Purpose: measure baseline classifier precision against real failures before
-  anyone trusts a single comment it makes. You are collecting ground truth.
-
-Run it with `--mode p0`. The `--post-comment` flag is ignored in this mode.
-
-### P1 — MVP: comment + mandatory 👍/👎  (in scope)
-
-- The classifier runs in CI and posts **one PR comment** per classified
-  failure (or one rolled-up comment, team's choice), stating the verdict
-  (`APPLICATION_BUG` / `TEST_BUG` / `FLAKY_FAILURE` / `ENVIRONMENT_ISSUE`) and
-  the short rationale.
-- The comment **requests a mandatory 👍 / 👎 reaction** from the developer:
+- The classifier runs in CI after the test suite and **classifies every
+  failure** as `APPLICATION_BUG` / `TEST_BUG` / `FLAKY_FAILURE` /
+  `ENVIRONMENT_ISSUE`, each with a short rationale.
+- It posts **one PR comment** (rolled up, or one per failure — team's choice)
+  stating the verdict and rationale, and **requests a mandatory 👍 / 👎
+  reaction** from the developer:
   - 👍 = "the classifier got the call right"
   - 👎 = "the classifier got the call wrong"
-- That reaction is **the tuning signal**. It is the only thing P1 asks of the
-  developer, and it is mandatory because precision is unmeasurable without it.
-- P1 is **non-blocking**: the comment never fails the build. (A team that
-  wants a gate later can opt in via `--gate`, exactly as in security/review,
-  but the pilot default is advisory.)
+- That reaction is **the tuning signal**, and it is mandatory because precision
+  is unmeasurable without it.
+- It is **non-blocking**: the comment never fails the build. The full
+  classification report is also uploaded as a CI artifact. (A team that wants a
+  gate later can opt in via `--gate`, exactly as in security/review, but the
+  pilot default is advisory.)
 
-Run it with `--mode p1 --post-comment`.
+The items below are **future direction, not built in the pilot.** They are
+recorded here so the design intent is on the page — do not build them as part
+of the pilot.
 
-### P2 — Proposed commit suggestions / merge-rate  (FUTURE — NOT BUILT)
+### Proposed commit suggestions / merge-rate  (P2 — future direction, not built)
 
-> Documented as direction only. **Do not build during the pilot.**
+> Documented as direction only. **Not built in the pilot.**
 
-The intended next step is for the classifier to attach a *proposed diff* — a
+A natural next step is for the classifier to attach a *proposed diff* — a
 suggested edit to the test (for `TEST_BUG`) or a pointer at the regressed code
 (for `APPLICATION_BUG`) — using GitHub's one-click `` ```suggestion `` blocks, and to
 track the **merge-rate** of those suggestions as a stronger quality signal
 than 👍/👎 alone. This stays behind the **propose-diff-then-approve** rule (see
 §6): the classifier proposes; a human approves and commits. No autocommit.
 
-### P3 — Zero-shot test generation  (FUTURE — NOT BUILT)
+### Zero-shot test generation  (P3 — future direction, not built)
 
-> Documented as direction only. **Do not build during the pilot.**
+> Documented as direction only. **Not built in the pilot.**
 
 The long-horizon goal: generate net-new tests for uncovered behavior from a
-spec or a diff. This is explicitly **gated behind a mature P0/P1 precision
+spec or a diff. This is explicitly **gated behind a mature classifier-precision
 track record**, because generating tests is only safe once we trust the
 classifier's test-vs-code judgment — otherwise we are back to generating no-op
 tests against broken code, at scale.
@@ -265,17 +261,16 @@ jobs:
     uses: navapbc/ai-transformation-delivery-systems/.github/workflows/test-classifier.yml@<commit-sha>
     with:
       tool: claude        # claude | codex | copilot
-      mode: p0            # p0 (observe-only) | p1 (posts one PR comment)
     secrets:
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
 ```
 
 Pin to a commit SHA, not a branch — a SHA is reproducible and gives clear
 provenance. Upgrading is a one-line SHA bump: no vendored copy to drift, no
-merge. In this path `tool` and `mode` are **workflow inputs** in the caller's
-`with:` block, not repository variables; you can skip Step 2 and Step 4 below
-(they apply only to the vendored fallback). You still set the API-key secret
-(Step 3) and pass it through `secrets:` as shown.
+merge. In this path `tool` is a **workflow input** in the caller's `with:`
+block, not a repository variable; you can skip Step 2 below (it applies only to
+the vendored fallback). You still set the API-key secret (Step 3) and pass it
+through `secrets:` as shown.
 
 > **Fallback — vendoring.** If your repo can't reference an external reusable
 > workflow (e.g. policy forbids it), copy the bundle's workflow file in instead:
@@ -289,7 +284,7 @@ merge. In this path `tool` and `mode` are **workflow inputs** in the caller's
 > vendored workflow ships **disabled** (only `workflow_dispatch`, with a
 > commented-out `pull_request:` block and a banner explaining how to enable it),
 > identical to the security workstream's posture. The remaining steps below
-> (variables, enabling the trigger) apply to this vendored fallback; see
+> (the AI-tool variable, enabling the trigger) apply to this vendored fallback; see
 > [`SETUP.md`](./SETUP.md) Path C for the full vendored walkthrough.
 
 ### Step 2 — Set the AI tool as a repository variable
@@ -315,50 +310,27 @@ secret.
 
 Only set the secret matching your chosen tool.
 
-### Step 4 — Set the phase via the `MODE` input
-
-The classifier's phase is controlled by a **`MODE`** value of `p0` or `p1`,
-which the workflow passes to the dispatcher as `--mode`. The workflow exposes
-this two ways:
-
-- As a `workflow_dispatch` **input** named `mode` (default `p0`) so you can run
-  a manual classification at either phase without editing the file.
-- As a repository **variable** `AI_CLASSIFIER_MODE` that the `pull_request`
-  trigger reads, so the automatic path has a phase too.
-
-**Start every pilot in `p0`.** Only switch to `p1` once P0 precision looks
-trustworthy (see §5). To switch:
-
-1. **Settings** → **Secrets and variables** → **Actions** → **Variables**.
-2. Add/edit `AI_CLASSIFIER_MODE` = `p0` (observe-only) or `p1` (comment + 👍/👎).
-
-### Step 5 — Confirm workflow permissions (least privilege)
+### Step 4 — Confirm workflow permissions (least privilege)
 
 The workflow declares exactly what it needs and nothing more:
 
 ```yaml
 permissions:
   contents: read         # check out the repo, read the diff and test output
-  pull-requests: write   # post the classifier comment (P1 only)
+  pull-requests: write   # post the classifier comment
 ```
 
-In `p0` the workflow does not post and only needs `contents: read`; the
-`pull-requests: write` grant is harmless because P0 never calls the posting
-path. If your org enforces restrictive default-token permissions, confirm the
+If your org enforces restrictive default-token permissions, confirm the
 workflow's `permissions:` block is honored under **Settings** → **Actions** →
 **General** → **Workflow permissions**.
 
-### Step 6 — Enable the trigger
+### Step 5 — Enable the trigger
 
 Edit `.github/workflows/ai-test-classifier.yml` and change:
 
 ```yaml
 on:
   workflow_dispatch:
-    inputs:
-      mode:
-        description: "Classifier phase"
-        default: "p0"
   # pull_request:
   #   types: [opened, synchronize, reopened]
 ```
@@ -368,18 +340,14 @@ to:
 ```yaml
 on:
   workflow_dispatch:
-    inputs:
-      mode:
-        description: "Classifier phase"
-        default: "p0"
   pull_request:
     types: [opened, synchronize, reopened]
 ```
 
-Commit and push. The next PR triggers a classification at whatever phase
-`AI_CLASSIFIER_MODE` is set to.
+Commit and push. The next PR triggers a classification, which posts one triage
+comment with the verdicts + 👍/👎.
 
-### Step 7 — (Optional, later) enable gating
+### Step 6 — (Optional, later) enable gating
 
 The pilot default is **advisory / non-blocking** — exactly like security
 review. If, much later, a team wants a failing classification (e.g. an
@@ -389,7 +357,6 @@ workflow's run step:
 ```yaml
 testing/classifier/.skills/test-classifier/scripts/test-classifier-dispatcher.sh \
   --pr "${PR_NUMBER}" \
-  --mode "${AI_CLASSIFIER_MODE}" \
   --post-comment
   # --gate
 ```
@@ -403,7 +370,7 @@ Use with care: a false `APPLICATION_BUG` becomes a merge blocker.
 The classifier is only as good as our ability to measure it, and the pilot's
 whole purpose is to gather that measurement. Two things are harvested:
 
-1. **The 👍/👎 reaction counts** on each P1 classifier comment — the developer's
+1. **The 👍/👎 reaction counts** on each classifier comment — the developer's
    verdict on whether the call was right.
 2. **Classifier precision inputs** — the raw `(verdict, was-it-right?)` pairs
    that let us compute precision per class (`APPLICATION_BUG`, `TEST_BUG`,
@@ -420,7 +387,7 @@ reaction counts off each one with `jq`.
 | Sink | When to use | How |
 |---|---|---|
 | **Google Sheet (primary)** | The shared pilot dashboard everyone reads. | The script POSTs rows to a Sheet via a **service-account bearer token**. Set `SHEET_ID` and `GOOGLE_SHEETS_TOKEN` (the service-account access token) in the environment. |
-| **TSV to stdout (P0 fallback)** | The realistic default for early pilots before the Sheet plumbing is wired. Pipe it anywhere. | Run the script with no Sheet env vars set; it writes tab-separated rows to stdout. This shares plumbing intent with the security metrics script. |
+| **TSV to stdout (fallback)** | The realistic default for early pilots before the Sheet plumbing is wired. Pipe it anywhere. | Run the script with no Sheet env vars set; it writes tab-separated rows to stdout. This shares plumbing intent with the security metrics script. |
 
 ### What we read from it
 
@@ -431,15 +398,15 @@ Per class, per time window:
 - **👍 / 👎 totals** per class.
 - **Precision** ≈ 👍 / (👍 + 👎) for each verdict — with **`APPLICATION_BUG`
   precision the headline number**, since a missed real bug is the worst
-  outcome. This is what decides whether a pilot graduates from P0 to P1, and
-  (eventually) whether P2 is worth building.
-- **Response rate** — what fraction of P1 comments actually received the
+  outcome. This is the signal that tells you whether to trust the classifier,
+  and (eventually) whether the P2 future direction is worth building.
+- **Response rate** — what fraction of comments actually received the
   mandatory reaction. A low response rate means the signal is unreliable and
-  the team needs a nudge, not a phase change.
+  the team needs a nudge.
 
-> The 👍/👎 ask is **mandatory** in P1 precisely because precision is
-> uncomputable without it. A classifier comment with no reaction is a
-> measurement you didn't take.
+> The 👍/👎 ask is **mandatory** precisely because precision is uncomputable
+> without it. A classifier comment with no reaction is a measurement you
+> didn't take.
 
 ---
 
@@ -481,10 +448,11 @@ Per class, per time window:
 
 ### The classifier never commits to a branch a human hasn't approved
 
-- **Propose-diff-then-approve.** P1 posts a comment and asks for a 👍/👎. It does
-  **not** push commits. P2 (future) will propose `` ```suggestion `` diffs that
-  a human one-click-applies — still human-approved, never autocommitted.
-- There is no mode in the pilot where the classifier writes to your branch.
+- **Propose-diff-then-approve.** The classifier posts a comment and asks for a
+  👍/👎. It does **not** push commits. The P2 future direction would propose
+  `` ```suggestion `` diffs that a human one-click-applies — still
+  human-approved, never autocommitted.
+- There is nothing in the pilot where the classifier writes to your branch.
   If a future capability proposes a test edit, a person must approve and commit
   it. This is the single most important guardrail against the "AI rewrites the
   test to hide the regression" failure mode.
@@ -531,17 +499,17 @@ the only signal that caught a regression. The classifier's entire reason to
 exist is to make the test-vs-code call *before* anyone edits anything.
 
 **Why is the 👍/👎 mandatory?**
-Because precision is the metric that decides whether the classifier earns more
-trust (P1 → P2). Without the reaction, every comment is an unscored guess.
+Because precision is the metric that tells you whether the classifier can be
+trusted. Without the reaction, every comment is an unscored guess.
 
 **Can different developers use different AI tools?**
 Yes, locally — `AI_REVIEW_TOOL` is per-environment, exactly as in
 security/review. CI picks one via the `vars.AI_REVIEW_TOOL` repository variable.
 
 **Is the classifier ever blocking?**
-Not by default. P0 and P1 are advisory. A team can opt into `--gate` later, but
-that is out of pilot scope.
+Not by default. It is advisory. A team can opt into `--gate` later, but that is
+out of pilot scope.
 
 **Where do P2/P3 live?**
-Nowhere yet — they are documented direction in §3. Do not build them during the
-pilot.
+Nowhere yet — they are documented as future direction in §3. Do not build them
+during the pilot.

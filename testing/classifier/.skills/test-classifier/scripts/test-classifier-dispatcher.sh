@@ -11,24 +11,21 @@
 #
 #   1. It computes its diff range from a pull-request base ref, not from the
 #      git index. Auto-discovery uses `gh pr view`; manual override via --pr.
-#   2. It parses a JSON intermediate format from the AI's response. In P1 it
-#      uses the GitHub REST API (via `gh api`) to post ONE issue comment on the
-#      PR containing the classification table and the mandatory-reaction ask.
+#   2. It parses a JSON intermediate format from the AI's response. With
+#      --post-comment it uses the GitHub REST API (via `gh api`) to post ONE
+#      issue comment on the PR with the classification table and the 👍/👎 ask.
 #   3. The classifier is advisory: by default the dispatcher exits 0 even when
 #      tests were classified. The --gate flag flips this to exit 1 when the
 #      result is CLASSIFIED (CI-blocking mode for teams that want it).
 #
-# Modes (the four-verdict taxonomy is in the skill; the dispatcher only chooses
-# what to DO with the verdicts):
-#
-#   --mode p0   Observe-only. Classify and record/print. Post NOTHING to the PR.
-#   --mode p1   MVP. Classify, and with --post-comment, post ONE PR comment that
-#               requests a mandatory 👍/👎 reaction (the tuning signal).
+# Behavior: classify the failing tests and post ONE PR comment with the verdicts
+# + a mandatory 👍/👎 ask (the tuning signal). Posting requires --post-comment;
+# without it the report/JSON only prints (useful for a local dry view). Nothing
+# is posted when nothing was triaged.
 #
 # Usage:
-#   test-classifier-dispatcher.sh                              # auto-discover PR; P0; print only
-#   test-classifier-dispatcher.sh --mode p1 --post-comment     # P1: post one PR comment
-#   test-classifier-dispatcher.sh --pr 1234 --mode p1 --post-comment
+#   test-classifier-dispatcher.sh                              # auto-discover PR; print only
+#   test-classifier-dispatcher.sh --pr 1234 --post-comment     # post the PR comment
 #   test-classifier-dispatcher.sh --against origin/main        # explicit base ref
 #   test-classifier-dispatcher.sh --json-only                  # emit only the JSON block
 #   test-classifier-dispatcher.sh --gate                       # exit 1 on CLASSIFIED
@@ -37,7 +34,7 @@
 # Required environment:
 #   AI_REVIEW_TOOL          claude | codex | copilot
 #
-# Required when --post-comment is used (P1):
+# Required when --post-comment is used:
 #   gh CLI installed and authenticated; or GH_TOKEN exported
 
 set -euo pipefail
@@ -67,15 +64,13 @@ SKILL_PATH_CANONICAL=".skills/test-classifier/SKILL.md"
 # library's parser. Recognized flags here:
 #
 #   --pr <number>         Explicit PR number (overrides auto-discovery)
-#   --mode p0|p1          Maturity level (default p0). p0 records only; p1 posts.
-#   --post-comment        In p1, post ONE PR comment via gh api
+#   --post-comment        Post ONE PR comment via gh api (omit to print only)
 #   --gate                Exit 1 if the result is CLASSIFIED (CI-blocking mode)
 #   --json-only           Print only the JSON block (machine consumption)
 #
 # All other flags (--dry-run, --no-block, --against) fall through to the lib.
 
 PR_NUMBER=""
-CLASSIFIER_MODE="p0"
 POST_COMMENT=0
 GATE_MODE=0
 JSON_ONLY=0
@@ -99,18 +94,6 @@ while [[ $# -gt 0 ]]; do
       fi
       shift
       ;;
-    --mode)
-      if [[ -z "${2:-}" ]]; then
-        echo "ERROR: --mode requires a value (p0 | p1)" >&2
-        exit 2
-      fi
-      CLASSIFIER_MODE="$2"
-      shift 2
-      ;;
-    --mode=*)
-      CLASSIFIER_MODE="${1#*=}"
-      shift
-      ;;
     --post-comment)
       POST_COMMENT=1
       shift
@@ -129,25 +112,6 @@ while [[ $# -gt 0 ]]; do
       ;;
   esac
 done
-
-# Normalize and validate the mode.
-CLASSIFIER_MODE="$(printf '%s' "${CLASSIFIER_MODE}" | tr '[:upper:]' '[:lower:]')"
-case "${CLASSIFIER_MODE}" in
-  p0|p1) ;;
-  *)
-    echo "ERROR: --mode must be 'p0' or 'p1' (got '${CLASSIFIER_MODE}')." >&2
-    exit 2
-    ;;
-esac
-
-# P0 is observe-only by definition: it never posts to the PR, even if the caller
-# passed --post-comment by habit. Be explicit and refuse rather than surprise.
-if [[ "${CLASSIFIER_MODE}" == "p0" ]] && (( POST_COMMENT == 1 )); then
-  echo "ERROR: --post-comment is not allowed in --mode p0 (observe-only)." >&2
-  echo "       P0 records/prints only and posts NOTHING to the PR." >&2
-  echo "       Use --mode p1 --post-comment to post a PR comment." >&2
-  exit 2
-fi
 
 # ── PR / base-ref discovery (mirrors the security dispatcher) ───────────────
 require_gh_cli() {
@@ -223,8 +187,7 @@ ai_review::discover_pr_context() {
 
 # ── Prompt construction ─────────────────────────────────────────────────────
 # We instruct the AI to emit BOTH a human-readable report AND a fenced JSON
-# block. The dispatcher extracts the JSON block to record (P0) or post (P1).
-# CLASSIFIER_MODE is interpolated so the AI sets the JSON "mode" field correctly.
+# block. The dispatcher extracts the JSON block to render the PR comment.
 
 read -r -d '' SKILL_PROMPT <<PROMPT || true
 You have access to the test-classifier skill. The skill's full instructions are
@@ -234,8 +197,6 @@ in this repository at:
 
 (Tool-specific copies may also exist under .claude/skills/, .codex/skills/, or
 .github/copilot/skills/; all are byte-identical to the canonical file above.)
-
-You are running in mode: ${CLASSIFIER_MODE}
 
 Classify the failing tests for the change under test — the diff between
 AI_REVIEW_AGAINST and HEAD:
@@ -268,8 +229,6 @@ Follow the skill instructions in test-classifier/SKILL.md exactly:
        <!-- AI_CLASSIFIER_JSON_BEGIN -->
        { ...JSON object as specified in test-classifier/SKILL.md section 6B... }
        <!-- AI_CLASSIFIER_JSON_END -->
-
-     The JSON "mode" field MUST be "${CLASSIFIER_MODE}".
 
 After the JSON block, end your response with EXACTLY ONE of the following
 markers, on its own line, with no surrounding text:
@@ -415,7 +374,6 @@ test_classifier::run() {
     ai_review::info "DRY-RUN — no AI invocation will be made."
     ai_review::log  "  Skill:          ${SKILL_HUMAN_NAME} (${SKILL_NAME})"
     ai_review::log  "  AI tool:        ${AI_REVIEW_TOOL_RESOLVED}"
-    ai_review::log  "  Mode:           ${CLASSIFIER_MODE}"
     ai_review::log  "  PR number:      ${AI_REVIEW_PR_NUMBER:-(none — using --against directly)}"
     ai_review::log  "  Diff source:    $(ai_review::diff_command_description)"
     ai_review::log  "  Post comment:   ${POST_COMMENT}"
@@ -425,7 +383,7 @@ test_classifier::run() {
     exit 0
   fi
 
-  ai_review::info "Running ${SKILL_HUMAN_NAME} (mode ${CLASSIFIER_MODE}) on $(ai_review::diff_command_description) via ${AI_REVIEW_TOOL_RESOLVED}..."
+  ai_review::info "Running ${SKILL_HUMAN_NAME} on $(ai_review::diff_command_description) via ${AI_REVIEW_TOOL_RESOLVED}..."
   ai_review::log  "────────────────────────────────────────────────────────────"
 
   export AI_REVIEW_AGAINST
@@ -465,17 +423,13 @@ test_classifier::run() {
       ;;
   esac
 
-  # ── P0: observe-only. Record/print, post NOTHING. ─────────────────────────
-  if [[ "${CLASSIFIER_MODE}" == "p0" ]]; then
-    ai_review::info "P0 (observe-only): classification recorded; no PR comment posted."
-    # The JSON block above is the record. Downstream metrics tooling (and CI
-    # artifact upload) can capture it from stdout or via --json-only.
-  fi
-
-  # ── P1: post ONE PR comment requesting a mandatory 👍/👎 reaction. ────────
-  if [[ "${CLASSIFIER_MODE}" == "p1" ]] && (( POST_COMMENT == 1 )); then
+  # ── Post ONE PR comment requesting a mandatory 👍/👎 reaction. ────────────
+  # This is the default behavior. --post-comment is what CI passes to actually
+  # post; omit it for a local dry view (the JSON/report still prints to stdout).
+  # Nothing is posted when nothing was triaged (NO_ACTION).
+  if (( POST_COMMENT == 1 )); then
     if [[ "${result}" == "NO_ACTION" ]]; then
-      ai_review::info "P1: result is NO_ACTION — nothing to triage, so no PR comment is posted."
+      ai_review::info "Result is NO_ACTION — nothing to triage, so no PR comment is posted."
     else
       if [[ -z "${AI_REVIEW_PR_NUMBER:-}" ]]; then
         ai_review::err "--post-comment requires a discoverable PR. Use --pr <number> or ensure 'gh pr view' resolves."

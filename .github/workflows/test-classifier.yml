@@ -16,7 +16,6 @@
 #       uses: navapbc/ai-transformation-delivery-systems/.github/workflows/test-classifier.yml@<commit-sha>
 #       with:
 #         tool: claude          # claude | codex | copilot
-#         mode: p0              # p0 (observe-only) | p1 (posts one PR comment)
 #         # ref: <sha>          # optional: bundle ref to fetch scripts from; defaults to the @<sha> above
 #       secrets:
 #         ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
@@ -37,10 +36,6 @@ on:
         description: 'AI CLI to use: claude | codex | copilot'
         type: string
         required: true
-      mode:
-        description: 'p0 (observe-only, posts nothing) | p1 (posts one PR comment)'
-        type: string
-        default: 'p0'
       ref:
         description: >
           Git ref (tag/branch/SHA) of the source repo to check out the
@@ -55,7 +50,7 @@ on:
       OPENAI_API_KEY:
         required: false
 
-# Least-privilege: read the consumer's code; write PR comments only (used in p1).
+# Least-privilege: read the consumer's code; write the PR comment.
 permissions:
   contents: read
   pull-requests: write
@@ -68,13 +63,9 @@ jobs:
       - name: Validate inputs
         env:
           TOOL: ${{ inputs.tool }}
-          MODE: ${{ inputs.mode }}
         run: |
           case "${TOOL}" in claude|codex|copilot) ;; *)
             echo "::error::inputs.tool='${TOOL}' invalid. Must be claude | codex | copilot"; exit 1 ;;
-          esac
-          case "${MODE:-p0}" in p0|p1) ;; *)
-            echo "::error::inputs.mode='${MODE}' invalid. Must be p0 | p1"; exit 1 ;;
           esac
 
       # 1. The CONSUMER's repo — this is what the dispatcher diffs and classifies.
@@ -128,7 +119,6 @@ jobs:
       - name: Run AI test classifier
         env:
           AI_REVIEW_TOOL: ${{ inputs.tool }}
-          AI_CLASSIFIER_MODE: ${{ inputs.mode }}
           CI: 'true'
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           OPENAI_API_KEY:    ${{ secrets.OPENAI_API_KEY }}
@@ -137,7 +127,6 @@ jobs:
           BASE_REF:  ${{ github.event.pull_request.base.ref }}
         run: |
           set -euo pipefail
-          MODE="${AI_CLASSIFIER_MODE:-p0}"
 
           if [[ -z "${PR_NUMBER:-}" ]]; then
             echo "::warning::No PR context. Skipping."; exit 0
@@ -151,16 +140,11 @@ jobs:
           # Make origin/<base-ref> resolvable for the diff range.
           git fetch --no-tags --depth=200 origin "${BASE_REF}:refs/remotes/origin/${BASE_REF}" || true
 
+          # Classify the PR's failing tests and post ONE comment with the 👍/👎 ask.
+          # The full report is also captured as a CI artifact.
           mkdir -p classifier-out
-          if [[ "${MODE}" == "p0" ]]; then
-            echo "Mode P0 (observe-only): recording classification, posting nothing."
-            "${DISPATCHER}" --pr "${PR_NUMBER}" --mode p0 --json-only \
-              | tee classifier-out/classification.json
-          else
-            echo "Mode P1 (MVP): posting one classification comment with the 👍/👎 ask."
-            "${DISPATCHER}" --pr "${PR_NUMBER}" --mode p1 --post-comment \
-              | tee classifier-out/classification.txt
-          fi
+          "${DISPATCHER}" --pr "${PR_NUMBER}" --post-comment \
+            | tee classifier-out/classification.txt
 
       - name: Upload classification record
         if: always()

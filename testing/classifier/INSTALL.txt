@@ -2,9 +2,8 @@ AI Test Classifier — Quick Install
 ===================================
 
 This file is a fast-path reference. For the full pilot playbook (four-verdict
-taxonomy, P0/P1 phasing, metrics loop, security considerations), see
-docs/PLAYBOOK.md. For the step-by-step local + GitHub Actions setup, see
-docs/SETUP.md.
+taxonomy, metrics loop, security considerations), see docs/PLAYBOOK.md. For the
+step-by-step local + GitHub Actions setup, see docs/SETUP.md.
 
 This bundle is the testing-workstream counterpart to security/review/. It
 reuses the same AI_REVIEW_TOOL selection, the same <<<AI_REVIEW_RESULT:...>>>
@@ -22,11 +21,12 @@ For each failing test on a PR, the classifier tags the failure as one of:
 taxonomy — so the team never generates no-op tests for genuinely broken code,
 and never patches code to chase a flaky or environment failure.
 
-SCOPE: P0 + P1 ONLY.
-  • P0 = observe-only (classify, record, NO PR comments).
-  • P1 = post a PR comment with the call + rationale + a MANDATORY 👍/👎 ask.
+WHAT THE PILOT SHIPS (one behavior):
+  • When a PR's tests fail, classify each failure and post ONE PR comment with
+    the verdicts + rationale + a MANDATORY 👍/👎 ask. Non-blocking; the full
+    report is also uploaded as a CI artifact.
   • P2 (proposed diffs / merge-rate) and P3 (zero-shot test generation) are
-    FUTURE/STUBS, documented in docs/PLAYBOOK.md only — do NOT build them.
+    FUTURE direction, documented in docs/PLAYBOOK.md only — do NOT build them.
 
 MERGE, DON'T OVERWRITE
 ======================
@@ -145,7 +145,7 @@ Steps:
     # it in ~/.zshenv instead — non-interactive shells need that file.
 
 ------------------------------------------------------------------------------
-7. Install the GitHub CLI (needed for PR discovery and P1 posting)
+7. Install the GitHub CLI (needed for PR discovery and comment posting)
 ------------------------------------------------------------------------------
 
     brew install gh        # macOS — or see https://github.com/cli/cli
@@ -158,19 +158,18 @@ Steps:
 
     # Dry run — shows what the dispatcher would do, makes no AI call:
     testing/classifier/.skills/test-classifier/scripts/test-classifier-dispatcher.sh \
-      --mode p0 --dry-run
+      --dry-run
 
 ------------------------------------------------------------------------------
 9. Run it (Path A — local)
 ------------------------------------------------------------------------------
 
-    # P0 — observe-only (classify, record, post nothing):
-    testing/classifier/.skills/test-classifier/scripts/test-classifier-dispatcher.sh \
-      --mode p0
+    # Classify the current branch's PR; print the report to the terminal only:
+    testing/classifier/.skills/test-classifier/scripts/test-classifier-dispatcher.sh
 
-    # P1 — comment + mandatory 👍/👎 (once P0 precision looks trustworthy):
+    # Classify and post one comment with the verdicts + mandatory 👍/👎:
     testing/classifier/.skills/test-classifier/scripts/test-classifier-dispatcher.sh \
-      --mode p1 --post-comment
+      --post-comment
 
 ------------------------------------------------------------------------------
 10. Enable the GitHub Actions workflow (Path B — optional, per-repo)
@@ -182,7 +181,6 @@ Steps:
               .github/workflows/ai-test-classifier.yml
       b. Settings → Secrets and variables → Actions → Variables:
            AI_REVIEW_TOOL  = claude | codex | copilot
-           AI_CLASSIFIER_MODE = p0   (start here; switch to p1 later)
       c. Settings → Secrets and variables → Actions → Secrets:
            ANTHROPIC_API_KEY or OPENAI_API_KEY  (per chosen tool)
       d. Edit .github/workflows/ai-test-classifier.yml to uncomment the
@@ -197,7 +195,7 @@ Steps:
     export GOOGLE_SHEETS_TOKEN=<service-account access token>
     testing/metrics/test_classifier_comments.sh
 
-    # Fallback — TSV/CSV to stdout (the realistic P0 default):
+    # Fallback — TSV/CSV to stdout (the realistic default):
     testing/metrics/test_classifier_comments.sh
 
 ------------------------------------------------------------------------------
@@ -207,13 +205,13 @@ Onboarding new team members
     Each new developer needs to:
       a. Install their chosen AI CLI
       b. Set AI_REVIEW_TOOL in their shell (.zshenv recommended on macOS)
-      c. Install gh and authenticate (gh auth login) for P1 posting
+      c. Install gh and authenticate (gh auth login) for comment posting
 
 ------------------------------------------------------------------------------
 Done. The classifier tags every failing test as APPLICATION_BUG / TEST_BUG /
-FLAKY_FAILURE / ENVIRONMENT_ISSUE. Start in P0 (observe-only); graduate to P1
-(comment + mandatory
-👍/👎) once P0 precision looks trustworthy. P2/P3 are future direction only —
-see docs/PLAYBOOK.md. Security considerations (no PHI/PII in fixtures or
-prompts, propose-diff-then-approve, secrets out of CI logs, FedRAMP) are in
-docs/PLAYBOOK.md §6 and cross-reference the security/review/ pre-commit hooks.
+FLAKY_FAILURE / ENVIRONMENT_ISSUE and posts one PR comment with the verdicts +
+a mandatory 👍/👎 ask (non-blocking; the full report is also uploaded as a CI
+artifact). P2/P3 are future direction only — see docs/PLAYBOOK.md. Security
+considerations (no PHI/PII in fixtures or prompts, propose-diff-then-approve,
+secrets out of CI logs, FedRAMP) are in docs/PLAYBOOK.md §6 and cross-reference
+the security/review/ pre-commit hooks.

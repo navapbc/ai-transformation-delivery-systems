@@ -2,18 +2,18 @@
 
 This directory is the metrics counterpart of the AI **test-classifier** workstream,
 paralleling `security/metrics/`. It harvests the developer feedback signal that
-the P1 classifier asks for and turns it into rows you can track over time.
+the classifier asks for and turns it into rows you can track over time.
 
 ## What `test_classifier_comments.sh` measures
 
-The P1 classifier posts **one issue comment per CI run** that has findings.
+The classifier posts **one issue comment per CI run** that has findings.
 Each comment leads with the Conventional-Comment label `test-classifier:` and
 embeds a machine-readable verdict between the classifier's markers (defined in
 `testing/classifier/.skills/test-classifier/SKILL.md` section 6B):
 
 ```
 <!-- AI_CLASSIFIER_JSON_BEGIN -->
-{ "mode": "p1", "summary": "...", "classifications": [
+{ "summary": "...", "classifications": [
   { "verdict": "APPLICATION_BUG" | "TEST_BUG" | "FLAKY_FAILURE" | "ENVIRONMENT_ISSUE",
     "category": "visual-drift" | "behavioral-drift" | "e2e-form-flow-drift" | "other",
     "confidence": "high" | "medium" | "low", ... } ] }
@@ -26,7 +26,7 @@ The script summarizes the `classifications` array into one representative row
 first entry).
 
 The comment requests a **mandatory 👍 / 👎 reaction** from the developer. That
-reaction is the P1 tuning signal:
+reaction is the tuning signal:
 
 - 👍 (`+1`) — the classifier called it right.
 - 👎 (`-1`) — the classifier called it wrong.
@@ -39,7 +39,7 @@ per classifier comment:
 
 These are the two things the pilot needs:
 
-1. **P1 👍-rate** — share of classifier comments that got a 👍 (overall and per
+1. **👍-rate** — share of classifier comments that got a 👍 (overall and per
    verdict bucket). This is the headline "is the classifier trusted?" number.
 2. **Classifier-precision inputs** — verdict × 👍/👎, so `APPLICATION_BUG` vs
    `TEST_BUG` vs `FLAKY_FAILURE` vs `ENVIRONMENT_ISSUE` accuracy can be tracked
@@ -52,7 +52,7 @@ the body starts with `test-classifier:`. Reaction counts come from the
 reactions API (`GET /repos/{owner}/{repo}/issues/comments/{id}/reactions`),
 falling back to the inlined `.reactions` summary.
 
-## Running it (TSV fallback — the P0 default)
+## Running it (TSV fallback — the default)
 
 ```bash
 ./test_classifier_comments.sh                 # TSV to stdout, ready to paste into a sheet
@@ -96,7 +96,8 @@ aborts the run — the stdout TSV remains the source of truth.
 
 ## Scope
 
-This covers **P0** (observe-only: classify and record, no PR-facing comments)
-and **P1** (post the verdict + rationale and collect the mandatory 👍/👎). P2
-(commit suggestions / merge-rate) and P3 (zero-shot test generation) are out of
-scope here and live only as future stubs in the playbook.
+This covers the pilot's one behavior: the classifier posts the verdict +
+rationale and collects the mandatory 👍/👎, which this script harvests into
+per-verdict precision inputs. P2 (commit suggestions / merge-rate) and P3
+(zero-shot test generation) are out of scope here and live only as future
+direction in the playbook.

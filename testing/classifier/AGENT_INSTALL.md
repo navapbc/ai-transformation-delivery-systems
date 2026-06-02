@@ -33,7 +33,6 @@ jobs:
     uses: navapbc/ai-transformation-delivery-systems/.github/workflows/test-classifier.yml@test-classifier-v0
     with:
       tool: claude
-      mode: p0
     secrets:
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
 ```
@@ -52,23 +51,25 @@ Print this to the user verbatim — these are out-of-band and block the run:
    gh secret set ANTHROPIC_API_KEY -R <owner>/<consumer-repo>
    ```
    (Replace `<owner>/<consumer-repo>` with this repo's slug from `gh repo view`.)
-2. **One-time org access** (an admin does once, on the SOURCE repo
-   `navapbc/ai-transformation-delivery-systems`): Settings → Actions → General →
-   Access → "Accessible from repositories in the 'navapbc' organization."
-   Without this, the `uses:` line 404s at runtime.
+
+That is the only manual step. (The source repo is public, so no org-access
+setting is needed.)
 
 ## Step 3 — set expectations, then stop
 
-- `mode: p0` is observe-only: it records a `ai-test-classification` artifact on
-  the PR's Actions run and **posts no comment**. That is correct. The success
-  signal is a green Actions run + a downloadable artifact, not a PR comment.
+- On a PR whose tests fail, the classifier triages each failure and posts **one
+  PR comment** with the verdicts + a mandatory 👍/👎 ask. It is non-blocking,
+  and the full report is also uploaded as an `ai-test-classification` CI
+  artifact. The success signal is a green Actions run that posts that one
+  triage comment.
 - **The classifier triages the failing tests your CI already produces — it does
   NOT run your test suite.** If this repo's CI has no test job (or the PR's diff
   touches no tested code), the classifier will legitimately return `NO_ACTION`
-  ("nothing to triage"). That is expected, not a failure. To see real verdicts,
-  point it at a repo whose CI runs its suite on PRs and can go red.
-- Do NOT enable `mode: p1` or gating. The human flips `mode: p0` → `mode: p1`
-  later, after P0 looks trustworthy.
+  ("nothing to triage") and post nothing. That is expected, not a failure. To
+  see real verdicts, point it at a repo whose CI runs its suite on PRs and can
+  go red.
+- Do NOT enable gating. Gating (`--gate`) is a separate opt-in, out of scope
+  for this install.
 - Nothing triggers until a PR exists. Offer to commit the file on a branch and
   open a PR.
 

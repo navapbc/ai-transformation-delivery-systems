@@ -36,13 +36,12 @@ reuses its conventions exactly:
 - Same bash style: `set -euo pipefail`, `ai_review::`-namespaced helpers,
   color suppressed in CI; least-privilege `GITHUB_TOKEN` permissions.
 
-## Scope: P0 and P1 only
+## What it does
 
-- **P0 — observe-only.** Classify in CI, record to the metrics sink, post **no**
-  PR comments.
-- **P1 — MVP.** Post a PR comment with the call + rationale and request a
-  **mandatory 👍/👎** reaction from the developer. That reaction is the tuning
-  signal. Non-blocking.
+When a PR's tests fail, the classifier triages each failure and posts **one PR
+comment** with the verdicts + rationale and a **mandatory 👍/👎** reaction ask.
+That reaction is the tuning signal. It is **non-blocking**, and the full
+classification report is also uploaded as a CI artifact.
 
 **P2** (proposed commit suggestions / merge-rate) and **P3** (zero-shot test
 generation) are documented as **future direction** in the playbook only — they
@@ -65,7 +64,7 @@ testing/classifier/
     └── test-classifier/
         ├── SKILL.md                            ← canonical classification skill
         └── scripts/
-            └── test-classifier-dispatcher.sh   ← --pr --mode --post-comment
+            └── test-classifier-dispatcher.sh   ← --pr [--post-comment] [--gate]
 
 testing/metrics/
 └── test_classifier_comments.sh                 ← harvests 👍/👎 reactions → Google Sheet / TSV
@@ -88,24 +87,22 @@ jobs:
     uses: navapbc/ai-transformation-delivery-systems/.github/workflows/test-classifier.yml@<commit-sha>
     with:
       tool: claude        # claude | codex | copilot
-      mode: p0            # p0 (observe-only) | p1 (posts one PR comment)
     secrets:
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
 ```
 
-Pin to a commit SHA (not a branch); upgrading is a one-line SHA bump. Start in
-`mode: p0`, then flip to `p1` once P0 precision looks trustworthy. Vendoring
-the workflow file into your repo is the **fallback** for repos that can't use
-reusable workflows — see `docs/SETUP.md` Path C. Full details for all three
-paths are in `docs/SETUP.md`.
+Pin to a commit SHA (not a branch); upgrading is a one-line SHA bump. On the
+next PR the workflow triages any failing tests and posts one comment with the
+verdicts + 👍/👎. Vendoring the workflow file into your repo is the **fallback**
+for repos that can't use reusable workflows — see `docs/SETUP.md` Path C. Full
+details for all three paths are in `docs/SETUP.md`.
 
 ## Start here
 
-1. Read **`docs/PLAYBOOK.md`** — the four-verdict taxonomy, the P0→P1 phasing, the
-   metrics loop, and the embedded security-considerations section.
+1. Read **`docs/PLAYBOOK.md`** — the four-verdict taxonomy, the metrics loop,
+   and the embedded security-considerations section.
 2. Follow **`docs/SETUP.md`** — Path A (reusable workflow, recommended), Path B
-   (run locally), Path C (vendored workflow fallback), with the `p0`/`p1`
-   phase configuration.
+   (run locally), Path C (vendored workflow fallback).
 3. Use **`INSTALL.txt`** for the fast-path file-copy steps.
 
 ## Dispatcher interface
@@ -113,8 +110,8 @@ paths are in `docs/SETUP.md`.
 ```bash
 testing/classifier/.skills/test-classifier/scripts/test-classifier-dispatcher.sh \
   --pr <number> \
-  --mode <p0|p1> \
-  [--post-comment]
+  [--post-comment] \
+  [--gate]
 ```
 
 ## A note on security
