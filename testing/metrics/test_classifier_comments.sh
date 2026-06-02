@@ -9,12 +9,12 @@ set -euo pipefail
 # This mirrors security/metrics/pr_review_comments.sh (same fetch_api retry +
 # `jq -s` slurp helper, same REPOSITORIES array + date-range shape, same
 # robustness against non-array API responses). It is the metrics counterpart of
-# the TESTING workstream's P1 classifier.
+# the TESTING workstream's classifier.
 #
 # ---------------------------------------------------------------------------
 # What this measures
 # ---------------------------------------------------------------------------
-# The P1 classifier posts ONE issue comment per CI run that has findings. Each
+# The classifier posts ONE issue comment per CI run that has findings. Each
 # comment carries:
 #   1. A Conventional-Comment label `test-classifier:` so it is greppable and
 #      so humans recognize it instantly (matches the security copilot format).
@@ -33,14 +33,14 @@ set -euo pipefail
 #      verdict (APPLICATION_BUG > TEST_BUG > FLAKY_FAILURE > ENVIRONMENT_ISSUE),
 #      else the first entry.
 #   3. A request for a MANDATORY 👍 / 👎 reaction from the developer. That
-#      reaction is the P1 tuning signal: 👍 = "classifier called it right",
+#      reaction is the tuning signal: 👍 = "classifier called it right",
 #      👎 = "classifier called it wrong".
 #
 # For each classifier comment we record:
 #   repo, pr, comment_id, verdict, category, confidence, thumbs_up, thumbs_down
 #
 # Those rows are the *classifier-precision inputs*: pairing each verdict with
-# its 👍/👎 lets us compute the P1 👍-rate per verdict bucket over time.
+# its 👍/👎 lets us compute the 👍-rate per verdict bucket over time.
 #
 # ---------------------------------------------------------------------------
 # Identifying a classifier comment (the stable marker)
@@ -55,7 +55,7 @@ set -euo pipefail
 # ---------------------------------------------------------------------------
 # Output / sinks
 # ---------------------------------------------------------------------------
-# DEFAULT (the realistic P0 fallback): a TSV written to stdout, one row per
+# DEFAULT: a TSV written to stdout, one row per
 # classifier comment, with a header line. Copy-paste straight into a sheet.
 #
 # OPTIONAL Google Sheets sink: if BOTH GOOGLE_SHEETS_TOKEN and SHEET_ID are set
@@ -82,7 +82,7 @@ set -euo pipefail
 # ---------------------------------------------------------------------------
 # Usage
 # ---------------------------------------------------------------------------
-#   ./test_classifier_comments.sh                 # TSV to stdout (P0 fallback)
+#   ./test_classifier_comments.sh                 # TSV to stdout (default)
 #   ./test_classifier_comments.sh > rows.tsv      # capture for paste
 #   GOOGLE_SHEETS_TOKEN=... SHEET_ID=... ./test_classifier_comments.sh   # + Sheets sink
 #   DEBUG=1 ./test_classifier_comments.sh         # per-PR fetched/matched counts to stderr

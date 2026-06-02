@@ -10,8 +10,8 @@ description: >
   tools like ContextQA and FixSense. For each failing test the skill emits a
   verdict plus a short rationale and a failure category (visual drift, behavioral
   drift, E2E form-flow drift). Produces a human-readable terminal report and a
-  machine-readable JSON block that the dispatcher uses to record (P0) or post a
-  single PR comment requesting a mandatory 👍/👎 reaction (P1). Use this skill
+  machine-readable JSON block that the dispatcher uses to post a single PR
+  comment requesting a mandatory 👍/👎 reaction. Use this skill
   whenever a CI test run fails and you want to know whether the test, the code,
   the test's stability, or the environment is at fault.
 ---
@@ -71,27 +71,23 @@ not appear in the output, and (if nothing failed at all) the run emits the
 
 ---
 
-## Scope: P0 and P1 only
+## Scope
 
-This skill implements two maturity levels, selected by the dispatcher's
-`--mode` flag and reflected in the JSON `mode` field:
+The classifier classifies each failing test and posts ONE PR comment with the
+verdicts plus a **mandatory** 👍/👎 reaction (the tuning signal). The comment is
+advisory and non-blocking.
 
-| Mode | Name | What the classifier does | PR-facing? |
-|---|---|---|---|
-| **p0** | Observe-only | Classify each failing test in CI, emit the report + JSON, and let the dispatcher **record** the result. No PR comment is posted. | No |
-| **p1** | MVP | Everything P0 does, **plus** the dispatcher posts ONE PR comment with the call + rationale and requests a **mandatory** 👍/👎 reaction from the developer. That reaction is the tuning signal. Non-blocking. | Yes (one comment) |
+**Two further directions are explicitly OUT of scope for this skill.** They are
+documented as future work in the playbook only and must not be implemented here:
 
-**P2 and P3 are explicitly OUT of scope for this skill.** They are documented as
-future work in the playbook only and must not be implemented here:
-
-- **P2 (future)** — proposed commit suggestions for `APPLICATION_BUG` /
-  `TEST_BUG` verdicts, and a merge-rate metric on those suggestions. Do **not**
-  emit applyable code suggestions from this skill.
-- **P3 (future)** — zero-shot generation of brand-new tests. Do **not** generate
-  tests. This skill only classifies failures that already exist.
+- **Future direction (not built)** — proposed commit suggestions for
+  `APPLICATION_BUG` / `TEST_BUG` verdicts, and a merge-rate metric on those
+  suggestions. Do **not** emit applyable code suggestions from this skill.
+- **Future direction (not built)** — zero-shot generation of brand-new tests. Do
+  **not** generate tests. This skill only classifies failures that already exist.
 
 If you find yourself wanting to write a patch or author a test, stop: that is
-P2/P3 territory and out of current scope.
+out of current scope.
 
 ---
 
@@ -104,7 +100,7 @@ P2/P3 territory and out of current scope.
 5. **Assign a confidence** — high / medium / low, honestly
 6. **Emit two artifacts:**
    - A **human-readable terminal report** for developers running the dispatcher locally
-   - A **machine-readable JSON block** the dispatcher records (P0) or posts as one PR comment (P1)
+   - A **machine-readable JSON block** the dispatcher posts as one PR comment
 7. **Emit result marker** — exactly one of `<<<AI_REVIEW_RESULT:CLASSIFIED|NO_ACTION>>>`
 
 ---
@@ -268,7 +264,6 @@ lead each finding with its verdict, and keep rationales to one or two sentences.
 
 ```
 ## Test Classifier Report
-**Mode:** P0 (observe-only) | P1 (MVP — posts one PR comment)
 **Scope:** Change under test = diff against <base-ref> (N files changed)
 **Failing tests classified:** K
 
@@ -318,7 +313,7 @@ lead each finding with its verdict, and keep rationales to one or two sentences.
 
 **Recommendation:** CLASSIFIED — 4 failing tests triaged
 (1 APPLICATION_BUG, 1 TEST_BUG, 1 FLAKY_FAILURE, 1 ENVIRONMENT_ISSUE).
-In P1, the PR comment below will be posted requesting a mandatory 👍/👎 reaction.
+The PR comment below will be posted requesting a mandatory 👍/👎 reaction.
 ```
 
 ### 6B — Machine-Readable JSON Block (for dispatcher → record / PR comment)
@@ -332,7 +327,6 @@ markers must be a single object with the schema below.
 ```
 <!-- AI_CLASSIFIER_JSON_BEGIN -->
 {
-  "mode": "p1",
   "summary": "Triaged 4 failing tests against the change: 1 APPLICATION_BUG (loyalty discount regressed — fix the code, do not relax the test), 1 TEST_BUG (stale banner snapshot, app is correct), 1 FLAKY_FAILURE (signup submit timed out on this run only — re-run to confirm), 1 ENVIRONMENT_ISSUE (orders DB unavailable on the runner).",
   "classifications": [
     {
@@ -378,8 +372,7 @@ markers must be a single object with the schema below.
 
 **JSON schema requirements:**
 
-- `mode` — `"p0"` or `"p1"`. Must match the dispatcher's `--mode`.
-- `summary` — a short overall triage summary. In P1 this seeds the top of the
+- `summary` — a short overall triage summary. This seeds the top of the
   posted PR comment.
 - `classifications` — array, one entry per failing test considered. Each entry:
   - `test` — the failing test's name/id as the runner reports it.
@@ -404,9 +397,9 @@ If nothing failed, `classifications` is empty and the run emits the `NO_ACTION`
 marker. Any non-empty `classifications` array means at least one real failure
 was triaged, so the run emits `CLASSIFIED`.
 
-### 6C — P1 PR comment body (what the dispatcher posts)
+### 6C — PR comment body (what the dispatcher posts)
 
-In **P1**, the dispatcher renders ONE issue comment on the PR from the JSON
+The dispatcher renders ONE issue comment on the PR from the JSON
 above. The comment **MUST** request a mandatory 👍/👎 reaction and explain that
 the reaction is the tuning signal. The rendered body looks like this:
 
@@ -432,13 +425,13 @@ test-classifier: AI triage of failing tests
 
 **Please react to this comment with 👍 if these calls are right, or 👎 if any are wrong.**
 Your reaction is the tuning signal we use to measure classifier precision and
-decide when it is trustworthy enough to graduate to suggesting fixes. A 👎 with a
+improve the calls over time. A 👎 with a
 one-line reply telling us which verdict was wrong is worth its weight in gold.
 
 This comment is advisory and non-blocking — it will never fail your build.
 ```
 
-The reaction ask is not optional decoration; it is the core of the P1 feedback
+The reaction ask is not optional decoration; it is the core of the feedback
 loop. The dispatcher will state it explicitly, and the metrics layer
 (`testing/metrics/`) harvests the 👍/👎 counts off this exact comment.
 
@@ -522,6 +515,6 @@ Rules:
 - **Do not pull in unrelated files.** Read only the test, the code paths the
   failure implicates, and the diff. Do not load the broader source tree, env
   files, or credential stores "for context."
-- **The PR comment is public to the repo.** Everything in the rendered P1
+- **The PR comment is public to the repo.** Everything in the rendered
   comment is visible to anyone with repo access — keep it to verdicts,
   rationales, and the 👍/👎 ask, with no sensitive values.

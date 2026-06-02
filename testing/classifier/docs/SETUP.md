@@ -3,13 +3,13 @@
 This document covers everything needed to run the AI test classifier — the
 tool that tags each CI test failure as **`APPLICATION_BUG`**, **`TEST_BUG`**,
 **`FLAKY_FAILURE`**, or **`ENVIRONMENT_ISSUE`** (see
-[`PLAYBOOK.md`](./PLAYBOOK.md) for the full framing and
-phasing). There are **three independent paths**, and you can use any or all:
+[`PLAYBOOK.md`](./PLAYBOOK.md) for the full framing). There are **three
+independent paths**, and you can use any or all:
 
 | Path | What it does | Who runs it | Setup effort |
 |---|---|---|---|
-| **A. Reusable workflow (recommended)** | Consumer repo adds a tiny caller workflow that references the bundle's reusable workflow with a pinned SHA — no files copied in. Runs on every PR; in P1 posts a 👍/👎 comment | Repo admin enables once | Low (one-time) |
-| **B. Local dispatcher run** | Developer runs `test-classifier-dispatcher.sh` on their machine against a PR; classifications print to the terminal and (in P1) post as a PR comment via `gh` CLI | Any developer | Low (per developer) |
+| **A. Reusable workflow (recommended)** | Consumer repo adds a tiny caller workflow that references the bundle's reusable workflow with a pinned SHA — no files copied in. Runs on every PR; posts a triage comment with the verdicts + 👍/👎 | Repo admin enables once | Low (one-time) |
+| **B. Local dispatcher run** | Developer runs `test-classifier-dispatcher.sh` on their machine against a PR; classifications print to the terminal and (with `--post-comment`) post as a PR comment via `gh` CLI | Any developer | Low (per developer) |
 | **C. Vendored workflow** | Copy the bundle's workflow file into your repo's live workflows dir. Fallback for repos that can't use reusable workflows | Repo admin enables once | Medium (one-time) |
 
 Most pilots use **A + B**: the reusable workflow provides the consistent,
@@ -18,8 +18,8 @@ locally while iterating. Use **C** only when policy forbids referencing an
 external reusable workflow.
 
 This guide mirrors `security/review/docs/PR_REVIEW_SETUP.md` step for step;
-the difference is the classifier's `--mode` (`p0` / `p1`) input and the
-metrics sink, which the security bundle does not have.
+the difference is the classifier's metrics sink, which the security bundle does
+not have.
 
 ---
 
@@ -28,10 +28,9 @@ metrics sink, which the security bundle does not have.
 1. [Path A — Reusable workflow (recommended)](#path-a--reusable-workflow-recommended)
 2. [Path B — Local dispatcher run](#path-b--local-dispatcher-run)
 3. [Path C — Vendored workflow](#path-c--vendored-workflow)
-4. [Choosing a phase: `p0` vs `p1`](#choosing-a-phase-p0-vs-p1)
-5. [Fine-grained personal access token setup](#fine-grained-personal-access-token-setup)
-6. [Metrics sink configuration](#metrics-sink-configuration)
-7. [Troubleshooting](#troubleshooting)
+4. [Fine-grained personal access token setup](#fine-grained-personal-access-token-setup)
+5. [Metrics sink configuration](#metrics-sink-configuration)
+6. [Troubleshooting](#troubleshooting)
 
 ---
 
@@ -78,7 +77,6 @@ jobs:
     uses: navapbc/ai-transformation-delivery-systems/.github/workflows/test-classifier.yml@<commit-sha>
     with:
       tool: claude        # claude | codex | copilot
-      mode: p0            # p0 (observe-only) | p1 (posts one PR comment)
     secrets:
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
 ```
@@ -88,9 +86,9 @@ reproducible and is the only ref that gives you a clear, auditable provenance.
 To upgrade, bump the SHA. That is the entire upgrade procedure — no file copy,
 no merge.
 
-In this path, `tool` and `mode` are **workflow inputs** in the caller's
-`with:` block — **not** repository variables. (Repository variables only apply
-to the local and vendored paths below.)
+In this path, `tool` is a **workflow input** in the caller's `with:` block —
+**not** a repository variable. (Repository variables only apply to the local
+and vendored paths below.)
 
 ### Step 2 — Set the API-key secret
 
@@ -109,13 +107,9 @@ API-key secret** for the chosen tool, and pass it through the caller's
 
 Only set the secret matching your chosen `tool` input.
 
-### Step 3 — Start in `p0`, then flip to `p1`
-
-Start with `mode: p0` (observe-only — records, posts nothing). Once P0
-precision looks trustworthy (see [Choosing a phase](#choosing-a-phase-p0-vs-p1)
-and the metrics loop in PLAYBOOK §5), flip the caller's `mode:` input to `p1`
-and push. There is no repository variable to change in this path — the phase
-lives in the caller workflow.
+That is the whole setup for Path A. On the next PR the workflow runs, triages
+any failing tests, and posts one comment with the verdicts + a mandatory 👍/👎.
+The full report is also uploaded as a CI artifact, and the run is non-blocking.
 
 ---
 
@@ -132,7 +126,7 @@ local dispatcher to classify the failing tests on the PR they're working on.
   `copilot`).
 - The matching AI CLI is installed (`claude`, `codex`, or `copilot`).
 - The GitHub CLI (`gh`) is installed and authenticated (needed for PR
-  discovery and, in P1, for posting the comment).
+  discovery and, with `--post-comment`, for posting the comment).
 
 ### Installing `gh`
 
@@ -154,31 +148,29 @@ security policy requires a PAT (see the
 ### Daily usage
 
 ```bash
-# P0 — observe-only. Classify the current branch's PR, record, post nothing:
-testing/classifier/.skills/test-classifier/scripts/test-classifier-dispatcher.sh \
-  --mode p0
+# Classify the current branch's PR; print the report to the terminal only:
+testing/classifier/.skills/test-classifier/scripts/test-classifier-dispatcher.sh
 
-# P1 — classify and post the comment with the mandatory 👍/👎 ask:
+# Classify and post the comment with the mandatory 👍/👎 ask:
 testing/classifier/.skills/test-classifier/scripts/test-classifier-dispatcher.sh \
-  --mode p1 --post-comment
+  --post-comment
 
 # Explicit PR number (works from any branch):
 testing/classifier/.skills/test-classifier/scripts/test-classifier-dispatcher.sh \
-  --pr 1234 --mode p1 --post-comment
+  --pr 1234 --post-comment
 
-# Dry run — show the plan (tool, mode, PR, diff range), make no AI call:
+# Dry run — show the plan (tool, PR, diff range), make no AI call:
 testing/classifier/.skills/test-classifier/scripts/test-classifier-dispatcher.sh \
-  --mode p0 --dry-run
+  --dry-run
 ```
 
 By default the dispatcher prints the classification report to the terminal
-only. In `--mode p1`, add `--post-comment` to also post the PR comment. In
-`--mode p0`, `--post-comment` is ignored by design — P0 never posts.
+only. Add `--post-comment` to also post the PR comment.
 
-### What gets posted (P1 only)
+### What gets posted
 
-In `--mode p1 --post-comment`, the dispatcher posts **one** PR comment per
-classified failure (or one rolled-up comment) stating:
+With `--post-comment`, the dispatcher posts **one** PR comment per classified
+failure (or one rolled-up comment) stating:
 
 - The call: one of **`APPLICATION_BUG`** (test fails because the app
   regressed — fix the code), **`TEST_BUG`** (test fails but the app is correct
@@ -191,15 +183,14 @@ classified failure (or one rolled-up comment) stating:
 
 The classifier is **advisory** — posting a comment never fails anything. Use
 `--gate` only if you have explicitly decided to make an unconfirmed
-`APPLICATION_BUG` a blocker (out of pilot scope; see the PLAYBOOK §3 and §4).
+`APPLICATION_BUG` a blocker (out of pilot scope; see the PLAYBOOK §4).
 
 ### Flags reference (classifier-specific)
 
 | Flag | Effect |
 |---|---|
 | `--pr <number>`   | Explicit PR number. Overrides auto-discovery via `gh pr view`. |
-| `--mode <p0\|p1>` | Phase. `p0` = observe-only (record, no comment). `p1` = comment + mandatory 👍/👎. |
-| `--post-comment`  | Post the classifier comment via `gh api`. Required in `p1`; ignored in `p0`. |
+| `--post-comment`  | Post the classifier comment (verdicts + 👍/👎 ask) via `gh api`. Without it, the report only prints / uploads as an artifact. |
 | `--gate`          | Exit non-zero on any unconfirmed triaged failure (e.g. an `APPLICATION_BUG`). For CI gating (out of pilot scope). |
 | `--json-only`     | Print only the JSON block (for piping into the metrics harvest). |
 
@@ -262,46 +253,27 @@ a secret.
 
 Only set the secret matching your chosen tool. The others can remain blank.
 
-### Step 4 — Set the phase via `AI_CLASSIFIER_MODE`
-
-The classifier's phase is a repository **variable** read by the `pull_request`
-trigger, and is also exposed as a `workflow_dispatch` input for manual runs.
-
-1. **Settings** → **Secrets and variables** → **Actions** → **Variables**.
-2. **New repository variable**.
-3. Name: `AI_CLASSIFIER_MODE`
-4. Value: `p0` (observe-only) or `p1` (comment + mandatory 👍/👎).
-
-**Start in `p0`.** Switch to `p1` only after P0 precision looks trustworthy
-(see [Choosing a phase](#choosing-a-phase-p0-vs-p1) and the metrics loop in
-PLAYBOOK §5).
-
-### Step 5 — Confirm workflow permissions (least privilege)
+### Step 4 — Confirm workflow permissions (least privilege)
 
 The workflow declares exactly the permissions it needs:
 
 ```yaml
 permissions:
   contents: read         # check out the repo, read the diff and test output
-  pull-requests: write   # post the classifier comment (used in p1 only)
+  pull-requests: write   # post the classifier comment
 ```
 
-In `p0` the workflow does not post and only exercises `contents: read`. If your
-org enforces restrictive default-token permissions, confirm the workflow's
-`permissions:` block is honored under **Settings** → **Actions** → **General**
-→ **Workflow permissions**.
+If your org enforces restrictive default-token permissions, confirm the
+workflow's `permissions:` block is honored under **Settings** → **Actions** →
+**General** → **Workflow permissions**.
 
-### Step 6 — Enable the trigger
+### Step 5 — Enable the trigger
 
 Edit `.github/workflows/ai-test-classifier.yml` and change:
 
 ```yaml
 on:
   workflow_dispatch:
-    inputs:
-      mode:
-        description: "Classifier phase (p0 = observe-only, p1 = comment + 👍/👎)"
-        default: "p0"
   # pull_request:
   #   types: [opened, synchronize, reopened]
 ```
@@ -311,18 +283,14 @@ to:
 ```yaml
 on:
   workflow_dispatch:
-    inputs:
-      mode:
-        description: "Classifier phase (p0 = observe-only, p1 = comment + 👍/👎)"
-        default: "p0"
   pull_request:
     types: [opened, synchronize, reopened]
 ```
 
-Commit and push. The next PR triggers a classification at whatever phase
-`AI_CLASSIFIER_MODE` is set to.
+Commit and push. The next PR triggers a classification, which posts one triage
+comment with the verdicts + 👍/👎.
 
-### Step 7 — Optional: enable gating (out of pilot scope)
+### Step 6 — Optional: enable gating (out of pilot scope)
 
 The pilot default is **advisory / non-blocking**, exactly like security review.
 If, much later, a team wants an unconfirmed triaged failure (e.g. an
@@ -332,7 +300,6 @@ workflow's run step:
 ```yaml
 testing/classifier/.skills/test-classifier/scripts/test-classifier-dispatcher.sh \
   --pr "${PR_NUMBER}" \
-  --mode "${AI_CLASSIFIER_MODE}" \
   --post-comment
   # --gate
 ```
@@ -343,28 +310,9 @@ makes the classifier a true merge gate. Use with care — a false
 
 ---
 
-## Choosing a phase: `p0` vs `p1`
-
-| | `p0` — observe-only | `p1` — MVP |
-|---|---|---|
-| Classifies failures | Yes | Yes |
-| Records to metrics sink | Yes | Yes |
-| Posts PR comment | No | Yes |
-| Asks for mandatory 👍/👎 | No | Yes |
-| Developer-visible | No | Yes |
-| Use when | Establishing baseline precision; no one trusts a comment yet | Baseline precision is good enough to be worth a developer's glance and reaction |
-
-**Graduation rule of thumb:** run `p0` until you have enough recorded
-classifications to read a stable per-class precision (see PLAYBOOK §5), then
-flip the phase to `p1` (the caller's `mode:` input in Path A, or the
-`AI_CLASSIFIER_MODE` variable in Path C). Do not skip P0 — a P1 comment a team doesn't
-trust trains them to ignore the bot, which poisons the 👍/👎 signal.
-
----
-
 ## Fine-grained personal access token setup
 
-A fine-grained PAT is only needed for **local P1 use** — when a developer wants
+A fine-grained PAT is only needed for **local posting** — when a developer wants
 to post the classifier comment via the dispatcher but prefers a token over
 `gh auth login` (e.g., in a hardened environment without browser auth). For
 GitHub Actions, the default `GITHUB_TOKEN` is sufficient and strictly
@@ -386,7 +334,7 @@ preferred.
    |---|---|---|
    | **Contents** | **Read-only** | `git diff` against the repo; `gh pr view` reads PR metadata |
    | **Metadata** | **Read-only** | Mandatory baseline; granted automatically |
-   | **Pull requests** | **Read and write** | Post the classifier comment (P1) |
+   | **Pull requests** | **Read and write** | Post the classifier comment |
 
    Leave everything else (`Actions`, `Workflows`, `Secrets`, `Administration`,
    etc.) on **No access**.
@@ -435,7 +383,7 @@ testing/metrics/test_classifier_comments.sh
 - Treat `GOOGLE_SHEETS_TOKEN` exactly like an API key: GitHub Actions secret
   in CI, environment variable locally, kept out of logs.
 
-### Fallback sink — TSV to stdout (the realistic P0 default)
+### Fallback sink — TSV to stdout (the realistic default)
 
 ```bash
 # TSV to stdout (default for early pilots, before the Sheet is wired)
@@ -467,8 +415,9 @@ gh auth login
 
 ### `--post-comment` did nothing
 
-Confirm you are in `--mode p1`. In `--mode p0` the classifier is observe-only
-and `--post-comment` is intentionally a no-op.
+Confirm `gh` is authenticated and the token has `pull-requests: write`. Without
+`--post-comment` the dispatcher only prints the report to the terminal — pass
+the flag to actually post.
 
 ### `gh api` call fails with `403 Resource not accessible by integration`
 
@@ -482,7 +431,8 @@ Check the workflow logs:
 
 - `AI_REVIEW_TOOL` variable not set → the validation step fails fast.
 - API key secret not set → the AI CLI errors.
-- `AI_CLASSIFIER_MODE` is `p0` → posting is intentionally skipped (observe-only).
+- No failing tests to triage → the classifier returns `NO_ACTION` and posts
+  nothing. That is expected, not an error.
 - AI returned no result marker (`<<<AI_REVIEW_RESULT:...>>>`) → the dispatcher
   errors and exits non-zero. This can happen on transient model issues; retry.
 
