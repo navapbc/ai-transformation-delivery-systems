@@ -62,6 +62,11 @@ Print this to the user verbatim — these are out-of-band and block the run:
 - `mode: p0` is observe-only: it records a `ai-test-classification` artifact on
   the PR's Actions run and **posts no comment**. That is correct. The success
   signal is a green Actions run + a downloadable artifact, not a PR comment.
+- **The classifier triages the failing tests your CI already produces — it does
+  NOT run your test suite.** If this repo's CI has no test job (or the PR's diff
+  touches no tested code), the classifier will legitimately return `NO_ACTION`
+  ("nothing to triage"). That is expected, not a failure. To see real verdicts,
+  point it at a repo whose CI runs its suite on PRs and can go red.
 - Do NOT enable `mode: p1` or gating. The human flips `mode: p0` → `mode: p1`
   later, after P0 looks trustworthy.
 - Nothing triggers until a PR exists. Offer to commit the file on a branch and

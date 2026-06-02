@@ -111,6 +111,15 @@ P2/P3 territory and out of current scope.
 
 ## Step 1 — Collect the Failing-Test Signal
 
+> **The classifier triages an existing failing-test signal — it does not run the
+> suite itself.** The signal comes from the consumer repo's own CI test job
+> (the failure output it already produces). If you are running in an environment
+> where the suite has not been executed and no failure output is present, you
+> have no signal to triage: do the diff-based sanity check below, and if no test
+> is even implicated by the change, emit `NO_ACTION`. (This is the correct,
+> honest result — not a bug. A repo with no CI test job, or a diff that touches
+> no tested code, will legitimately produce `NO_ACTION`.)
+
 The classifier needs to know *what failed and why it says it failed*. Gather, in
 order of preference:
 
