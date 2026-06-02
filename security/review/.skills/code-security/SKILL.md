@@ -486,5 +486,18 @@ a marker causes the dispatcher to fail safe (block the commit).
 - **Scope limitations:** This review covers the diff and targeted context. It
   is not a substitute for a full penetration test or automated SAST scan on
   the entire codebase.
+
+---
+
+## Second-opinion adjudication
+
+When this review reports findings (WARN or BLOCK), the dispatcher runs an
+**independent adjudication pass** (`.skills/finding-adjudication/SKILL.md`): a
+fresh agent re-inspects the cited code and confirms, dismisses, or downgrades
+each finding before the commit gate is decided. This removes false positives
+(e.g. synthetic fixtures, already-mitigated patterns) without any suppression
+list. Your job here is unchanged — report findings faithfully at the right
+severity; the adjudicator provides the second opinion. A clean (PASS) review is
+final and is never adjudicated.
 test change
 test change for dispatch verification

@@ -49,6 +49,7 @@ Steps:
     mkdir -p .skills/iac-compliance/scripts
     mkdir -p .skills/pr-review/scripts
     mkdir -p .skills/codebase-audit/scripts
+    mkdir -p .skills/finding-adjudication/scripts
     mkdir -p .github/instructions
     mkdir -p scripts
     # (the derived .claude/, .codex/, or .github/copilot/skills/ directory
@@ -93,6 +94,12 @@ Steps:
     cp "$BUNDLE/.skills/codebase-audit/scripts/codebase-audit-dispatcher.sh" \
        .skills/codebase-audit/scripts/codebase-audit-dispatcher.sh
 
+    # finding-adjudication skill (independent second-opinion pass)
+    cp "$BUNDLE/.skills/finding-adjudication/SKILL.md" \
+       .skills/finding-adjudication/SKILL.md
+    cp "$BUNDLE/.skills/finding-adjudication/scripts/finding-adjudication-dispatcher.sh" \
+       .skills/finding-adjudication/scripts/finding-adjudication-dispatcher.sh
+
     # Copilot PR-review instructions
     # ⚠️ If .github/copilot-instructions.md already exists in your repo, do
     # NOT overwrite — open both files and merge the BEGIN/END markered
@@ -118,6 +125,7 @@ Steps:
     chmod +x .skills/iac-compliance/scripts/iac-compliance-hook-dispatcher.sh
     chmod +x .skills/pr-review/scripts/pr-review-dispatcher.sh
     chmod +x .skills/codebase-audit/scripts/codebase-audit-dispatcher.sh
+    chmod +x .skills/finding-adjudication/scripts/finding-adjudication-dispatcher.sh
     chmod +x scripts/sync-skills.sh
 
 ------------------------------------------------------------------------------

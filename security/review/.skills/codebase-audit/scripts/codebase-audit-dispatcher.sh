@@ -26,6 +26,15 @@
 #   codebase-audit-dispatcher.sh --gate                   # exit 1 if any findings
 #   codebase-audit-dispatcher.sh --dry-run                # list batches; no AI calls
 #   codebase-audit-dispatcher.sh --list-batches           # print the batch plan, no execution
+#   codebase-audit-dispatcher.sh --no-adjudicate          # skip the second-opinion pass
+#
+# Adjudication (second opinion):
+#   A directory that reports findings triggers an independent adjudication pass
+#   (finding-adjudication skill) that confirms / dismisses / downgrades each
+#   finding before its report, counts, index, and SARIF are written. Clean
+#   directories are final and incur no second call. Controlled by AI_ADJUDICATION
+#   (default on; --no-adjudicate or AI_ADJUDICATION=0 disables) and the optional
+#   AI_ADJUDICATION_MODEL (a different model on the same CLI for the second pass).
 #
 # Output:
 #   audit-reports/<directory>.md         (one per batched directory; slashes
@@ -104,12 +113,14 @@ while [[ $# -gt 0 ]]; do
       LIST_BATCHES_ONLY=1; shift ;;
     --no-block)
       NO_BLOCK=1; shift ;;
+    --no-adjudicate)
+      AI_REVIEW_NO_ADJUDICATE=1; shift ;;
     --output-dir)
       OUTPUT_DIR="$2"; shift 2 ;;
     --output-dir=*)
       OUTPUT_DIR="${1#*=}"; shift ;;
     -h|--help)
-      sed -n '2,42p' "$0" | sed 's/^# \{0,1\}//'
+      sed -n '2,46p' "$0" | sed 's/^# \{0,1\}//'
       exit 0
       ;;
     *)
@@ -605,9 +616,33 @@ main() {
       continue
     fi
 
+    # First-pass result marker for this batch.
+    local marker
+    marker="$(printf '%s\n' "${output}" | grep -oE '<<<AI_REVIEW_RESULT:(CLEAN|FINDINGS)>>>' | head -1 || true)"
+
+    # Independent second-opinion adjudication. Runs only on batches that
+    # reported findings, only when enabled — CLEAN batches are final and incur
+    # no second AI call (cost scales with findings, not directory count). The
+    # adjudicated output replaces the first-pass output, so the written report,
+    # severity counts, _INDEX.md, and SARIF all reflect the confirmed findings.
+    if [[ "${marker}" == "<<<AI_REVIEW_RESULT:FINDINGS>>>" ]] && ai_review::adjudication_enabled; then
+      ai_review::info "    → findings — running adjudication (second opinion)${AI_ADJUDICATION_MODEL:+ via model ${AI_ADJUDICATION_MODEL}}..."
+      local adj_output adj_rc=0 adj_marker=""
+      adj_output="$(ai_review::adjudicate "${output}" "audit")" || adj_rc=$?
+      if (( adj_rc == 0 )); then
+        adj_marker="$(printf '%s\n' "${adj_output}" | grep -oE '<<<AI_REVIEW_RESULT:(CLEAN|FINDINGS)>>>' | head -1 || true)"
+      fi
+      if (( adj_rc != 0 )) || [[ -z "${adj_marker}" ]]; then
+        ai_review::warn "    → adjudication unavailable/unparseable; keeping first-pass findings."
+      else
+        output="${adj_output}"
+        marker="${adj_marker}"
+      fi
+    fi
+
     # Strip the result marker from the report body (the dispatcher tracks
     # it, but the markdown report shouldn't show it).
-    local body marker
+    local body
     body="$(printf '%s\n' "${output}" | sed -E '/^<<<AI_REVIEW_RESULT:(CLEAN|FINDINGS)>>>$/d')"
 
     # Also strip the SARIF block if present (we save it separately).
@@ -631,8 +666,7 @@ main() {
       fi
     fi
 
-    # Determine marker result.
-    marker="$(printf '%s\n' "${output}" | grep -oE '<<<AI_REVIEW_RESULT:(CLEAN|FINDINGS)>>>' | head -1 || true)"
+    # Tally the (possibly adjudicated) marker result.
     case "${marker}" in
       "<<<AI_REVIEW_RESULT:FINDINGS>>>")
         with_findings=$(( with_findings + 1 ))
