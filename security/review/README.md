@@ -282,9 +282,12 @@ files where applicable — see the callout above):
 │   ├── pr-review/
 │   │   ├── SKILL.md
 │   │   └── scripts/pr-review-dispatcher.sh
-│   └── codebase-audit/
+│   ├── codebase-audit/
+│   │   ├── SKILL.md
+│   │   └── scripts/codebase-audit-dispatcher.sh
+│   └── finding-adjudication/
 │       ├── SKILL.md
-│       └── scripts/codebase-audit-dispatcher.sh
+│       └── scripts/finding-adjudication-dispatcher.sh
 ├── .github/
 │   ├── copilot-instructions.md
 │   ├── instructions/
@@ -309,6 +312,7 @@ chmod +x .skills/code-security/scripts/code-security-hook-dispatcher.sh
 chmod +x .skills/iac-compliance/scripts/iac-compliance-hook-dispatcher.sh
 chmod +x .skills/pr-review/scripts/pr-review-dispatcher.sh
 chmod +x .skills/codebase-audit/scripts/codebase-audit-dispatcher.sh
+chmod +x .skills/finding-adjudication/scripts/finding-adjudication-dispatcher.sh
 chmod +x scripts/sync-skills.sh
 ```
 
@@ -1621,6 +1625,7 @@ chmod +x .skills/code-security/scripts/code-security-hook-dispatcher.sh
 chmod +x .skills/iac-compliance/scripts/iac-compliance-hook-dispatcher.sh
 chmod +x .skills/pr-review/scripts/pr-review-dispatcher.sh
 chmod +x .skills/codebase-audit/scripts/codebase-audit-dispatcher.sh
+chmod +x .skills/finding-adjudication/scripts/finding-adjudication-dispatcher.sh
 chmod +x scripts/sync-skills.sh
 ```
 
