@@ -52,6 +52,45 @@ the body starts with `test-classifier:`. Reaction counts come from the
 reactions API (`GET /repos/{owner}/{repo}/issues/comments/{id}/reactions`),
 falling back to the inlined `.reactions` summary.
 
+## Phase 2 — fix-PR merge-rate output
+
+In Phase 2 the classifier no longer suggests fixes inline; it opens each
+proposed fix as its **own pull request** on a branch named
+`ai-test-fix/<original_pr>-<n>`, based on the original PR's head ref. That fix
+PR runs the repo's **real CI** (proving "the rest complies"), and the
+developer's decision to **merge** it is the clean quality signal.
+
+After the 👍/👎 rows, the script prints a **second TSV section** (preceded by a
+blank separator line and its own header) listing every fix PR it can find —
+i.e. every PR whose head branch starts with `ai-test-fix/`:
+
+| repo | original_pr | fix_pr_number | state | merged |
+|------|-------------|---------------|-------|--------|
+
+- `original_pr` — parsed from the branch name `ai-test-fix/<original_pr>-<n>`
+  (the digits before the first `-` after the prefix); ties the fix back to the
+  developer's PR it was proposed against.
+- `fix_pr_number` — the fix PR's own number.
+- `state` — `open`, `closed` (rejected/superseded), or `merged`.
+- `merged` — `true`/`false`, derived authoritatively from the PR's `mergedAt`.
+
+This maps directly to the Phase 2 **"merge rate on proposed edits"** metric:
+
+```
+merge rate = merged_fix_prs / total_fix_prs
+```
+
+where `merged_fix_prs` is the count of rows with `merged == true` and
+`total_fix_prs` is the number of fix-PR rows. The script also logs that ratio
+to **stderr** at the end of the run (e.g. `Fix-PR merge rate: 3/5 merged.`) as
+a convenience; stdout stays clean TSV.
+
+Because each fix PR has a unique branch, the harvest lists all PRs per repo and
+filters by the `ai-test-fix/` prefix in `jq` (rather than `gh pr list --head`,
+which matches a single exact branch). Recursion is avoided upstream: the
+classifier skips bot-authored / `ai-test-fix/` PRs, so these fix PRs never get
+classified (and so never appear in the 👍/👎 section above).
+
 ## Running it (TSV fallback — the default)
 
 ```bash
@@ -96,8 +135,12 @@ aborts the run — the stdout TSV remains the source of truth.
 
 ## Scope
 
-This covers the pilot's one behavior: the classifier posts the verdict +
-rationale and collects the mandatory 👍/👎, which this script harvests into
-per-verdict precision inputs. P2 (commit suggestions / merge-rate) and P3
-(zero-shot test generation) are out of scope here and live only as future
-direction in the playbook.
+This covers two behaviors. (1) The **pilot** behavior — the classifier posts
+the verdict + rationale and collects the mandatory 👍/👎, harvested into
+per-verdict precision inputs (section above). (2) **Phase 2** — when a repo
+opts in, the classifier opens its proposed fix as a separate `ai-test-fix/...`
+PR; this script harvests those PRs' merge state into the "merge rate on
+proposed edits" metric. Both sections are emitted in one run, with Phase 2 rows
+appearing only if any fix PRs exist (otherwise just the header and a `0/0`
+stderr note). P3 (zero-shot test generation) remains out of scope here and
+lives only as future direction in the playbook.

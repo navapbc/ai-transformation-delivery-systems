@@ -29,6 +29,7 @@
 #   test-classifier-dispatcher.sh --against origin/main        # explicit base ref
 #   test-classifier-dispatcher.sh --json-only                  # emit only the JSON block
 #   test-classifier-dispatcher.sh --gate                       # exit 1 on CLASSIFIED
+#   test-classifier-dispatcher.sh --propose-fixes              # open fix PRs (opt-in)
 #   test-classifier-dispatcher.sh --dry-run                    # show plan, no AI call
 #
 # Required environment:
@@ -36,6 +37,12 @@
 #
 # Required when --post-comment is used:
 #   gh CLI installed and authenticated; or GH_TOKEN exported
+#
+# Required when --propose-fixes is used:
+#   AI_FIX_PAT              A PAT (NOT the default GITHUB_TOKEN) with
+#                          pull-requests:write + contents:write. Opening the fix
+#                          PR with a PAT is what lets the repo's real CI run on
+#                          it; a GITHUB_TOKEN-opened PR would not trigger CI.
 
 set -euo pipefail
 
@@ -67,6 +74,11 @@ SKILL_PATH_CANONICAL=".skills/test-classifier/SKILL.md"
 #   --post-comment        Post ONE PR comment via gh api (omit to print only)
 #   --gate                Exit 1 if the result is CLASSIFIED (CI-blocking mode)
 #   --json-only           Print only the JSON block (machine consumption)
+#   --propose-fixes       Open a SEPARATE fix PR per fixable verdict (opt-in,
+#                         default OFF). Requires the AI_FIX_PAT env var. The fix
+#                         PR targets the ORIGINAL PR's head ref so merging it
+#                         folds the fix in, and is opened with the PAT so the
+#                         repo's real CI runs on it.
 #
 # All other flags (--dry-run, --no-block, --against) fall through to the lib.
 
@@ -74,6 +86,7 @@ PR_NUMBER=""
 POST_COMMENT=0
 GATE_MODE=0
 JSON_ONLY=0
+PROPOSE_FIXES=0
 REMAINING_FOR_LIB=()
 
 while [[ $# -gt 0 ]]; do
@@ -104,6 +117,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --json-only)
       JSON_ONLY=1
+      shift
+      ;;
+    --propose-fixes)
+      PROPOSE_FIXES=1
       shift
       ;;
     *)
@@ -152,6 +169,10 @@ ai_review::discover_pr_context() {
     REMAINING_FOR_LIB+=("--against" "origin/${base}")
     AI_REVIEW_PR_NUMBER="${PR_NUMBER}"
     AI_REVIEW_PR_BASE="${base}"
+    # Capture the head ref + author too — the head ref is the base for any fix
+    # PR (Phase 2), and the author feeds the recursion guard.
+    AI_REVIEW_PR_HEAD="$(gh pr view "${PR_NUMBER}" --json headRefName --jq '.headRefName' 2>/dev/null || true)"
+    AI_REVIEW_PR_AUTHOR="$(gh pr view "${PR_NUMBER}" --json author --jq '.author.login' 2>/dev/null || true)"
     return 0
   fi
 
@@ -170,6 +191,9 @@ ai_review::discover_pr_context() {
   # rather than scraping the raw JSON with brittle regexes.
   AI_REVIEW_PR_NUMBER="$(gh pr view --json number --jq '.number' 2>/dev/null || true)"
   AI_REVIEW_PR_BASE="$(gh pr view --json baseRefName --jq '.baseRefName' 2>/dev/null || true)"
+  # Head ref (base for any Phase 2 fix PR) + author (recursion guard).
+  AI_REVIEW_PR_HEAD="$(gh pr view --json headRefName --jq '.headRefName' 2>/dev/null || true)"
+  AI_REVIEW_PR_AUTHOR="$(gh pr view --json author --jq '.author.login' 2>/dev/null || true)"
 
   if [[ -z "${AI_REVIEW_PR_NUMBER}" ]] || [[ -z "${AI_REVIEW_PR_BASE}" ]]; then
     echo "ERROR: 'gh pr view' could not find an open PR for the current branch." >&2
@@ -354,10 +378,194 @@ post_comment_to_github() {
   echo "[test-classifier] Comment posted. Awaiting the developer's mandatory 👍/👎 reaction."
 }
 
+# ── Phase 2: open a SEPARATE fix PR per fixable verdict (opt-in) ────────────
+# For each classifications[] entry that carries a non-empty "fix" object, we
+# branch off the ORIGINAL PR's head ref, `git apply` the proposed diff, commit,
+# push, and open a PR whose base IS that head ref — so merging it folds the fix
+# into the developer's PR, and (because we push/open with a PAT, not the default
+# GITHUB_TOKEN) the repo's real CI runs on the fix PR and proves "the rest
+# complies". TEST_BUG and APPLICATION_BUG get a fix; FLAKY_FAILURE and
+# ENVIRONMENT_ISSUE never do (the AI omits "fix" for them).
+#
+# Args: PR number, original head ref, the extracted classifier JSON block.
+open_fix_pr() {
+  local pr_number="$1"
+  local head_ref="$2"
+  local classifier_json="$3"
+
+  # The PAT is mandatory for this path: a GITHUB_TOKEN-opened PR does NOT trigger
+  # the repo's CI, and validating the fix via CI is the whole point. Fail soft —
+  # log clearly and skip, never crash the surrounding run.
+  if [[ -z "${AI_FIX_PAT:-}" ]]; then
+    ai_review::err "--propose-fixes requires the AI_FIX_PAT env var (a PAT with"
+    ai_review::log "  pull-requests:write + contents:write). It must NOT be the default"
+    ai_review::log "  GITHUB_TOKEN — a GITHUB_TOKEN-opened PR will not trigger the repo's"
+    ai_review::log "  CI, and we need the fix PR's CI to run. Skipping fix-PR creation."
+    return 0
+  fi
+
+  require_gh_cli "--propose-fixes was specified"
+
+  if ! command -v python3 &>/dev/null; then
+    ai_review::err "python3 is required to read fixes from the classifier JSON. Skipping fix-PR creation."
+    return 0
+  fi
+
+  if [[ -z "${head_ref}" ]]; then
+    ai_review::err "--propose-fixes requires the original PR's head ref, which could not be resolved. Skipping fix-PR creation."
+    return 0
+  fi
+
+  local repo_slug
+  if ! repo_slug="$(gh repo view --json nameWithOwner --jq '.nameWithOwner' 2>/dev/null)"; then
+    ai_review::err "Could not determine repo from gh CLI. Skipping fix-PR creation."
+    return 0
+  fi
+
+  # Emit one TAB-separated record per fixable classification:
+  #   <index>\t<verdict>\t<base64 summary>\t<base64 rationale>\t<base64 diff>
+  # We base64-encode the free-text/diff fields so embedded newlines and tabs
+  # survive the line-oriented read loop below.
+  local fixes
+  fixes="$(echo "${classifier_json}" | python3 -c '
+import base64, json, sys
+
+try:
+    data = json.load(sys.stdin)
+except Exception as e:
+    print(f"ERROR: could not parse classifier JSON for fixes: {e}", file=sys.stderr)
+    sys.exit(1)
+
+def b64(s):
+    return base64.b64encode((s or "").encode("utf-8")).decode("ascii")
+
+for i, c in enumerate(data.get("classifications", []), start=1):
+    fix = c.get("fix")
+    if not isinstance(fix, dict):
+        continue
+    diff = fix.get("diff") or ""
+    if not diff.strip():
+        continue
+    verdict = c.get("verdict", "?")
+    summary = fix.get("summary") or "apply proposed fix"
+    rationale = c.get("rationale", "")
+    print("\t".join([str(i), verdict, b64(summary), b64(rationale), b64(diff)]))
+')" || {
+    ai_review::err "Failed to extract fixes from classifier JSON. Skipping fix-PR creation."
+    return 0
+  }
+
+  if [[ -z "${fixes}" ]]; then
+    ai_review::info "No classifications carried an applyable 'fix' — nothing to propose."
+    return 0
+  fi
+
+  # Make sure we have the original head ref locally to branch off it.
+  if ! git rev-parse --verify --quiet "origin/${head_ref}" >/dev/null; then
+    git fetch origin "${head_ref}" >/dev/null 2>&1 || true
+  fi
+
+  # Remember where we are so we can restore the working tree between fixes.
+  local restore_ref
+  restore_ref="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
+  if [[ -z "${restore_ref}" || "${restore_ref}" == "HEAD" ]]; then
+    restore_ref="$(git rev-parse HEAD)"
+  fi
+
+  while IFS=$'\t' read -r idx verdict b64_summary b64_rationale b64_diff; do
+    [[ -z "${idx}" ]] && continue
+
+    local summary rationale diff fix_branch
+    summary="$(printf '%s' "${b64_summary}" | base64 --decode)"
+    rationale="$(printf '%s' "${b64_rationale}" | base64 --decode)"
+    diff="$(printf '%s' "${b64_diff}" | base64 --decode)"
+    fix_branch="ai-test-fix/${pr_number}-${idx}"
+
+    ai_review::info "Preparing fix PR ${fix_branch} (${verdict}): ${summary}"
+
+    # Branch off the ORIGINAL PR's head so the fix PR can target that head ref.
+    if ! git checkout -B "${fix_branch}" "origin/${head_ref}" >/dev/null 2>&1; then
+      ai_review::err "Could not create branch ${fix_branch} off origin/${head_ref}. Skipping this fix."
+      git checkout "${restore_ref}" >/dev/null 2>&1 || true
+      continue
+    fi
+
+    # Apply the proposed diff. If it does not apply cleanly, skip — never abort
+    # the remaining fixes.
+    if ! printf '%s\n' "${diff}" | git apply --index -; then
+      ai_review::err "git apply failed for ${fix_branch} — diff did not apply cleanly. Skipping this fix."
+      git checkout -- . >/dev/null 2>&1 || true
+      git checkout "${restore_ref}" >/dev/null 2>&1 || true
+      git branch -D "${fix_branch}" >/dev/null 2>&1 || true
+      continue
+    fi
+
+    if ! git commit -m "fix(test-classifier-proposed): ${summary}" >/dev/null 2>&1; then
+      ai_review::err "Nothing to commit (or commit failed) for ${fix_branch}. Skipping this fix."
+      git checkout "${restore_ref}" >/dev/null 2>&1 || true
+      git branch -D "${fix_branch}" >/dev/null 2>&1 || true
+      continue
+    fi
+
+    # Push and open the PR with the PAT so the fix PR triggers the repo's CI.
+    # Scope GH_TOKEN to just these calls via a subshell.
+    local pr_body
+    pr_body="$(printf '%s\n' \
+      "Proposed fix for #${pr_number} from the AI test classifier (Phase 2)." \
+      "" \
+      "**Verdict:** ${verdict}" \
+      "" \
+      "**Rationale:** ${rationale}" \
+      "" \
+      "**Fix:** ${summary}" \
+      "" \
+      "CI on this PR validates the fix; merge to fold it into #${pr_number}.")"
+
+    if (
+      export GH_TOKEN="${AI_FIX_PAT}"
+      # No --force: a bot must never clobber an existing branch. If the fix
+      # branch already exists (a prior run for this PR/index), the push fails
+      # and we skip rather than overwrite.
+      git push "https://x-access-token:${AI_FIX_PAT}@github.com/${repo_slug}.git" \
+        "${fix_branch}:${fix_branch}" >/dev/null 2>&1 || exit 1
+      gh api "repos/${repo_slug}/pulls" \
+        --method POST \
+        --field title="[AI test fix] ${summary}" \
+        --field head="${fix_branch}" \
+        --field base="${head_ref}" \
+        --field body="${pr_body}" >/dev/null || exit 1
+    ); then
+      ai_review::ok "Opened fix PR ${fix_branch} → base ${head_ref} (CI will validate it)."
+    else
+      ai_review::err "Failed to push/open fix PR ${fix_branch}. Skipping (other fixes continue)."
+    fi
+
+    git checkout "${restore_ref}" >/dev/null 2>&1 || true
+  done <<< "${fixes}"
+}
+
 # ── Custom run loop (mirrors the security PR dispatcher) ────────────────────
 test_classifier::run() {
   # Discover the PR (and inject --against into REMAINING_FOR_LIB).
   ai_review::discover_pr_context
+
+  # ── Recursion guard ──────────────────────────────────────────────────────
+  # When fix-PR creation is enabled we must NOT classify our own fix PRs, or the
+  # classifier would loop on the PRs it just opened. Skip if the PR is authored
+  # by the classifier bot OR its head branch is one of our fix branches. The
+  # guard only engages when --propose-fixes is on (the token-wielding path); the
+  # default classify+comment pilot behavior is never gated by it.
+  if (( PROPOSE_FIXES == 1 )); then
+    local _author="${AI_REVIEW_PR_AUTHOR:-}"
+    local _head="${AI_REVIEW_PR_HEAD:-}"
+    if [[ "${_author}" == *"[bot]" ]] \
+       || [[ "${_author}" == "github-actions" ]] \
+       || [[ "${_author}" == "github-actions[bot]" ]] \
+       || [[ "${_head}" == ai-test-fix/* ]]; then
+      ai_review::ok "Recursion guard: PR is bot-authored or on an ai-test-fix/ branch (author='${_author}', head='${_head}') — skipping classification."
+      exit 0
+    fi
+  fi
 
   # Hand off remaining args to the library's parser.
   ai_review::parse_args "${REMAINING_FOR_LIB[@]+"${REMAINING_FOR_LIB[@]}"}"
@@ -377,6 +585,7 @@ test_classifier::run() {
     ai_review::log  "  Diff source:    $(ai_review::diff_command_description)"
     ai_review::log  "  Post comment:   ${POST_COMMENT}"
     ai_review::log  "  Gate mode:      ${GATE_MODE}"
+    ai_review::log  "  Propose fixes:  ${PROPOSE_FIXES}"
     ai_review::log  "  Changed files:"
     ai_review::changed_files | sed 's/^/    /'
     exit 0
@@ -446,6 +655,25 @@ test_classifier::run() {
       local comment_body
       comment_body="$(render_pr_comment_body "${json_block}")"
       post_comment_to_github "${AI_REVIEW_PR_NUMBER}" "${comment_body}"
+    fi
+  fi
+
+  # ── Phase 2 (opt-in): open a SEPARATE fix PR per fixable verdict. ─────────
+  # Additive and strictly gated on --propose-fixes — the default path above is
+  # untouched. Only runs when there is something to triage (CLASSIFIED) and a
+  # PR is discoverable. open_fix_pr() fails soft (logs + skips) if AI_FIX_PAT is
+  # missing or a diff does not apply, so it never crashes the surrounding run.
+  if (( PROPOSE_FIXES == 1 )) && [[ "${result}" == "CLASSIFIED" ]]; then
+    if [[ -z "${AI_REVIEW_PR_NUMBER:-}" ]]; then
+      ai_review::warn "--propose-fixes needs a discoverable PR (use --pr <number> or ensure 'gh pr view' resolves); skipping fix-PR creation."
+    else
+      local fix_json_block
+      fix_json_block="$(extract_classifier_json "${classifier_output}")"
+      if [[ -z "${fix_json_block}" ]]; then
+        ai_review::warn "--propose-fixes: AI response had no parseable JSON block; skipping fix-PR creation."
+      else
+        open_fix_pr "${AI_REVIEW_PR_NUMBER}" "${AI_REVIEW_PR_HEAD:-}" "${fix_json_block}"
+      fi
     fi
   fi
 

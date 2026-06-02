@@ -272,4 +272,105 @@ for REPO in "${REPOSITORIES[@]}"; do
 done
 
 log ""
+log "Done processing classifier comments (thumbs harvest)."
+
+# =============================================================================
+# Phase 2 — fix-PR merge-rate harvest (additive; does not touch the 👍/👎 rows)
+# -----------------------------------------------------------------------------
+# In Phase 2 the classifier opens the proposed fix as its OWN pull request on a
+# branch named  ai-test-fix/<original_pr>-<n>  (base = the original PR's head
+# ref), so the fix runs the repo's REAL CI. The developer's decision to MERGE
+# that fix PR is the clean Phase 2 quality metric: "merge rate on proposed
+# edits" = merged_fix_prs / total_fix_prs.
+#
+# We find every PR whose HEAD branch starts with 'ai-test-fix/' and, for each,
+# emit: original_pr (parsed from the branch name), fix_pr_number, state
+# (open|closed|merged), and merged (true|false). These go to stdout as a SECOND
+# TSV section with its own header, after a blank separator line, so the first
+# section (👍/👎 precision rows) is unchanged and both are machine-parseable.
+# =============================================================================
+
+# Branch-name prefix the Phase 2 fix PRs use (kept in sync with the workflow).
+FIX_BRANCH_PREFIX="ai-test-fix/"
+
+log ""
+log "=================================================="
+log "Starting Phase 2 fix-PR merge-rate harvest."
+log "Matching fix PRs by head-branch prefix: '${FIX_BRANCH_PREFIX}'"
+
+# Blank line separates the two TSV sections; second header follows.
+printf '\n'
+printf 'repo\toriginal_pr\tfix_pr_number\tstate\tmerged\n'
+
+TOTAL_FIX_PRS=0
+MERGED_FIX_PRS=0
+
+for REPO in "${REPOSITORIES[@]}"; do
+    log "Processing fix PRs for repository: $REPO..."
+
+    # List PRs (any state) and keep only those whose head branch starts with
+    # the fix prefix. gh pr list --head matches one exact branch, but each fix
+    # PR has a UNIQUE branch (ai-test-fix/<pr>-<n>), so we list all and filter
+    # by prefix in jq instead — one call per repo, same shape as the loop above.
+    FIX_PR_JSON=$(gh pr list -R "$REPO" --state all --limit 1000 \
+        --json number,headRefName,state,mergedAt 2>/dev/null) || {
+        log "WARNING: Skipping fix-PR harvest for $REPO: failed to fetch PR list."
+        continue
+    }
+
+    # Emit one compact record per fix PR. We derive `merged` from mergedAt so
+    # the boolean is authoritative, and normalize `state` to merged in that
+    # case (otherwise the lowercased gh state: open|closed). The original PR
+    # number is parsed from ai-test-fix/<pr>-<n> (digits before the first '-'
+    # after the prefix).
+    FIX_MATCHED=$(echo "$FIX_PR_JSON" | jq -c \
+        --arg prefix "$FIX_BRANCH_PREFIX" '
+        .[]
+        | (.headRefName // "") as $br
+        | select($br | startswith($prefix))
+        | ($br | ltrimstr($prefix) | capture("^(?<orig>[0-9]+)-").orig) as $orig
+        | (.mergedAt != null) as $merged
+        | {
+            original_pr:   ($orig // ""),
+            fix_pr_number: (.number | tostring),
+            state:         (if $merged then "merged" else ((.state // "") | ascii_downcase) end),
+            merged:        $merged
+          }
+    ' 2>/dev/null || echo "")
+
+    if [ "${DEBUG:-0}" = "1" ]; then
+        FC=$(printf '%s\n' "$FIX_MATCHED" | grep -c . || true)
+        log "  $REPO: fix_prs_matched=$FC"
+    fi
+
+    [ -n "$FIX_MATCHED" ] || continue
+
+    printf '%s\n' "$FIX_MATCHED" | while IFS= read -r REC; do
+        [ -n "$REC" ] || continue
+
+        ORIG_PR=$(echo "$REC" | jq -r '.original_pr')
+        FIX_PR=$(echo "$REC" | jq -r '.fix_pr_number')
+        STATE=$(echo "$REC" | jq -r '.state')
+        MERGED=$(echo "$REC" | jq -r '.merged')
+
+        printf '%s\t%s\t%s\t%s\t%s\n' \
+            "$REPO" "$ORIG_PR" "$FIX_PR" "$STATE" "$MERGED"
+    done
+
+    # Tally for the stderr summary. Recomputed from FIX_MATCHED here because the
+    # per-row loop above runs in a subshell (piped), so increments inside it
+    # would not survive into this scope.
+    REPO_TOTAL=$(printf '%s\n' "$FIX_MATCHED" | grep -c . || true)
+    REPO_MERGED=$(printf '%s\n' "$FIX_MATCHED" | jq -r 'select(.merged == true) | 1' 2>/dev/null | grep -c . || true)
+    TOTAL_FIX_PRS=$((TOTAL_FIX_PRS + REPO_TOTAL))
+    MERGED_FIX_PRS=$((MERGED_FIX_PRS + REPO_MERGED))
+done
+
+if [ "$TOTAL_FIX_PRS" -gt 0 ]; then
+    log "Fix-PR merge rate: ${MERGED_FIX_PRS}/${TOTAL_FIX_PRS} merged."
+else
+    log "Fix-PR merge rate: no fix PRs found (0/0)."
+fi
+
+log ""
 log "Done processing all repositories."

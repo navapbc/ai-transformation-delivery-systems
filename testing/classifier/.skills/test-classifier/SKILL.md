@@ -77,17 +77,28 @@ The classifier classifies each failing test and posts ONE PR comment with the
 verdicts plus a **mandatory** 👍/👎 reaction (the tuning signal). The comment is
 advisory and non-blocking.
 
-**Two further directions are explicitly OUT of scope for this skill.** They are
+**Proposing fixes is now an OPT-IN capability (default OFF).** When a repo turns
+it on, the classifier MAY additionally attach a proposed fix to a
+`TEST_BUG` / `APPLICATION_BUG` verdict (see Step 5.5 and the optional `fix`
+object in §6B). The dispatcher opens that fix as a **separate PR** targeting the
+original PR's branch, so the fix runs the repo's real CI and the developer's
+merge decision becomes the quality metric. This is **default off**: unless the
+repo explicitly enables it, the classifier behaves exactly as the pilot does —
+classify and post one comment, with no `fix` object emitted. Nothing
+token-wielding activates by default.
+
+- Even when enabled, only `TEST_BUG` and `APPLICATION_BUG` ever get a `fix`, and
+  only when you are confident the fix is correct and minimal. `FLAKY_FAILURE`
+  and `ENVIRONMENT_ISSUE` never get a `fix` (re-run advice only).
+
+**One direction remains explicitly OUT of scope for this skill.** It is
 documented as future work in the playbook only and must not be implemented here:
 
-- **Future direction (not built)** — proposed commit suggestions for
-  `APPLICATION_BUG` / `TEST_BUG` verdicts, and a merge-rate metric on those
-  suggestions. Do **not** emit applyable code suggestions from this skill.
 - **Future direction (not built)** — zero-shot generation of brand-new tests. Do
   **not** generate tests. This skill only classifies failures that already exist.
 
-If you find yourself wanting to write a patch or author a test, stop: that is
-out of current scope.
+If you find yourself wanting to author a brand-new test, stop: that is out of
+current scope.
 
 ---
 
@@ -250,6 +261,38 @@ Every classification carries a `confidence` of `high`, `medium`, or `low`:
 
 ---
 
+## Step 5.5 — Proposing a Fix (optional)
+
+This step applies **only** when the repo has opted in to fix proposals (default
+OFF — see Scope). If fix proposals are not enabled, skip this step entirely and
+never emit a `fix` object.
+
+When fix proposals are enabled, consider attaching a `fix` object to a
+classification **only** when **both** of these hold:
+
+1. The verdict is `TEST_BUG` or `APPLICATION_BUG` — never `FLAKY_FAILURE` or
+   `ENVIRONMENT_ISSUE`. A flaky or environment failure has no code/test fix; the
+   remedy is a re-run, so it never gets a `fix`.
+2. You can write a **correct, minimal** fix with **high confidence**. If you are
+   not sure the fix is right, **omit `fix`** — do not guess. A wrong fix wastes
+   the developer's review and a CI run; the verdict + rationale alone is still
+   valuable.
+
+What the fix should do:
+
+- For `TEST_BUG`: fix the **test** — update the stale assertion/snapshot/selector
+  to match the new, correct application behavior. Do **not** touch application
+  code.
+- For `APPLICATION_BUG`: fix the **application code** — repair the regression the
+  test correctly caught. Do **not** relax or delete the test to make it pass.
+
+The fix is expressed as a standard unified diff that applies cleanly with
+`git apply` from the repo root (see the `fix` object schema in §6B). Keep it
+minimal: change only what is needed to make the correct side right. Never
+fabricate a fix you are unsure of — omitting `fix` is always the safe default.
+
+---
+
 ## Step 6 — Emit Output
 
 The dispatcher needs **two artifacts** in a single AI response: a human-readable
@@ -345,7 +388,12 @@ markers must be a single object with the schema below.
       "verdict": "TEST_BUG",
       "category": "visual-drift",
       "confidence": "high",
-      "rationale": "The diff intentionally changes the banner copy to 'Welcome back'. The app renders the new, correct copy; the snapshot assertion is stale. Update the test, not the code."
+      "rationale": "The diff intentionally changes the banner copy to 'Welcome back'. The app renders the new, correct copy; the snapshot assertion is stale. Update the test, not the code.",
+      "fix": {
+        "path": "src/components/Banner.test.tsx",
+        "diff": "diff --git a/src/components/Banner.test.tsx b/src/components/Banner.test.tsx\n--- a/src/components/Banner.test.tsx\n+++ b/src/components/Banner.test.tsx\n@@ -19,5 +19,5 @@ describe('Banner', () => {\n   it('renders the announcement copy', () => {\n     render(<Banner />);\n-    expect(screen.getByRole('banner')).toHaveTextContent('Welcome');\n+    expect(screen.getByRole('banner')).toHaveTextContent('Welcome back');\n   });\n });\n",
+        "summary": "Update the stale banner assertion from 'Welcome' to the new correct copy 'Welcome back'."
+      }
     },
     {
       "test": "signup › submits the registration form",
@@ -392,6 +440,18 @@ markers must be a single object with the schema below.
     For `APPLICATION_BUG`, make explicit that the fix belongs in the application
     code, not the test (this is the guardrail against no-op test generation). For
     `FLAKY_FAILURE`, recommend the re-run as the disambiguator.
+  - `fix` — **optional** object proposing an applyable fix for this failure.
+    Present **only** when the repo has opted in to fix proposals (default OFF —
+    see Scope and Step 5.5) **and** the verdict is `TEST_BUG` or
+    `APPLICATION_BUG` **and** you are confident you can write a correct, minimal
+    fix. **Always omitted** for `FLAKY_FAILURE` and `ENVIRONMENT_ISSUE`, and
+    omitted whenever you are unsure of the fix (omit rather than guess). When
+    present, it has exactly these fields:
+    - `path` — repo-relative path to the file the fix changes. For a `TEST_BUG`
+      this is the test file; for an `APPLICATION_BUG` it is the application file.
+    - `diff` — a standard **unified git diff** implementing the fix, applyable
+      with `git apply` from the repo root.
+    - `summary` — one line describing what the fix does.
 
 If nothing failed, `classifications` is empty and the run emits the `NO_ACTION`
 marker. Any non-empty `classifications` array means at least one real failure
@@ -465,10 +525,13 @@ vocabulary — `CLASSIFIED` / `NO_ACTION` — is specific to the classifier.)
 
 ## Notes for the Classifier
 
-- **Never patch, never generate.** Your output is a verdict and a rationale,
-  full stop. Proposing commit suggestions (P2) and authoring tests (P3) are out
-  of current scope. If an `APPLICATION_BUG` verdict is correct, the *value* of
-  the classifier is precisely that it told a human to fix the code rather than
+- **Verdict and rationale come first; a fix is optional and opt-in.** Your core
+  output is always a verdict and a rationale. A proposed `fix` is emitted **only**
+  when the repo has opted in (default OFF) and only for a confident
+  `TEST_BUG` / `APPLICATION_BUG` (see Step 5.5). Authoring brand-new tests (P3)
+  remains out of scope. Even when you attach a fix to an `APPLICATION_BUG`, the
+  fix repairs the **code**, never the test — the *value* of the classifier is
+  precisely that it points the fix at the right side of the failure rather than
   silently regenerating the test to pass.
 - **Be honest about uncertainty.** A `low`-confidence verdict with a clear "here
   is what I couldn't tell" is more useful than a confident guess. The 👍/👎 loop

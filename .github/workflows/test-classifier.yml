@@ -17,9 +17,14 @@
 #       with:
 #         tool: claude          # claude | codex | copilot
 #         # ref: <sha>          # optional: override the bundle ref; defaults to @pilot
+#         # propose_fixes: true # opt-in: open separate fix PRs for TEST_BUG /
+#         #                     #   APPLICATION_BUG. Default off. Requires AI_FIX_PAT.
 #       secrets:
 #         ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
 #         # OPENAI_API_KEY:  ${{ secrets.OPENAI_API_KEY }}   # only if tool=codex
+#         # AI_FIX_PAT: ${{ secrets.AI_FIX_PAT }}            # only if propose_fixes:
+#         #   fine-grained PAT (pull-requests:write + contents:write) used to open
+#         #   fix PRs so their CI runs (the default GITHUB_TOKEN cannot trigger CI).
 #
 # `pilot` is a MOVING tag that always tracks the latest classifier on main; the
 # move-tag.yml workflow re-points it automatically whenever the classifier
@@ -46,10 +51,28 @@ on:
           the ref you pinned the uses: line to.
         type: string
         default: ''
+      propose_fixes:
+        description: >
+          Opt-in (default OFF). When true, the classifier opens a SEPARATE fix PR
+          for each TEST_BUG / APPLICATION_BUG verdict it can write a confident,
+          minimal fix for. The fix PR targets the original PR's head branch so
+          merging it folds the fix in, and is opened with the AI_FIX_PAT secret
+          (NOT the default GITHUB_TOKEN) so the repo's real CI runs on it.
+          Leave false to keep the pilot behavior (classify + one comment only);
+          nothing token-wielding activates by default.
+        type: boolean
+        default: false
     secrets:
       ANTHROPIC_API_KEY:
         required: false
       OPENAI_API_KEY:
+        required: false
+      AI_FIX_PAT:
+        description: >
+          Fine-grained PAT used to open fix PRs (so their CI runs; a PR opened
+          with the default GITHUB_TOKEN does not trigger workflows). Required
+          scopes: pull-requests:write + contents:write. Only needed when
+          propose_fixes is true.
         required: false
 
 # Least-privilege: read the consumer's code; write the PR comment.
@@ -60,7 +83,13 @@ permissions:
 jobs:
   classify:
     runs-on: ubuntu-latest
-    if: github.event.pull_request.draft == false
+    # Skip drafts, and RECURSION GUARD: skip our own fix PRs so the classifier
+    # never classifies a fix it just opened in a loop. A fix PR is identified by
+    # its head branch (ai-test-fix/*) OR a bot author login.
+    if: >-
+      github.event.pull_request.draft == false &&
+      !startsWith(github.event.pull_request.head.ref, 'ai-test-fix/') &&
+      github.event.pull_request.user.type != 'Bot'
     steps:
       - name: Validate inputs
         env:
@@ -125,8 +154,14 @@ jobs:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           OPENAI_API_KEY:    ${{ secrets.OPENAI_API_KEY }}
           GITHUB_TOKEN: ${{ github.token }}
+          # PAT used by the dispatcher to open fix PRs (so their CI runs). Empty
+          # unless the caller wired the AI_FIX_PAT secret. The workflow's own
+          # GITHUB_TOKEN perms stay as-is (read code + write the comment); the
+          # PAT carries the pull-requests:write/contents:write scope itself.
+          AI_FIX_PAT: ${{ secrets.AI_FIX_PAT }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           BASE_REF:  ${{ github.event.pull_request.base.ref }}
+          PROPOSE_FIXES: ${{ inputs.propose_fixes }}
         run: |
           set -euo pipefail
 
@@ -144,8 +179,18 @@ jobs:
 
           # Classify the PR's failing tests and post ONE comment with the 👍/👎 ask.
           # The full report is also captured as a CI artifact.
+          #
+          # Opt-in fix PRs: when inputs.propose_fixes is true, add --propose-fixes
+          # so the dispatcher opens a separate fix PR (via AI_FIX_PAT) for each
+          # TEST_BUG / APPLICATION_BUG it can fix. When false (the default), the
+          # invocation is byte-for-byte what the pilot runs today.
+          DISPATCH_ARGS=(--pr "${PR_NUMBER}" --post-comment)
+          if [[ "${PROPOSE_FIXES:-false}" == "true" ]]; then
+            DISPATCH_ARGS+=(--propose-fixes)
+          fi
+
           mkdir -p classifier-out
-          "${DISPATCHER}" --pr "${PR_NUMBER}" --post-comment \
+          "${DISPATCHER}" "${DISPATCH_ARGS[@]}" \
             | tee classifier-out/classification.txt
 
       - name: Upload classification record
