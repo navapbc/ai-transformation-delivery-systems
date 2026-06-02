@@ -227,10 +227,11 @@ pre-commit --version
 
 Full docs: <https://pre-commit.com/#installation>
 
-### 2. Bash 4+ and `git`
+### 2. Bash and `git`
 
-Both ship with macOS and Linux. The dispatchers are POSIX-bash, not POSIX-sh
-— `/bin/bash` must be available.
+Both ship with macOS and Linux. The dispatchers are written for **bash 3.2+**
+— the version macOS still ships as `/bin/bash` — so no Homebrew bash upgrade is
+needed. They are POSIX-bash, not POSIX-sh; `/bin/bash` must be available.
 
 ### 3. **One** of the three AI CLIs
 
@@ -927,6 +928,13 @@ loads, and whether you use `--min-severity high` (lower-severity findings
 require less per-batch output). Run `--list-batches` first to see how
 many directories will be audited and plan accordingly.
 
+**Wall time vs. cost under concurrency:** the wall-time column scales down with
+`--jobs` — the default `--jobs 4` runs four directories at once, so a "Medium"
+audit finishes in roughly a quarter of its serial (`--jobs 1`) time, up to your
+AI vendor's rate limit. **AI cost is independent of `--jobs`** — it depends only
+on total work (directories × per-batch tokens), so parallelism buys speed at no
+extra spend.
+
 ### Using SARIF output
 
 `--sarif` writes `audit-reports/_findings.sarif` — a SARIF 2.1.0 document
@@ -1003,8 +1011,9 @@ remove that line and commit the reports.
 
 | Flag | Effect |
 |---|---|
-| `--scope <path>` | Limit the audit to a subtree (e.g., `src/`, `infra/`) |
+| `--scope <path>` | Limit the audit to a subtree (e.g., `src/`, `infra/`). **Repeatable** — pass it multiple times to audit several subtrees in one run. |
 | `--min-severity <level>` | Filter to `critical`, `high`, `medium`, or `low` (default: `low`) |
+| `--jobs <N>` | Audit N directories concurrently (default: 4; also settable via `AUDIT_JOBS`). `--jobs 1` runs serially. |
 | `--force` | Re-audit directories that already have reports |
 | `--sarif` | Also emit `_findings.sarif` |
 | `--gate` | Exit non-zero if any batch has findings (for CI use) |
