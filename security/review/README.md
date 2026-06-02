@@ -233,12 +233,13 @@ finding-bearing commits from dragging:
 
 | Variable / flag | Default | Effect |
 |---|---|---|
-| `--jobs N` / `AI_REVIEW_JOBS` | `4` | Batches reviewed concurrently. `1` = serial (original behavior). The ceiling is your AI vendor's rate limit — too high invites HTTP 429s. |
-| `AI_REVIEW_BATCH_BY` | `dir` | `dir` = one batch per changed directory (preserves cross-file context within a directory). `file` = one batch per file (maximum concurrency, **higher total token cost**, no cross-file context). |
-| `AI_REVIEW_BATCH_MIN_FILES` | `4` | The diff fans out only at/above this many (reviewable) files **and** more than one batch. Smaller commits run as one call. |
+| `--jobs N` / `AI_REVIEW_JOBS` | `4` | Batches reviewed concurrently, **and** the cap on batch count — the per-directory/per-file batches are packed into at most this many groups so fan-out always runs as one concurrent wave. `1` = serial (disables fan-out). The ceiling is your AI vendor's rate limit — too high invites HTTP 429s. |
+| `AI_REVIEW_BATCH_BY` | `dir` | `dir` = group changed files by directory (preserves cross-file context within a directory). `file` = start from one group per file. Either way the groups are then packed down to `AI_REVIEW_JOBS` batches. |
+| `AI_REVIEW_BATCH_MIN_FILES` | `10` | The diff fans out only at/above this many (reviewable) files **and** more than one batch. Smaller commits run as a single call — tiny files are dominated by fixed per-call overhead, so parallelizing them costs tokens for negligible wall-clock gain. |
 | `AI_REVIEW_CONTEXT_BUDGET` | `15` | Ceiling on context files the AI loads per call. Workers scale this down to their batch size to keep token cost bounded. |
 
-Inspect the routing for a staged diff without calling the AI:
+Inspect the routing for a staged diff without calling the AI (shows the packed
+batches that will actually run):
 
 ```bash
 .skills/code-security/scripts/code-security-hook-dispatcher.sh --list-batches
@@ -246,10 +247,12 @@ Inspect the routing for a staged diff without calling the AI:
 
 **Honest cost note.** Fan-out trades **more total tokens for less wall-clock** —
 it does not reduce cost. Each batch re-reads the skill and reloads its own
-context files, so a commit split into _N_ batches incurs roughly _N_× the
-fixed per-call overhead (worst with `AI_REVIEW_BATCH_BY=file`). The
-`AI_REVIEW_BATCH_MIN_FILES` threshold and the scaled context budget keep that
-overhead bounded; raise the threshold if you want to favor cost over latency.
+context files. Batch count is capped to `AI_REVIEW_JOBS`, so the overhead is at
+most `--jobs`× the fixed per-call cost (one wave) rather than scaling with the
+number of changed directories — but it is still more total work than a single
+call. The `AI_REVIEW_BATCH_MIN_FILES` threshold (default 10) keeps small commits
+single-call; raise it further to favor cost over latency, or set `--jobs 1` to
+disable fan-out entirely.
 
 **Quality note.** Per-directory batching preserves cross-file context *within* a
 directory but a worker cannot see *across* directories, so a vulnerability whose

@@ -295,16 +295,18 @@ Second-opinion adjudication (optional — on by default, no setup required)
 Pre-commit performance for large commits (optional — sensible defaults)
 ------------------------------------------------------------------------------
 
-    A commit that changes many files across several directories is reviewed in
-    parallel batches (folded worst-of for the gate); a few files in one
-    directory still run as a single call. This is ON by default and needs no
-    setup. Tune via flags or environment (full details in README.md, section
-    "Pre-commit performance"):
+    A commit that changes many files (default: 10+) across several directories
+    is reviewed in parallel batches (folded worst-of for the gate); smaller
+    commits run as a single call. Batches are packed into at most AI_REVIEW_JOBS
+    groups, so fan-out always runs as one concurrent wave and never multiplies
+    wall-clock. This is ON by default and needs no setup. Tune via flags or
+    environment (full details in README.md, section "Pre-commit performance"):
 
-      • --jobs N / AI_REVIEW_JOBS=N   batches reviewed concurrently (default 4;
-                                      1 = serial; ceiling is your vendor's rate limit)
+      • --jobs N / AI_REVIEW_JOBS=N   concurrent workers AND the batch-count cap
+                                      (default 4; 1 = serial / fan-out off;
+                                      ceiling is your vendor's rate limit)
       • AI_REVIEW_BATCH_BY=dir|file   batch granularity (default dir)
-      • AI_REVIEW_BATCH_MIN_FILES=N   min files before fanning out (default 4)
+      • AI_REVIEW_BATCH_MIN_FILES=N   min files before fanning out (default 10)
       • --list-batches                preview the batch plan without calling the AI
 
     Note: fan-out lowers wall-clock but RAISES total tokens (each batch reloads
