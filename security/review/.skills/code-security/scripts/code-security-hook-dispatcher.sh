@@ -29,6 +29,10 @@ else
   REPO_ROOT="$(cd "${SCRIPT_DIR}/../../.." && pwd)"
 fi
 LIB_PATH="${REPO_ROOT}/.skills/_lib/ai-review-dispatch.sh"
+# Absolute path to this script — re-invoked as a single-batch worker during the
+# library's parallel fan-out (see the --__review-one shim at the bottom). The
+# library reads it from AI_REVIEW_SELF.
+export AI_REVIEW_SELF="${SCRIPT_DIR}/$(basename "${BASH_SOURCE[0]}")"
 
 if [[ ! -f "${LIB_PATH}" ]]; then
   echo "ERROR: shared dispatch library not found at: ${LIB_PATH}" >&2
@@ -67,9 +71,19 @@ non-default diff range was passed via the dispatcher's --against flag, the
 AI_REVIEW_AGAINST environment variable will be set to that ref — in that case,
 review the diff returned by `git diff $AI_REVIEW_AGAINST HEAD`).
 
+If the AI_REVIEW_SCOPE_PATHS environment variable is set (newline-separated
+paths), you are one worker in a parallel review — restrict this review to EXACTLY
+those paths. Collect the diff with `git diff --cached -- $AI_REVIEW_SCOPE_PATHS`
+(or `git diff $AI_REVIEW_AGAINST HEAD -- $AI_REVIEW_SCOPE_PATHS` when
+AI_REVIEW_AGAINST is set) and do not report findings outside that set. You see
+only a slice of the commit: if confirming a finding would require a file outside
+your scope, still report it and note that cross-file confirmation is needed.
+
 Follow the skill instructions exactly:
   1. Collect the diff using the appropriate git command.
-  2. Identify and load up to 15 targeted context files as described in the skill.
+  2. Identify and load targeted context files as described in the skill, up to
+     the ceiling in the AI_REVIEW_CONTEXT_BUDGET environment variable (default
+     15 when unset; a smaller value is set when reviewing a small batch).
   3. Run mandatory secrets / PII / PHI detection.
   4. Apply the OWASP Top 10 checks where relevant to the diff.
   5. Run the general security review section.
@@ -97,4 +111,11 @@ PROMPT
 # shellcheck source=../../_lib/ai-review-dispatch.sh
 source "${LIB_PATH}"
 
-ai_review::run "$@"
+# Worker mode: the library's parallel fan-out re-invokes this dispatcher as
+# `--__review-one <record>` (one batch per worker). The re-run rebuilds the same
+# SKILL_PROMPT above, so the worker reviews with this skill's instructions.
+if [[ "${1:-}" == "--__review-one" ]]; then
+  ai_review::worker_main "${2:-}"
+else
+  ai_review::run "$@"
+fi

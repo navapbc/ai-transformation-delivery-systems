@@ -180,7 +180,7 @@ The **pre-commit** and **codebase-audit** layers are wrapped by an independent
 **adjudication pass** that cuts false positives before they reach you — no
 suppression files, no inline annotations, no manual bookkeeping.
 
-When a first-pass review reports findings, the dispatcher invokes the
+When a first-pass review would **block** the commit, the dispatcher invokes the
 `finding-adjudication` skill: a **fresh agent**, with no memory of the first
 pass, re-inspects the cited code and classifies each finding as **confirmed**,
 **false positive**, or **overstated** (downgraded), each with a one-line reason.
@@ -190,10 +190,18 @@ hidden.
 
 Key properties:
 
-- **Cost scales with noise, not commit volume.** A clean first pass (`PASS` /
-  `CLEAN`) is final and triggers **no** second call — most commits stay
-  single-pass and fast. Only finding-bearing reviews pay for adjudication, which
-  is exactly when a second opinion is worth it.
+- **Only blocking results are adjudicated.** A `PASS`/`CLEAN` first pass is final
+  (no second call). For pre-commit, a `WARN` (low-severity only) first pass is
+  **also** final and skips adjudication — a `WARN` commit proceeds regardless, so
+  a second pass could only move it `WARN→WARN` or `WARN→PASS`, both non-blocking:
+  pure latency with no effect on the gate. The second pass runs only on `BLOCK`,
+  which is exactly when a second opinion changes the outcome. (Codebase-audit,
+  which has no non-blocking tier, adjudicates any directory with findings.)
+- **The second pass is scoped to the finding-bearing files.** It is confirming
+  findings the first pass already cited — not hunting new ones — so for diff-mode
+  reviews it reads only the files referenced in the findings (`git diff --cached
+  -- <those files>`), not the whole diff. Smaller input, faster, same model. If
+  no file paths can be parsed from the report it falls back to the whole diff.
 - **Tool-neutral.** It runs on the same `AI_REVIEW_TOOL` CLI as the first pass.
   Set `AI_ADJUDICATION_MODEL` to run the second opinion on a *different model*
   of that same CLI for stronger independence; leave it unset to use the default.
@@ -205,6 +213,51 @@ Key properties:
 
 PR-level review is **not** adjudicated (the Copilot path can't be customized for
 it). The full skill contract is in `.skills/finding-adjudication/SKILL.md`.
+
+---
+
+### Pre-commit performance: keeping the hook fast
+
+A clean or low-severity commit is a **single** AI pass — that one pass is the
+floor and typically the bulk of the wait. Two mechanisms keep larger or
+finding-bearing commits from dragging:
+
+1. **`BLOCK`-only, scoped adjudication** (above) — the common `PASS`/`WARN`
+   commit never pays for a second pass, and when a second pass does run it reads
+   only the finding-bearing files.
+2. **Parallel fan-out for multi-file commits.** When a commit changes enough
+   files across enough directories, the diff is split into independent batches
+   reviewed **concurrently**, then their gate results are folded worst-of (any
+   `BLOCK` blocks). Each batch runs the same first-pass → adjudication sequence,
+   so the gate decision is unchanged — only wall-clock drops.
+
+| Variable / flag | Default | Effect |
+|---|---|---|
+| `--jobs N` / `AI_REVIEW_JOBS` | `4` | Batches reviewed concurrently. `1` = serial (original behavior). The ceiling is your AI vendor's rate limit — too high invites HTTP 429s. |
+| `AI_REVIEW_BATCH_BY` | `dir` | `dir` = one batch per changed directory (preserves cross-file context within a directory). `file` = one batch per file (maximum concurrency, **higher total token cost**, no cross-file context). |
+| `AI_REVIEW_BATCH_MIN_FILES` | `4` | The diff fans out only at/above this many (reviewable) files **and** more than one batch. Smaller commits run as one call. |
+| `AI_REVIEW_CONTEXT_BUDGET` | `15` | Ceiling on context files the AI loads per call. Workers scale this down to their batch size to keep token cost bounded. |
+
+Inspect the routing for a staged diff without calling the AI:
+
+```bash
+.skills/code-security/scripts/code-security-hook-dispatcher.sh --list-batches
+```
+
+**Honest cost note.** Fan-out trades **more total tokens for less wall-clock** —
+it does not reduce cost. Each batch re-reads the skill and reloads its own
+context files, so a commit split into _N_ batches incurs roughly _N_× the
+fixed per-call overhead (worst with `AI_REVIEW_BATCH_BY=file`). The
+`AI_REVIEW_BATCH_MIN_FILES` threshold and the scaled context budget keep that
+overhead bounded; raise the threshold if you want to favor cost over latency.
+
+**Quality note.** Per-directory batching preserves cross-file context *within* a
+directory but a worker cannot see *across* directories, so a vulnerability whose
+source and sink span two directories may be missed. The threshold keeps small
+and cross-cutting commits as a single full-context call, and each worker is told
+to still report (and flag) any finding whose confirmation would need a file
+outside its batch. For the strongest single-pass analysis on a sensitive commit,
+run with `--jobs 1`.
 
 ---
 
@@ -417,8 +470,14 @@ pass](#second-opinion-adjudication-false-positive-reduction):
 | `AI_ADJUDICATION_MODEL` | unset | Model name passed to the **same** `AI_REVIEW_TOOL` CLI for the adjudication pass only. Unset = the tool's default model. Use it to get a second opinion from a different model on the same CLI — e.g. a Claude shop running the first pass on one model and adjudication on another. (Confirm your CLI's accepted model names: `claude --model`, `codex exec --model`, or the Copilot equivalent.) |
 
 Both are optional; the system works out of the box with adjudication on and the
-default model. Adjudication never fires on a clean first pass, so leaving it on
-adds no cost to commits that have no findings.
+default model. For pre-commit, adjudication fires only on a `BLOCK` first pass
+(not on `PASS` or `WARN`) and reads only the finding-bearing files, so leaving it
+on adds no cost to clean or low-severity commits — see [Pre-commit
+performance](#pre-commit-performance-keeping-the-hook-fast).
+
+Concurrency and batching for large diffs are tuned separately via
+`AI_REVIEW_JOBS`, `AI_REVIEW_BATCH_BY`, and `AI_REVIEW_BATCH_MIN_FILES` — also
+documented in that section.
 
 ### macOS setup
 
@@ -651,6 +710,13 @@ pre-commit.
 # Show what the dispatcher WOULD do, without invoking the AI
 .skills/code-security/scripts/code-security-hook-dispatcher.sh --dry-run
 
+# Show how the diff would be split into batches and whether it fans out (no AI)
+.skills/code-security/scripts/code-security-hook-dispatcher.sh --list-batches
+
+# Review serially / with more concurrency (default --jobs 4)
+.skills/code-security/scripts/code-security-hook-dispatcher.sh --jobs 1
+.skills/code-security/scripts/code-security-hook-dispatcher.sh --jobs 8
+
 # Run the full review but never exit non-zero (for testing in CI)
 .skills/code-security/scripts/code-security-hook-dispatcher.sh --no-block
 
@@ -672,11 +738,17 @@ pre-commit run iac-compliance                 # only runs if IaC files match
 
 | Flag | Effect |
 |---|---|
-| `-n`, `--dry-run`     | Print resolved tool, prompt, and file list; do not invoke AI. Exits 0. |
+| `-n`, `--dry-run`     | Print resolved tool, prompt, file list, and batch routing; do not invoke AI. Exits 0. |
+| `--list-batches`      | Print how the diff splits into batches and whether it fans out; do not invoke AI. Exits 0. |
+| `--jobs <N>`          | Review up to N batches concurrently when the diff fans out (default 4; also `AI_REVIEW_JOBS`). `1` = serial. |
 | `--no-block`          | Run the full review but always exit 0, regardless of findings. |
 | `--no-adjudicate`     | Skip the second-opinion adjudication pass (same as `AI_ADJUDICATION=0`). |
 | `--against <ref>`     | Review the diff between `<ref>` and `HEAD` (instead of staged). |
 | `-h`, `--help`        | Show help. |
+
+See [Pre-commit performance](#pre-commit-performance-keeping-the-hook-fast) for
+the `AI_REVIEW_BATCH_BY` / `AI_REVIEW_BATCH_MIN_FILES` / `AI_REVIEW_CONTEXT_BUDGET`
+environment variables that tune batching.
 
 ### Exit codes
 
@@ -1700,11 +1772,17 @@ the prompt is intact, and run the CLI interactively (`claude` / `codex` /
 - The first call after a CLI auth refresh can be slow.
 - Network conditions affect all three tools.
 - Verify your AI CLI works interactively to rule out a CLI-side problem.
-- **Finding-bearing commits run a second (adjudication) pass.** This roughly
-  doubles the time for commits that have findings — but clean commits are
-  unaffected (no second call). If you need the fastest possible turnaround on a
-  noisy commit, `--no-adjudicate` (or `AI_ADJUDICATION=0`) skips it; you then see
-  the raw first-pass findings, false positives included.
+- **Blocking commits run a second (adjudication) pass.** Only a `BLOCK` first
+  pass triggers it (not `PASS` or `WARN`), and it reads only the finding-bearing
+  files, so it adds time to commits that have blocking findings — clean and
+  low-severity commits are unaffected. If you need the fastest possible
+  turnaround on a noisy commit, `--no-adjudicate` (or `AI_ADJUDICATION=0`) skips
+  it; you then see the raw first-pass findings, false positives included.
+- **Large commits fan out across workers.** A commit touching many files across
+  several directories is reviewed in parallel (default `--jobs 4`); a few files
+  in one directory still run as a single call. Tune or inspect this via
+  `--jobs`, `--list-batches`, and the variables in [Pre-commit
+  performance](#pre-commit-performance-keeping-the-hook-fast).
 
 ### IDE git commits don't see `AI_REVIEW_TOOL`
 
