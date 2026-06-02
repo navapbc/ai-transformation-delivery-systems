@@ -21,12 +21,22 @@
 #   codebase-audit-dispatcher.sh                          # full audit, default settings
 #   codebase-audit-dispatcher.sh --min-severity high      # only Critical+High
 #   codebase-audit-dispatcher.sh --scope src/             # only audit src/ tree
+#   codebase-audit-dispatcher.sh --scope src/ --scope infra/   # repeatable: audit both
 #   codebase-audit-dispatcher.sh --sarif                  # also emit SARIF
 #   codebase-audit-dispatcher.sh --force                  # re-audit even if reports exist
 #   codebase-audit-dispatcher.sh --gate                   # exit 1 if any findings
 #   codebase-audit-dispatcher.sh --dry-run                # list batches; no AI calls
 #   codebase-audit-dispatcher.sh --list-batches           # print the batch plan, no execution
 #   codebase-audit-dispatcher.sh --no-adjudicate          # skip the second-opinion pass
+#   codebase-audit-dispatcher.sh --jobs 6                 # run 6 batches concurrently
+#
+# Parallelism (--jobs N / AUDIT_JOBS):
+#   Batches are independent — each scopes one directory and writes its own
+#   report — so execution fans out across N worker processes (default 4) while
+#   batch PLANNING stays single-threaded and deterministic, keeping run-to-run
+#   reports comparable. Each worker runs the same configured AI_REVIEW_TOOL.
+#   --jobs 1 forces the original serial path. The throughput ceiling is the
+#   vendor's rate limit; raise --jobs cautiously to avoid 429s.
 #
 # Adjudication (second opinion):
 #   A directory that reports findings triggers an independent adjudication pass
@@ -44,6 +54,10 @@
 #
 # Required environment:
 #   AI_REVIEW_TOOL          claude | codex | copilot
+#
+# Optional environment:
+#   AUDIT_JOBS              Number of batches to process concurrently (default 4;
+#                           overridden by --jobs). 1 = serial.
 
 set -euo pipefail
 
@@ -55,6 +69,9 @@ else
   REPO_ROOT="$(cd "${SCRIPT_DIR}/../../.." && pwd)"
 fi
 LIB_PATH="${REPO_ROOT}/.skills/_lib/ai-review-dispatch.sh"
+# Absolute path to this script — re-invoked as a single-batch worker during
+# parallel fan-out (see audit::worker_main / --__audit-one).
+SELF="${SCRIPT_DIR}/$(basename "${BASH_SOURCE[0]}")"
 
 if [[ ! -f "${LIB_PATH}" ]]; then
   echo "ERROR: shared dispatch library not found at: ${LIB_PATH}" >&2
@@ -71,7 +88,8 @@ SKILL_PATH_CANONICAL=".skills/codebase-audit/SKILL.md"
 
 # ── Defaults ─────────────────────────────────────────────────────────────────
 MIN_SEVERITY="low"
-SCOPE_ROOT=""
+# Scope pathspecs. Repeatable: each --scope appends. Empty = whole repo.
+SCOPE_ROOTS=()
 EMIT_SARIF=0
 FORCE=0
 GATE_MODE=0
@@ -79,9 +97,34 @@ DRY_RUN=0
 LIST_BATCHES_ONLY=0
 NO_BLOCK=0
 OUTPUT_DIR="audit-reports"
+# Concurrency: env default (validated below), overridable by --jobs.
+JOBS="${AUDIT_JOBS:-4}"
+
+# ── Worker-mode detection ───────────────────────────────────────────────────
+# When invoked by the parent's parallel fan-out as `--__audit-one <record>`,
+# this process audits exactly one batch and exits. Its config arrives via the
+# AUDIT_* environment variables the parent exports before fan-out, so the normal
+# flag parser below is skipped. (Internal contract — not a public flag.)
+AUDIT_WORKER_MODE=0
+WORKER_RECORD=""
+if [[ "${1:-}" == "--__audit-one" ]]; then
+  AUDIT_WORKER_MODE=1
+  WORKER_RECORD="${2:-}"
+  MIN_SEVERITY="${AUDIT_MIN_SEVERITY:-${MIN_SEVERITY}}"
+  EMIT_SARIF="${AUDIT_EMIT_SARIF:-${EMIT_SARIF}}"
+  OUTPUT_DIR="${AUDIT_OUTPUT_DIR:-${OUTPUT_DIR}}"
+fi
+
+# ── JOBS validation ─────────────────────────────────────────────────────────
+audit::validate_jobs() {
+  if ! [[ "${JOBS}" =~ ^[0-9]+$ ]] || (( JOBS < 1 )); then
+    echo "ERROR: --jobs / AUDIT_JOBS must be a positive integer (got '${JOBS}')." >&2
+    exit 2
+  fi
+}
 
 # ── Arg parsing ─────────────────────────────────────────────────────────────
-while [[ $# -gt 0 ]]; do
+while (( AUDIT_WORKER_MODE == 0 )) && [[ $# -gt 0 ]]; do
   case "$1" in
     --min-severity)
       case "${2:-}" in
@@ -98,9 +141,12 @@ while [[ $# -gt 0 ]]; do
       shift
       ;;
     --scope)
-      SCOPE_ROOT="$2"; shift 2 ;;
+      if [[ -z "${2:-}" ]]; then
+        echo "ERROR: --scope requires a path argument." >&2; exit 2
+      fi
+      SCOPE_ROOTS+=("$2"); shift 2 ;;
     --scope=*)
-      SCOPE_ROOT="${1#*=}"; shift ;;
+      SCOPE_ROOTS+=("${1#*=}"); shift ;;
     --sarif)
       EMIT_SARIF=1; shift ;;
     --force)
@@ -115,12 +161,17 @@ while [[ $# -gt 0 ]]; do
       NO_BLOCK=1; shift ;;
     --no-adjudicate)
       AI_REVIEW_NO_ADJUDICATE=1; shift ;;
+    --jobs)
+      JOBS="${2:-}"; shift 2 ;;
+    --jobs=*)
+      JOBS="${1#*=}"; shift ;;
     --output-dir)
       OUTPUT_DIR="$2"; shift 2 ;;
     --output-dir=*)
       OUTPUT_DIR="${1#*=}"; shift ;;
     -h|--help)
-      sed -n '2,46p' "$0" | sed 's/^# \{0,1\}//'
+      # Print the leading comment block (everything before `set -euo pipefail`).
+      sed -n '3,/^set -euo pipefail$/p' "$0" | sed '$d' | sed 's/^# \{0,1\}//'
       exit 0
       ;;
     *)
@@ -135,8 +186,10 @@ done
 # shellcheck source=../../_lib/ai-review-dispatch.sh
 source "${LIB_PATH}"
 
-# Resolve AI_REVIEW_TOOL (lib provides validation + error message).
-ai_review::resolve_tool
+audit::validate_jobs
+
+# AI_REVIEW_TOOL is resolved at the start of main() (and worker_main()) rather
+# than here, so a single resolution log line is printed per process.
 
 # ── Skip patterns (directories never audited) ──────────────────────────────
 # Anchored at any depth — applied to repo-relative paths.
@@ -173,10 +226,22 @@ SKIP_PATH_PREFIXES=(
 # group by directory, and apply the skip rules.
 
 audit::list_files() {
-  if [[ -n "${SCOPE_ROOT}" ]]; then
-    git -C "${REPO_ROOT}" ls-files -- "${SCOPE_ROOT}"
+  # `git ls-files -- A B C` accepts multiple pathspecs and de-duplicates files
+  # that match more than one, so overlapping --scope values are harmless.
+  if (( ${#SCOPE_ROOTS[@]} > 0 )); then
+    git -C "${REPO_ROOT}" ls-files -- "${SCOPE_ROOTS[@]}"
   else
     git -C "${REPO_ROOT}" ls-files
+  fi
+}
+
+# Human-readable scope for logs and the index header.
+audit::scope_display() {
+  if (( ${#SCOPE_ROOTS[@]} == 0 )); then
+    printf '<entire repo>'
+  else
+    local IFS=', '
+    printf '%s' "${SCOPE_ROOTS[*]}"
   fi
 }
 
@@ -385,6 +450,16 @@ audit::write_index() {
   local clean_list=""
   local findings_count=0 clean_count=0 audited_count=0
 
+  # Match dotfile reports too: a directory whose path starts with "." (e.g. the
+  # canonical ".skills/", which is in scope) maps to a report filename beginning
+  # with "." (slashes → "__"). Without dotglob the plain "*.md" glob skips those,
+  # so their findings would be written to disk but silently dropped from the
+  # index. nullglob keeps the loop from running once on a literal "*.md" when the
+  # output dir is empty. Save and restore so we don't leak the setting.
+  # ('shopt -p' exits non-zero when an option is unset, so guard with || true to
+  # avoid tripping 'set -e'; it still prints the restore commands to stdout.)
+  local _dotglob_was; _dotglob_was="$(shopt -p dotglob nullglob || true)"
+  shopt -s dotglob nullglob
   for report in "${OUTPUT_DIR}"/*.md; do
     [[ -f "${report}" ]] || continue
     local base
@@ -433,6 +508,7 @@ audit::write_index() {
       clean_list+="- \`${dir_repr}\`"$'\n'
     fi
   done
+  eval "${_dotglob_was}"   # restore dotglob/nullglob to their prior state
 
   # Sort the findings rows worst-first and strip the sort key.
   local findings_rows=""
@@ -459,6 +535,12 @@ No findings at or above the **${MIN_SEVERITY}** threshold across the
 ${audited_count} audited directories. Nothing to triage."
   fi
 
+  # Publish the tallies as globals so main() can report the summary and decide
+  # the --gate exit code after a parallel fan-out (where workers can't return
+  # counts to the parent through the shell).
+  AUDIT_INDEX_FINDINGS_COUNT="${findings_count}"
+  AUDIT_INDEX_AUDITED_COUNT="${audited_count}"
+
   # Build the collapsed clean-directories section (omitted if none).
   local clean_section=""
   if (( clean_count > 0 )); then
@@ -477,7 +559,7 @@ ${clean_list}
 **Date generated:**      $(date -u +"%Y-%m-%d %H:%M UTC")
 **AI tool:**             ${AI_REVIEW_TOOL_RESOLVED}
 **Min severity:**        ${MIN_SEVERITY}
-**Scope root:**          ${SCOPE_ROOT:-<entire repo>}
+**Scope:**               $(audit::scope_display)
 **Directories audited:** ${audited_count}  (${findings_count} with findings, ${clean_count} clean)
 
 ${findings_section}
@@ -539,15 +621,107 @@ with open(out_path, "w") as f:
 PY
 }
 
+# ── Per-batch processing ────────────────────────────────────────────────────
+# Audits exactly one directory batch and writes its report (and per-batch SARIF
+# temp, in SARIF mode). This is the unit of work that the serial loop calls
+# directly and that the parallel fan-out re-invokes once per worker. It writes
+# only its own uniquely-named output files, so concurrent calls never contend.
+#
+# Returns 0 when a report was written (clean OR findings); non-zero only when the
+# AI invocation itself failed — in which case NO report is written, so resume
+# mode retries that directory on the next run. Tallies are derived from the
+# written reports afterward (audit::write_index), not returned from here, so this
+# works identically whether called in-process or in a separate worker process.
+audit::process_one_batch() {
+  local dir="$1"
+  local files_pipe="$2"
+  local report_path
+  report_path="$(audit::report_path_for_dir "${dir}")"
+
+  ai_review::info "Auditing ${dir}..."
+
+  local output rc=0
+  output="$(audit::invoke_for_batch "${dir}" "${files_pipe}")" || rc=$?
+  if (( rc != 0 )); then
+    ai_review::err "[${dir}] AI invocation failed (rc=${rc}); no report written (resume will retry)."
+    return 1
+  fi
+
+  # First-pass result marker for this batch.
+  local marker
+  marker="$(printf '%s\n' "${output}" | grep -oE '<<<AI_REVIEW_RESULT:(CLEAN|FINDINGS)>>>' | head -1 || true)"
+
+  # Independent second-opinion adjudication. Runs only on batches that
+  # reported findings, only when enabled — CLEAN batches are final and incur
+  # no second AI call (cost scales with findings, not directory count). The
+  # adjudicated output replaces the first-pass output, so the written report,
+  # severity counts, _INDEX.md, and SARIF all reflect the confirmed findings.
+  if [[ "${marker}" == "<<<AI_REVIEW_RESULT:FINDINGS>>>" ]] && ai_review::adjudication_enabled; then
+    ai_review::info "    [${dir}] findings — running adjudication (second opinion)${AI_ADJUDICATION_MODEL:+ via model ${AI_ADJUDICATION_MODEL}}..."
+    local adj_output adj_rc=0 adj_marker=""
+    adj_output="$(ai_review::adjudicate "${output}" "audit")" || adj_rc=$?
+    if (( adj_rc == 0 )); then
+      adj_marker="$(printf '%s\n' "${adj_output}" | grep -oE '<<<AI_REVIEW_RESULT:(CLEAN|FINDINGS)>>>' | head -1 || true)"
+    fi
+    if (( adj_rc != 0 )) || [[ -z "${adj_marker}" ]]; then
+      ai_review::warn "    [${dir}] adjudication unavailable/unparseable; keeping first-pass findings."
+    else
+      output="${adj_output}"
+      marker="${adj_marker}"
+    fi
+  fi
+
+  # Strip the result marker from the report body (the dispatcher tracks
+  # it, but the markdown report shouldn't show it).
+  local body
+  body="$(printf '%s\n' "${output}" | sed -E '/^<<<AI_REVIEW_RESULT:(CLEAN|FINDINGS)>>>$/d')"
+
+  # Also strip the SARIF block if present (we save it separately).
+  body="$(printf '%s\n' "${body}" | awk '
+    /<!-- AUDIT_SARIF_BEGIN -->/ { in_sarif=1; next }
+    /<!-- AUDIT_SARIF_END -->/   { in_sarif=0; next }
+    !in_sarif { print }
+  ')"
+
+  # Write the markdown report.
+  printf '%s\n' "${body}" > "${report_path}"
+
+  # Save SARIF block (per-batch) if SARIF mode is on.
+  if (( EMIT_SARIF == 1 )); then
+    local sarif_body
+    sarif_body="$(audit::extract_sarif "${output}")"
+    if [[ -n "${sarif_body}" ]]; then
+      local safe="${dir//\//__}"
+      [[ "${dir}" == "(root)" ]] && safe="_root"
+      printf '%s\n' "${sarif_body}" > "${OUTPUT_DIR}/_sarif_${safe}.json"
+    fi
+  fi
+
+  case "${marker}" in
+    "<<<AI_REVIEW_RESULT:FINDINGS>>>")
+      ai_review::log "    [${dir}] → findings reported in ${report_path}" ;;
+    "<<<AI_REVIEW_RESULT:CLEAN>>>")
+      ai_review::log "    [${dir}] → clean (no findings ≥ ${MIN_SEVERITY})" ;;
+    *)
+      ai_review::warn "    [${dir}] → could not parse result marker; report saved anyway" ;;
+  esac
+
+  return 0
+}
+
 # ── Main audit loop ─────────────────────────────────────────────────────────
 main() {
+  # Resolve AI_REVIEW_TOOL (lib provides validation + error message).
+  ai_review::resolve_tool
+
   ai_review::info "Codebase audit — ${SKILL_HUMAN_NAME}"
   ai_review::log  "  AI tool:        ${AI_REVIEW_TOOL_RESOLVED}"
   ai_review::log  "  Min severity:   ${MIN_SEVERITY}"
-  ai_review::log  "  Scope:          ${SCOPE_ROOT:-<entire repo>}"
+  ai_review::log  "  Scope:          $(audit::scope_display)"
   ai_review::log  "  Output dir:     ${OUTPUT_DIR}"
   ai_review::log  "  Emit SARIF:     $((EMIT_SARIF))"
   ai_review::log  "  Resume mode:    $((1 - FORCE))   (skip dirs with existing reports)"
+  ai_review::log  "  Concurrency:    ${JOBS} $( (( JOBS > 1 )) && echo "(parallel)" || echo "(serial)" )"
 
   mkdir -p "${OUTPUT_DIR}"
 
@@ -561,7 +735,7 @@ main() {
   done < <(audit::plan_batches)
 
   if (( ${#batches[@]} == 0 )); then
-    ai_review::warn "No reviewable directories found under ${SCOPE_ROOT:-the repo root}."
+    ai_review::warn "No reviewable directories found under $(audit::scope_display)."
     exit 0
   fi
 
@@ -585,113 +759,73 @@ main() {
     exit 0
   fi
 
-  # Loop and invoke per batch.
-  local total=${#batches[@]}
-  local current=0
+  # Resolve the work list. Batch planning (above) is deterministic and
+  # single-threaded; here we apply resume mode — dropping directories whose
+  # reports already exist (unless --force) — so workers only get real work.
+  local -a to_run=()
   local skipped=0
-  local executed=0
-  local with_findings=0
-  local exit_code=0
-
+  local line
   for line in "${batches[@]}"; do
-    current=$(( current + 1 ))
     local dir="${line%%$'\t'*}"
-    local files_pipe="${line#*$'\t'}"
     local report_path
     report_path="$(audit::report_path_for_dir "${dir}")"
-
     if [[ -f "${report_path}" ]] && (( FORCE == 0 )); then
-      ai_review::log "[${current}/${total}] SKIP ${dir} (report exists — use --force to re-audit)"
+      ai_review::log "SKIP ${dir} (report exists — use --force to re-audit)"
       skipped=$(( skipped + 1 ))
       continue
     fi
-
-    ai_review::info "[${current}/${total}] Auditing ${dir}..."
-
-    local output rc=0
-    output="$(audit::invoke_for_batch "${dir}" "${files_pipe}")" || rc=$?
-    if (( rc != 0 )); then
-      ai_review::err "AI invocation failed for ${dir} (rc=${rc}). Continuing with next batch."
-      exit_code=1
-      continue
-    fi
-
-    # First-pass result marker for this batch.
-    local marker
-    marker="$(printf '%s\n' "${output}" | grep -oE '<<<AI_REVIEW_RESULT:(CLEAN|FINDINGS)>>>' | head -1 || true)"
-
-    # Independent second-opinion adjudication. Runs only on batches that
-    # reported findings, only when enabled — CLEAN batches are final and incur
-    # no second AI call (cost scales with findings, not directory count). The
-    # adjudicated output replaces the first-pass output, so the written report,
-    # severity counts, _INDEX.md, and SARIF all reflect the confirmed findings.
-    if [[ "${marker}" == "<<<AI_REVIEW_RESULT:FINDINGS>>>" ]] && ai_review::adjudication_enabled; then
-      ai_review::info "    → findings — running adjudication (second opinion)${AI_ADJUDICATION_MODEL:+ via model ${AI_ADJUDICATION_MODEL}}..."
-      local adj_output adj_rc=0 adj_marker=""
-      adj_output="$(ai_review::adjudicate "${output}" "audit")" || adj_rc=$?
-      if (( adj_rc == 0 )); then
-        adj_marker="$(printf '%s\n' "${adj_output}" | grep -oE '<<<AI_REVIEW_RESULT:(CLEAN|FINDINGS)>>>' | head -1 || true)"
-      fi
-      if (( adj_rc != 0 )) || [[ -z "${adj_marker}" ]]; then
-        ai_review::warn "    → adjudication unavailable/unparseable; keeping first-pass findings."
-      else
-        output="${adj_output}"
-        marker="${adj_marker}"
-      fi
-    fi
-
-    # Strip the result marker from the report body (the dispatcher tracks
-    # it, but the markdown report shouldn't show it).
-    local body
-    body="$(printf '%s\n' "${output}" | sed -E '/^<<<AI_REVIEW_RESULT:(CLEAN|FINDINGS)>>>$/d')"
-
-    # Also strip the SARIF block if present (we save it separately).
-    body="$(printf '%s\n' "${body}" | awk '
-      /<!-- AUDIT_SARIF_BEGIN -->/ { in_sarif=1; next }
-      /<!-- AUDIT_SARIF_END -->/   { in_sarif=0; next }
-      !in_sarif { print }
-    ')"
-
-    # Write the markdown report.
-    printf '%s\n' "${body}" > "${report_path}"
-
-    # Save SARIF block (per-batch) if SARIF mode is on.
-    if (( EMIT_SARIF == 1 )); then
-      local sarif_body
-      sarif_body="$(audit::extract_sarif "${output}")"
-      if [[ -n "${sarif_body}" ]]; then
-        local safe="${dir//\//__}"
-        [[ "${dir}" == "(root)" ]] && safe="_root"
-        printf '%s\n' "${sarif_body}" > "${OUTPUT_DIR}/_sarif_${safe}.json"
-      fi
-    fi
-
-    # Tally the (possibly adjudicated) marker result.
-    case "${marker}" in
-      "<<<AI_REVIEW_RESULT:FINDINGS>>>")
-        with_findings=$(( with_findings + 1 ))
-        ai_review::log "    → findings reported in ${report_path}"
-        ;;
-      "<<<AI_REVIEW_RESULT:CLEAN>>>")
-        ai_review::log "    → clean (no findings ≥ ${MIN_SEVERITY})"
-        ;;
-      *)
-        ai_review::warn "    → could not parse result marker; report saved anyway"
-        ;;
-    esac
-
-    executed=$(( executed + 1 ))
+    to_run+=("${line}")
   done
+
+  local exit_code=0
+  local dispatched=${#to_run[@]}
+
+  if (( dispatched > 0 )); then
+    if (( JOBS <= 1 )); then
+      # Serial path — identical behavior to the original loop.
+      for line in "${to_run[@]}"; do
+        local dir="${line%%$'\t'*}"
+        local files_pipe="${line#*$'\t'}"
+        audit::process_one_batch "${dir}" "${files_pipe}" || exit_code=1
+      done
+    else
+      # Parallel path — fan out across JOBS worker processes. Each worker
+      # re-invokes this script as `--__audit-one <record>` and audits one
+      # directory, inheriting config through the exported AUDIT_* env vars
+      # below. Records are NUL-delimited so embedded tabs/spaces survive.
+      ai_review::info "Fanning out ${dispatched} batch(es) across ${JOBS} workers..."
+      export AI_REVIEW_TOOL
+      export AUDIT_MIN_SEVERITY="${MIN_SEVERITY}"
+      export AUDIT_EMIT_SARIF="${EMIT_SARIF}"
+      export AUDIT_OUTPUT_DIR="${OUTPUT_DIR}"
+      [[ "${AI_REVIEW_NO_ADJUDICATE:-0}" == "1" ]] && export AI_REVIEW_NO_ADJUDICATE
+      local fan_rc=0
+      printf '%s\0' "${to_run[@]}" \
+        | xargs -0 -P "${JOBS}" -n1 bash "${SELF}" --__audit-one || fan_rc=$?
+      # xargs exits 123 if any worker exited non-zero (its AI call failed). Those
+      # directories simply have no report and resume mode will retry them.
+      if (( fan_rc != 0 )); then
+        ai_review::warn "One or more batches failed (xargs rc=${fan_rc}); re-run to resume the missing directories."
+        exit_code=1
+      fi
+    fi
+  fi
 
   ai_review::log  "────────────────────────────────────────────────────────────"
   ai_review::info "Audit pass complete:"
-  ai_review::log  "  Executed:        ${executed}"
+  ai_review::log  "  Dispatched:      ${dispatched}"
   ai_review::log  "  Skipped (resume):${skipped}"
-  ai_review::log  "  With findings:   ${with_findings}"
 
-  # Generate the index.
+  # Generate the index. This also scans every written report and publishes the
+  # tallies (AUDIT_INDEX_FINDINGS_COUNT / _AUDITED_COUNT) we use below — deriving
+  # them from the reports rather than from per-batch return values means the
+  # serial and parallel paths produce identical counts.
   ai_review::info "Generating ${OUTPUT_DIR}/_INDEX.md..."
+  AUDIT_INDEX_FINDINGS_COUNT=0
+  AUDIT_INDEX_AUDITED_COUNT=0
   audit::write_index
+
+  ai_review::log  "  Directories w/ findings: ${AUDIT_INDEX_FINDINGS_COUNT} of ${AUDIT_INDEX_AUDITED_COUNT} audited"
 
   # Merge SARIF if requested.
   if (( EMIT_SARIF == 1 )); then
@@ -701,9 +835,9 @@ main() {
 
   ai_review::info "Done. Open ${OUTPUT_DIR}/_INDEX.md to triage findings."
 
-  # Gate mode: exit non-zero if any batch had findings.
-  if (( GATE_MODE == 1 )) && (( with_findings > 0 )); then
-    ai_review::err "--gate mode: ${with_findings} batch(es) had findings, exiting non-zero."
+  # Gate mode: exit non-zero if any directory had findings.
+  if (( GATE_MODE == 1 )) && (( AUDIT_INDEX_FINDINGS_COUNT > 0 )); then
+    ai_review::err "--gate mode: ${AUDIT_INDEX_FINDINGS_COUNT} director(ies) had findings, exiting non-zero."
     exit 1
   fi
 
@@ -715,4 +849,20 @@ main() {
   exit "${exit_code}"
 }
 
-main
+# ── Worker entry point ──────────────────────────────────────────────────────
+# Invoked as `--__audit-one <dir>\t<files_pipe>` by the parallel fan-out. Audits
+# exactly one batch and exits with audit::process_one_batch's status.
+audit::worker_main() {
+  # Quiet tool resolution — the parent already announced and validated the tool;
+  # one log line per worker would just be noise.
+  ai_review::resolve_tool >/dev/null
+  local dir="${WORKER_RECORD%%$'\t'*}"
+  local files_pipe="${WORKER_RECORD#*$'\t'}"
+  audit::process_one_batch "${dir}" "${files_pipe}"
+}
+
+if (( AUDIT_WORKER_MODE == 1 )); then
+  audit::worker_main
+else
+  main
+fi
