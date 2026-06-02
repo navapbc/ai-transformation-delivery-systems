@@ -271,6 +271,26 @@ Codebase audit setup (optional, on-demand only)
     scheduled monthly audits.
 
 ------------------------------------------------------------------------------
+Second-opinion adjudication (optional — on by default, no setup required)
+------------------------------------------------------------------------------
+
+    When a pre-commit or codebase-audit review reports findings, an
+    independent second pass re-inspects them and drops false positives before
+    the result is decided. It is ON by default and needs no configuration; a
+    clean first pass triggers no second call.
+
+    Two optional environment variables tune it (full details in README.md,
+    section "Adjudication settings"):
+
+      • AI_ADJUDICATION=0          disable the second pass entirely
+      • AI_ADJUDICATION_MODEL=...  run the second opinion on a different model
+                                   of the same AI_REVIEW_TOOL CLI (e.g. a
+                                   stronger model for an independent check);
+                                   unset = the tool's default model
+
+    Per-run, the --no-adjudicate flag skips the pass for a single invocation.
+
+------------------------------------------------------------------------------
 Done. From now on, every git commit runs the pre-commit reviews automatically,
 and PR-level review is available via whichever path(s) you enabled.
 Manual / ad-hoc usage and troubleshooting are documented in README.md and
