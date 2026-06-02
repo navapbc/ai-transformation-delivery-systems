@@ -179,14 +179,10 @@ explain an infra failure or a flake.)
 
 ---
 
-## 3. Future direction (not built in the pilot)
+## 3. What the pilot ships (and what's future direction)
 
-The pilot ships **one behavior**: when a PR's tests fail, the classifier
-triages each failure and posts **one PR comment** with the verdicts and a
-mandatory 👍/👎 ask. That is it — there is no observe-only phase, no mode to
-set, nothing to graduate between.
-
-### The one behavior (what the pilot ships)
+When a PR's tests fail, the classifier triages each failure and posts **one PR
+comment** with the verdicts and a mandatory 👍/👎 ask.
 
 - The classifier runs in CI after the test suite and **classifies every
   failure** as `APPLICATION_BUG` / `TEST_BUG` / `FLAKY_FAILURE` /

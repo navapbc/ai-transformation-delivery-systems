@@ -425,7 +425,7 @@ test-classifier: AI triage of failing tests
 
 **Please react to this comment with 👍 if these calls are right, or 👎 if any are wrong.**
 Your reaction is the tuning signal we use to measure classifier precision and
-decide when it is trustworthy enough to graduate to suggesting fixes. A 👎 with a
+improve the calls over time. A 👎 with a
 one-line reply telling us which verdict was wrong is worth its weight in gold.
 
 This comment is advisory and non-blocking — it will never fail your build.

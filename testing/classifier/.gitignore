@@ -14,6 +14,6 @@
 .github/copilot/skills/
 
 # ── Classifier output ──────────────────────────────────────────────────────
-# The workflow writes the per-run classification (P0 record / P1 audit trail)
+# The workflow writes the per-run classification (the CI artifact / audit trail)
 # here before uploading it as a CI artifact. Not source-of-truth — don't commit.
 classifier-out/

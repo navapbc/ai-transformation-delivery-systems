@@ -2,8 +2,8 @@
 # .skills/test-classifier/scripts/test-classifier-dispatcher.sh
 #
 # Test-classifier dispatcher. Runs the test-classifier skill on the change
-# under test, then either records the result (P0) or posts ONE PR comment
-# requesting a mandatory 👍/👎 reaction (P1).
+# under test and posts ONE PR comment with the verdicts and a mandatory 👍/👎
+# reaction.
 #
 # This dispatcher is the testing-workstream sibling of the security
 # workstream's pr-review-dispatcher.sh and intentionally mirrors its shape.
@@ -316,8 +316,7 @@ lines.append("### 👍 / 👎 required — this is how we tune the classifier")
 lines.append("")
 lines.append("**Please react to this comment with 👍 if these calls are right, or 👎 "
              "if any are wrong.** Your reaction is the tuning signal we use to measure "
-             "classifier precision and decide when it is trustworthy enough to graduate "
-             "to suggesting fixes. A 👎 with a one-line reply telling us which verdict "
+             "classifier precision and improve the calls over time. A 👎 with a one-line reply telling us which verdict "
              "was wrong is worth its weight in gold.")
 lines.append("")
 lines.append("This comment is advisory and non-blocking — it will never fail your build.")
@@ -326,7 +325,7 @@ print("\n".join(lines))
 '
 }
 
-# Post ONE issue comment to the PR (P1). Args: PR number, comment body.
+# Post ONE issue comment to the PR. Args: PR number, comment body.
 post_comment_to_github() {
   local pr_number="$1"
   local body="$2"

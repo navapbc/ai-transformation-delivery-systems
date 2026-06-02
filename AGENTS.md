@@ -5,7 +5,7 @@ for Nava delivery teams. Two independent workstreams, each consumed separately:
 
 - **`testing/classifier/`** — the AI **test-failure classifier**. Classifies
   each failing CI test as `APPLICATION_BUG` / `TEST_BUG` / `FLAKY_FAILURE` /
-  `ENVIRONMENT_ISSUE`, and (in P1) posts one PR comment asking for a 👍/👎.
+  `ENVIRONMENT_ISSUE` and posts one PR comment asking for a 👍/👎.
 - **`security/`** — the AI security / PR-review bundle (separate; on its own
   branch). Not covered here.
 
