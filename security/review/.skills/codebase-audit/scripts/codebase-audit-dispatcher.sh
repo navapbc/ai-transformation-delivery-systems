@@ -38,13 +38,16 @@
 #   --jobs 1 forces the original serial path. The throughput ceiling is the
 #   vendor's rate limit; raise --jobs cautiously to avoid 429s.
 #
-# Adjudication (second opinion):
-#   A directory that reports findings triggers an independent adjudication pass
-#   (finding-adjudication skill) that confirms / dismisses / downgrades each
-#   finding before its report, counts, index, and SARIF are written. Clean
-#   directories are final and incur no second call. Controlled by AI_ADJUDICATION
-#   (default on; --no-adjudicate or AI_ADJUDICATION=0 disables) and the optional
-#   AI_ADJUDICATION_MODEL (a different model on the same CLI for the second pass).
+# Adjudication (false-positive reduction), via AI_ADJUDICATION (default "self"):
+#   self        Each batch self-adjudicates in its single AI call — the prompt
+#               tells the model to re-examine its own findings and report only
+#               confirmed ones. No second call. (Default.)
+#   independent A directory that reports findings triggers a separate fresh-agent
+#               pass (finding-adjudication skill) that confirms / dismisses /
+#               downgrades before its report, counts, index, and SARIF are
+#               written; honors AI_ADJUDICATION_MODEL (a different model on the
+#               same CLI). CLEAN directories incur no second call.
+#   off         No adjudication (--no-adjudicate or AI_ADJUDICATION=0).
 #
 # Output:
 #   audit-reports/<directory>.md         (one per batched directory; slashes
@@ -388,6 +391,8 @@ After the report:
 
 Honor the severity threshold strictly: findings below ${MIN_SEVERITY} must
 not appear in the report — not in the body, not in the summary table.
+
+$(ai_review::self_adjudication_instructions)
 PROMPT
 }
 
@@ -640,6 +645,13 @@ audit::process_one_batch() {
 
   ai_review::info "Auditing ${dir}..."
 
+  # Adjudication mode (default "self"). The batch prompt self-adjudicates only
+  # when AI_REVIEW_ADJUDICATION_MODE=self; the separate independent pass below
+  # runs only in "independent" mode.
+  local adj_mode
+  adj_mode="$(ai_review::adjudication_mode)"
+  export AI_REVIEW_ADJUDICATION_MODE="${adj_mode}"
+
   local output rc=0
   output="$(audit::invoke_for_batch "${dir}" "${files_pipe}")" || rc=$?
   if (( rc != 0 )); then
@@ -651,13 +663,13 @@ audit::process_one_batch() {
   local marker
   marker="$(printf '%s\n' "${output}" | grep -oE '<<<AI_REVIEW_RESULT:(CLEAN|FINDINGS)>>>' | head -1 || true)"
 
-  # Independent second-opinion adjudication. Runs only on batches that
-  # reported findings, only when enabled — CLEAN batches are final and incur
-  # no second AI call (cost scales with findings, not directory count). The
+  # Independent second-opinion adjudication — only in "independent" mode, only on
+  # batches that reported findings (CLEAN batches incur no second call). The
   # adjudicated output replaces the first-pass output, so the written report,
   # severity counts, _INDEX.md, and SARIF all reflect the confirmed findings.
-  if [[ "${marker}" == "<<<AI_REVIEW_RESULT:FINDINGS>>>" ]] && ai_review::adjudication_enabled; then
-    ai_review::info "    [${dir}] findings — running adjudication (second opinion)${AI_ADJUDICATION_MODEL:+ via model ${AI_ADJUDICATION_MODEL}}..."
+  # (In the default "self" mode the batch already self-adjudicated in one call.)
+  if [[ "${marker}" == "<<<AI_REVIEW_RESULT:FINDINGS>>>" && "${adj_mode}" == "independent" ]]; then
+    ai_review::info "    [${dir}] findings — running independent adjudication (second opinion)${AI_ADJUDICATION_MODEL:+ via model ${AI_ADJUDICATION_MODEL}}..."
     local adj_output adj_rc=0 adj_marker=""
     adj_output="$(ai_review::adjudicate "${output}" "audit")" || adj_rc=$?
     if (( adj_rc == 0 )); then

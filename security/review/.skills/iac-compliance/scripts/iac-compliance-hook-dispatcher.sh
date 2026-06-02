@@ -141,6 +141,13 @@ PROMPT
 # shellcheck source=../../_lib/ai-review-dispatch.sh
 source "${LIB_PATH}"
 
+# Append the shared single-pass self-adjudication step. The model applies it only
+# when AI_REVIEW_ADJUDICATION_MODE=self (the default); the library exports the
+# resolved mode before invoking, so independent/off first passes report raw.
+SKILL_PROMPT="${SKILL_PROMPT}
+
+$(ai_review::self_adjudication_instructions)"
+
 # Worker mode: the library's parallel fan-out re-invokes this dispatcher as
 # `--__review-one <record>` (one batch per worker). The re-run rebuilds the same
 # SKILL_PROMPT above, so the worker reviews with this skill's instructions.
