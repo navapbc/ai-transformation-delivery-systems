@@ -21,13 +21,13 @@
 #         ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
 #         # OPENAI_API_KEY:  ${{ secrets.OPENAI_API_KEY }}   # only if tool=codex
 #
-# `pilot` is a MOVING tag that always tracks the latest classifier on main — we
-# re-point it on every release. Consumers who reference `@pilot` therefore
-# auto-update with no yaml change; they set this caller up once and never touch
-# it. A team that wants to freeze a specific version can pin `@<commit-sha>`
-# instead, at the cost of bumping it manually. (The source repo is public, so
-# the consumer's default token resolves this workflow and checks out its
-# scripts; no PAT or access setting needed.)
+# `pilot` is a MOVING tag that always tracks the latest classifier on main; the
+# move-tag.yml workflow re-points it automatically whenever the classifier
+# changes on main. Consumers who reference `@pilot` therefore auto-update with
+# no yaml change; they set this caller up once and never touch it. A team that
+# wants to freeze a specific version can pin `@<commit-sha>` instead, at the cost
+# of bumping it manually. (The source repo is public, so the consumer's default
+# token resolves this workflow and checks out its scripts; no PAT needed.)
 
 name: AI test classifier (reusable)
 

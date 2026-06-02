@@ -1,0 +1,47 @@
+# .github/workflows/move-tag.yml
+#
+# Keeps the moving `pilot` tag pointed at the latest classifier code on the
+# default branch. Consumers reference the reusable workflow at `@pilot`, so this
+# is what makes "set up once, auto-update" actually happen — without anyone
+# remembering to force-move the tag by hand after each merge.
+#
+# Scoped to pushes that touch the classifier (testing/** or the reusable
+# workflow itself), so `pilot` does NOT move on unrelated changes (docs at the
+# repo root, the security/ workstream, etc.) — a consumer's CI only sees a "new
+# pilot" when the classifier actually changed.
+
+name: Move pilot tag
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'testing/**'
+      - '.github/workflows/test-classifier.yml'
+
+# Only need to write the tag ref.
+permissions:
+  contents: write
+
+# If several classifier merges land quickly, don't race; the latest wins.
+concurrency:
+  group: move-pilot-tag
+  cancel-in-progress: true
+
+jobs:
+  move-tag:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the pushed commit
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Point `pilot` at this commit and push
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          git tag -f pilot "${GITHUB_SHA}"
+          git push -f origin "refs/tags/pilot"
+          echo "Moved pilot -> ${GITHUB_SHA}"
