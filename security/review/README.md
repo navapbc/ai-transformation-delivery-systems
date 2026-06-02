@@ -790,6 +790,10 @@ the repository, batched by directory.
 .skills/codebase-audit/scripts/codebase-audit-dispatcher.sh \
   --scope src/ --min-severity high
 
+# Audit several specific subtrees (--scope is repeatable):
+.skills/codebase-audit/scripts/codebase-audit-dispatcher.sh \
+  --scope src/api --scope infra
+
 # See what would be audited without invoking the AI:
 .skills/codebase-audit/scripts/codebase-audit-dispatcher.sh --list-batches
 
@@ -798,6 +802,9 @@ the repository, batched by directory.
 
 # Also emit SARIF for ingestion into security tooling:
 .skills/codebase-audit/scripts/codebase-audit-dispatcher.sh --sarif
+
+# Speed up a large audit by auditing several directories concurrently:
+.skills/codebase-audit/scripts/codebase-audit-dispatcher.sh --jobs 8
 ```
 
 ### How it works
@@ -808,6 +815,24 @@ known-skippable directories (`node_modules/`, `.venv/`, `vendor/`,
 the remainder by directory. Each directory becomes one **batch** — the AI
 is invoked once per batch with the codebase-audit skill, the directory in
 scope, and the appropriate context-loading rules.
+
+### Speeding up large audits (`--jobs` / `AUDIT_JOBS`)
+
+Because each batch is self-contained — one directory in, one report out, with
+its own bounded context — batches run independently. By default the dispatcher
+processes **4 at a time**; raise or lower that with `--jobs N` (or the
+`AUDIT_JOBS` env var), and `--jobs 1` forces the original fully serial run.
+
+```bash
+AUDIT_JOBS=8 .skills/codebase-audit/scripts/codebase-audit-dispatcher.sh
+```
+
+Batch *planning* stays single-threaded and deterministic, so the set of reports
+and the `_INDEX.md` are identical regardless of `--jobs` — only execution fans
+out. Each worker uses the same configured `AI_REVIEW_TOOL`; the practical
+ceiling on `N` is your AI vendor's rate limit (too high invites HTTP 429s). A
+worker whose AI call fails writes no report, so a later resume run (the default)
+simply picks that directory back up.
 
 Output goes to `audit-reports/`:
 

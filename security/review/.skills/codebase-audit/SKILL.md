@@ -27,7 +27,9 @@ batched by directory, producing a per-directory finding report.
 > **When NOT to use this skill:** routine development. Use the pre-commit
 > and PR-review skills for that — they are tuned for diffs and run in
 > seconds, while this skill scans the full repo and can run for an hour
-> or more.
+> or more. (The dispatcher audits multiple directories concurrently — see
+> its `--jobs` / `AUDIT_JOBS` option — which shortens that wall-clock time
+> substantially without changing the reports.)
 
 This file (`.skills/codebase-audit/SKILL.md`) is the **canonical** copy.
 Each developer's chosen AI tool reads either this file or a byte-identical
@@ -42,7 +44,9 @@ setting.
 The dispatcher (`.skills/codebase-audit/scripts/codebase-audit-dispatcher.sh`)
 controls the audit loop. The AI does not pick which directories to audit;
 the dispatcher does that and invokes the AI once per batch with a fresh
-context. This matters because:
+context. Batches are independent, so the dispatcher can audit several at
+once (`--jobs N`, default 4); planning stays deterministic and only
+execution fans out. This matters because:
 
 1. **Determinism** — the same dispatcher run on the same codebase produces
    the same batching plan, which makes reports comparable across runs.
