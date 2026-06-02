@@ -274,10 +274,11 @@ Codebase audit setup (optional, on-demand only)
 Second-opinion adjudication (optional — on by default, no setup required)
 ------------------------------------------------------------------------------
 
-    When a pre-commit or codebase-audit review reports findings, an
-    independent second pass re-inspects them and drops false positives before
-    the result is decided. It is ON by default and needs no configuration; a
-    clean first pass triggers no second call.
+    When a pre-commit review would BLOCK a commit, an independent second pass
+    re-inspects the finding-bearing files and drops false positives before the
+    result is decided. It is ON by default and needs no configuration. A clean
+    (PASS) or low-severity-only (WARN) first pass triggers no second call —
+    only BLOCK does. (Codebase-audit adjudicates any directory with findings.)
 
     Two optional environment variables tune it (full details in README.md,
     section "Adjudication settings"):
@@ -289,6 +290,26 @@ Second-opinion adjudication (optional — on by default, no setup required)
                                    unset = the tool's default model
 
     Per-run, the --no-adjudicate flag skips the pass for a single invocation.
+
+------------------------------------------------------------------------------
+Pre-commit performance for large commits (optional — sensible defaults)
+------------------------------------------------------------------------------
+
+    A commit that changes many files across several directories is reviewed in
+    parallel batches (folded worst-of for the gate); a few files in one
+    directory still run as a single call. This is ON by default and needs no
+    setup. Tune via flags or environment (full details in README.md, section
+    "Pre-commit performance"):
+
+      • --jobs N / AI_REVIEW_JOBS=N   batches reviewed concurrently (default 4;
+                                      1 = serial; ceiling is your vendor's rate limit)
+      • AI_REVIEW_BATCH_BY=dir|file   batch granularity (default dir)
+      • AI_REVIEW_BATCH_MIN_FILES=N   min files before fanning out (default 4)
+      • --list-batches                preview the batch plan without calling the AI
+
+    Note: fan-out lowers wall-clock but RAISES total tokens (each batch reloads
+    context). Raise AI_REVIEW_BATCH_MIN_FILES to favor cost over latency; run
+    --jobs 1 for the strongest single-pass cross-file analysis.
 
 ------------------------------------------------------------------------------
 Done. From now on, every git commit runs the pre-commit reviews automatically,

@@ -27,6 +27,10 @@ else
   REPO_ROOT="$(cd "${SCRIPT_DIR}/../../.." && pwd)"
 fi
 LIB_PATH="${REPO_ROOT}/.skills/_lib/ai-review-dispatch.sh"
+# Absolute path to this script — re-invoked as a single-batch worker during the
+# library's parallel fan-out (see the --__review-one shim at the bottom). The
+# library reads it from AI_REVIEW_SELF.
+export AI_REVIEW_SELF="${SCRIPT_DIR}/$(basename "${BASH_SOURCE[0]}")"
 
 if [[ ! -f "${LIB_PATH}" ]]; then
   echo "ERROR: shared dispatch library not found at: ${LIB_PATH}" >&2
@@ -44,6 +48,21 @@ SKILL_HUMAN_NAME="IaC Compliance Review (CMS ARS 5.1 / NIST 800-53 Rev 5)"
 SKILL_PATH_CANONICAL=".skills/iac-compliance/SKILL.md"
 
 # ── IaC file filter ─────────────────────────────────────────────────────────
+# Patterns that identify infrastructure-as-code files.
+# Note: generic .yml/.yaml files are matched here too — the AI will perform
+# a second-pass check inside the file (e.g., looking for `apiVersion:` and
+# `kind:` to confirm Kubernetes manifests). This is intentionally broad at
+# the dispatcher layer to avoid skipping K8s manifests with unusual names.
+IAC_FILE_PATTERN='\.(tf|tfvars|hcl|bicep|bicepparam)$|\.tf\.json$|\.template\.(json|ya?ml)$|^(.*\/)?(Pulumi|Chart|values|kustomization)\.ya?ml$|^(.*\/)?cdk\.json$|\.ya?ml$'
+
+# Per-file predicate: returns 0 if the given path looks like IaC. Used as the
+# library's per-file batch filter so parallel fan-out only creates workers for
+# IaC directories — never a wasted worker on a non-IaC batch.
+iac_compliance::is_iac_file() {
+  printf '%s\n' "$1" | grep -qE "${IAC_FILE_PATTERN}"
+}
+SKILL_BATCH_FILE_FILTER_FN="iac_compliance::is_iac_file"
+
 # Returns 0 if at least one staged (or --against'd) file looks like IaC.
 # The shared library calls this via the SKILL_FILE_FILTER_FN hook and skips
 # the AI invocation entirely when this returns non-zero.
@@ -55,14 +74,7 @@ iac_compliance::has_iac_files() {
     return 1
   fi
 
-  # Patterns that identify infrastructure-as-code files.
-  # Note: generic .yml/.yaml files are matched here too — the AI will perform
-  # a second-pass check inside the file (e.g., looking for `apiVersion:` and
-  # `kind:` to confirm Kubernetes manifests). This is intentionally broad at
-  # the dispatcher layer to avoid skipping K8s manifests with unusual names.
-  local iac_pattern='\.(tf|tfvars|hcl|bicep|bicepparam)$|\.tf\.json$|\.template\.(json|ya?ml)$|^(.*\/)?(Pulumi|Chart|values|kustomization)\.ya?ml$|^(.*\/)?cdk\.json$|\.ya?ml$'
-
-  echo "${files}" | grep -qE "${iac_pattern}"
+  echo "${files}" | grep -qE "${IAC_FILE_PATTERN}"
 }
 
 SKILL_FILE_FILTER_FN="iac_compliance::has_iac_files"
@@ -84,11 +96,21 @@ identified by the environment (default: staged changes from
 AI_REVIEW_AGAINST environment variable will be set, and the diff range is
 available via `git diff $AI_REVIEW_AGAINST HEAD`).
 
+If the AI_REVIEW_SCOPE_PATHS environment variable is set (newline-separated
+paths), you are one worker in a parallel review — restrict this review to EXACTLY
+those paths. Collect the diff with `git diff --cached -- $AI_REVIEW_SCOPE_PATHS`
+(or `git diff $AI_REVIEW_AGAINST HEAD -- $AI_REVIEW_SCOPE_PATHS` when
+AI_REVIEW_AGAINST is set) and do not report findings outside that set. You see
+only a slice of the commit: if confirming a finding would require a file outside
+your scope, still report it and note that cross-file confirmation is needed.
+
 Follow the skill instructions exactly:
   1. Collect the diff using the appropriate git command.
   2. Detect the IaC tool(s) in use (Terraform, CloudFormation, Bicep, Pulumi,
      Ansible, Kubernetes, Helm, CDK, etc.).
-  3. Load up to 15 targeted context files as described in the skill.
+  3. Load targeted context files as described in the skill, up to the ceiling in
+     the AI_REVIEW_CONTEXT_BUDGET environment variable (default 15 when unset; a
+     smaller value is set when reviewing a small batch).
   4. Run the control-family checks (AC, AU, CM, CP, IA, RA, SC, SI) that are
      applicable to the changed code. Cite each finding with its NIST 800-53 /
      CMS ARS 5.1 control ID.
@@ -119,4 +141,11 @@ PROMPT
 # shellcheck source=../../_lib/ai-review-dispatch.sh
 source "${LIB_PATH}"
 
-ai_review::run "$@"
+# Worker mode: the library's parallel fan-out re-invokes this dispatcher as
+# `--__review-one <record>` (one batch per worker). The re-run rebuilds the same
+# SKILL_PROMPT above, so the worker reviews with this skill's instructions.
+if [[ "${1:-}" == "--__review-one" ]]; then
+  ai_review::worker_main "${2:-}"
+else
+  ai_review::run "$@"
+fi

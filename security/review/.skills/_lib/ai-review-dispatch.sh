@@ -38,10 +38,15 @@
 #   2  — Configuration error (AI_REVIEW_TOOL unset or invalid)
 #
 # Adjudication (second opinion):
-#   When a first pass yields WARN or BLOCK, an independent adjudication pass
+#   When a first pass yields BLOCK, an independent adjudication pass
 #   (finding-adjudication skill) re-inspects the cited code and confirms,
 #   dismisses, or downgrades each finding; the gate is then decided by the
-#   adjudicated marker. A PASS first pass is final (no second call). Controlled
+#   adjudicated marker. PASS and WARN first passes are final and incur no second
+#   call — a WARN commit proceeds regardless (exit 0), so adjudicating it could
+#   only move WARN→WARN or WARN→PASS, both non-blocking, i.e. pure latency with
+#   no effect on the gate. To keep the cited code small (and the second pass
+#   fast), adjudication is scoped to just the files referenced in the first-pass
+#   findings; if none can be parsed it falls back to the whole diff. Controlled
 #   by AI_ADJUDICATION (default on) and AI_ADJUDICATION_MODEL (optional model
 #   override for the same CLI). If the adjudication pass fails or returns no
 #   marker, the stricter first-pass result stands (fail-safe).
@@ -80,15 +85,20 @@ ai_review::err()  { printf '%s[%s] ERROR: %s%s\n' "${AI_C_RED}" "${SKILL_NAME}" 
 
 # ── CLI flag parsing ────────────────────────────────────────────────────────
 # Sets:
-#   AI_REVIEW_DRY_RUN   ("1" or "0") — print what would happen, do not call AI
-#   AI_REVIEW_NO_BLOCK  ("1" or "0") — run review but never exit non-zero
-#   AI_REVIEW_AGAINST   (string)     — git ref to diff against; default = staged
-#   AI_REVIEW_REMAINING (array)      — any unparsed args
+#   AI_REVIEW_DRY_RUN      ("1" or "0") — print what would happen, do not call AI
+#   AI_REVIEW_NO_BLOCK     ("1" or "0") — run review but never exit non-zero
+#   AI_REVIEW_AGAINST      (string)     — git ref to diff against; default = staged
+#   AI_REVIEW_JOBS         (int)        — concurrent workers (1 = serial; default 4)
+#   AI_REVIEW_LIST_BATCHES ("1" or "0") — print the batch plan and exit
+#   AI_REVIEW_REMAINING    (array)      — any unparsed args
 ai_review::parse_args() {
   AI_REVIEW_DRY_RUN=0
   AI_REVIEW_NO_BLOCK=0
   AI_REVIEW_NO_ADJUDICATE=0
   AI_REVIEW_AGAINST=""
+  AI_REVIEW_LIST_BATCHES=0
+  # Concurrency: env default (validated below), overridable by --jobs.
+  AI_REVIEW_JOBS="${AI_REVIEW_JOBS:-4}"
   AI_REVIEW_REMAINING=()
 
   while [[ $# -gt 0 ]]; do
@@ -117,6 +127,18 @@ ai_review::parse_args() {
         AI_REVIEW_AGAINST="${1#*=}"
         shift
         ;;
+      --jobs)
+        AI_REVIEW_JOBS="${2:-}"
+        shift 2
+        ;;
+      --jobs=*)
+        AI_REVIEW_JOBS="${1#*=}"
+        shift
+        ;;
+      --list-batches)
+        AI_REVIEW_LIST_BATCHES=1
+        shift
+        ;;
       -h|--help)
         ai_review::print_help
         exit 0
@@ -132,6 +154,12 @@ ai_review::parse_args() {
         ;;
     esac
   done
+
+  # Validate JOBS now that flag/env are resolved.
+  if ! [[ "${AI_REVIEW_JOBS}" =~ ^[0-9]+$ ]] || (( AI_REVIEW_JOBS < 1 )); then
+    ai_review::err "--jobs / AI_REVIEW_JOBS must be a positive integer (got '${AI_REVIEW_JOBS}')."
+    exit 2
+  fi
 }
 
 ai_review::print_help() {
@@ -152,19 +180,43 @@ Options:
   --against <ref>      Review the diff between <ref> and HEAD (or working tree)
                        instead of the staged changes. Useful for ad-hoc review,
                        e.g.  --against HEAD~1   or  --against main
+  --jobs <N>           Run up to N batches concurrently when the diff is large
+                       enough to fan out (default 4; also AI_REVIEW_JOBS).
+                       1 = serial. The ceiling is the AI vendor's rate limit.
+  --list-batches       Print how the diff would be split into batches (and
+                       whether it would fan out) without invoking the AI. Exits 0.
   -h, --help           Show this help and exit.
 
 Environment variables:
   AI_REVIEW_TOOL         Required. One of: claude | codex | copilot.
   AI_ADJUDICATION        If "0", disable the second-opinion adjudication pass.
-                         Default: enabled. When enabled, a finding-bearing first
-                         pass triggers a fresh, independent review that confirms,
-                         dismisses, or downgrades each finding before the gate is
-                         decided. A clean first pass never triggers it.
+                         Default: enabled. When enabled, a BLOCK first pass
+                         triggers a fresh, independent review (scoped to the
+                         finding-bearing files) that confirms, dismisses, or
+                         downgrades each finding before the gate is decided.
+                         PASS and WARN first passes never trigger it — a WARN
+                         commit proceeds regardless, so a second pass could not
+                         change the outcome.
   AI_ADJUDICATION_MODEL  Optional. Model name passed to the same AI_REVIEW_TOOL
                          CLI for the adjudication pass only (e.g. a different
                          model for an independent second opinion). If unset, the
                          tool's default model is used.
+  AI_REVIEW_JOBS         Concurrent workers for the parallel fan-out (default 4;
+                         overridden by --jobs). 1 = serial.
+  AI_REVIEW_BATCH_BY     "dir" (default) groups changed files by directory — one
+                         worker per directory, preserving cross-file context
+                         within it. "file" runs one worker per changed file
+                         (maximum concurrency, higher total token cost, and it
+                         cannot see cross-file context).
+  AI_REVIEW_BATCH_MIN_FILES
+                         Minimum changed files before the diff is fanned out
+                         (default 4). Smaller commits run as a single call so
+                         they never pay the per-batch overhead multiplier.
+  AI_REVIEW_CONTEXT_BUDGET
+                         Ceiling on how many context files the AI loads for one
+                         call. The single-call path uses the skill default (15);
+                         workers scale it down to their batch size to keep token
+                         cost bounded.
   CI                     If "true", colors are suppressed and errors prefer the
                          fail-fast path.
   NO_COLOR               If set (any value), suppress ANSI color codes.
@@ -232,8 +284,10 @@ ai_review::require_cli() {
 # Determines whether there are any changes to review.
 # When AI_REVIEW_AGAINST is empty (default pre-commit mode), checks staged diff.
 # When AI_REVIEW_AGAINST is set, checks the diff between that ref and HEAD.
+# The :- defaults let these run safely under `set -u` in worker processes, which
+# inherit AI_REVIEW_AGAINST from the environment rather than via parse_args.
 ai_review::has_changes() {
-  if [[ -n "${AI_REVIEW_AGAINST}" ]]; then
+  if [[ -n "${AI_REVIEW_AGAINST:-}" ]]; then
     if ! git rev-parse --verify --quiet "${AI_REVIEW_AGAINST}^{commit}" >/dev/null; then
       ai_review::err "Git ref not found: ${AI_REVIEW_AGAINST}"
       exit 1
@@ -245,7 +299,7 @@ ai_review::has_changes() {
 }
 
 ai_review::changed_files() {
-  if [[ -n "${AI_REVIEW_AGAINST}" ]]; then
+  if [[ -n "${AI_REVIEW_AGAINST:-}" ]]; then
     git diff --name-only "${AI_REVIEW_AGAINST}" HEAD --
   else
     git diff --cached --name-only
@@ -253,7 +307,7 @@ ai_review::changed_files() {
 }
 
 ai_review::diff_command_description() {
-  if [[ -n "${AI_REVIEW_AGAINST}" ]]; then
+  if [[ -n "${AI_REVIEW_AGAINST:-}" ]]; then
     echo "git diff ${AI_REVIEW_AGAINST} HEAD"
   else
     echo "git diff --cached"
@@ -360,13 +414,62 @@ ai_review::strip_markers() {
   sed -E '/<<<AI_REVIEW_RESULT:(PASS|WARN|BLOCK|CLEAN|FINDINGS)>>>/d'
 }
 
-# ai_review::build_adjudication_prompt <first_pass_report> <markers>
-#   <markers> is "pre-commit" (PASS/WARN/BLOCK) or "audit" (CLEAN/FINDINGS).
+# ai_review::extract_finding_paths <first_pass_report>
+# Emits, one per line, the changed files that the first-pass report cites — used
+# to scope the adjudication pass to just the finding-bearing code instead of the
+# whole diff. We iterate the AUTHORITATIVE changed-file set (so prose tokens like
+# "example.com" and hallucinated paths can never leak in) and keep a file if its
+# path OR basename appears anywhere in the report (fixed-string match — no regex
+# escaping pitfalls). Basename matching can mildly over-include on duplicate
+# basenames, which is safe: it only widens the adjudicator's reading scope, it
+# never drops a finding. Empty output means "couldn't determine" and the caller
+# falls back to the whole diff (fail-safe — never under-review).
+ai_review::extract_finding_paths() {
+  local report="$1"
+  local changed
+  changed="$(ai_review::changed_files)"
+  [[ -z "${changed}" ]] && return 0
+
+  local cf base
+  while IFS= read -r cf; do
+    [[ -z "${cf}" ]] && continue
+    base="$(basename "${cf}")"
+    if grep -qF -- "${cf}" <<< "${report}" || grep -qF -- "${base}" <<< "${report}"; then
+      printf '%s\n' "${cf}"
+    fi
+  done <<< "${changed}"
+}
+
+# ai_review::build_adjudication_prompt <first_pass_report> <markers> [scope_paths]
+#   <markers>     is "pre-commit" (PASS/WARN/BLOCK) or "audit" (CLEAN/FINDINGS).
+#   [scope_paths] (diff-mode only) newline-separated finding-bearing files; when
+#                 non-empty the adjudicator is told to inspect only those.
 ai_review::build_adjudication_prompt() {
   local report="$1"
   local markers="$2"
+  local scope_paths="${3:-}"
   local clean_report
   clean_report="$(printf '%s\n' "${report}" | ai_review::strip_markers)"
+
+  # What code the adjudicator must inspect. Audit-mode is already file-scoped by
+  # the report. Diff-mode scopes to the finding-bearing files when we could parse
+  # them; otherwise it falls back to the full diff (fail-safe).
+  local code_scope_clause
+  if [[ "${markers}" == "audit" ]]; then
+    code_scope_clause="For audit-mode reviews the code under review is the files cited in the report."
+  elif [[ -n "${scope_paths}" ]]; then
+    local paths_inline
+    paths_inline="$(printf '%s' "${scope_paths}" | tr '\n' ' ')"
+    code_scope_clause="The first pass cited findings in these files ONLY — restrict your inspection to
+them. Collect their diff with:
+  git diff --cached -- ${paths_inline}
+(or, if AI_REVIEW_AGAINST is set in your environment,
+  git diff \$AI_REVIEW_AGAINST HEAD -- ${paths_inline}).
+Do not review or report on files outside this set."
+  else
+    code_scope_clause="The code under review is, by default, the staged changes (\`git diff --cached\`);
+if AI_REVIEW_AGAINST is set in your environment, it is \`git diff \$AI_REVIEW_AGAINST HEAD\`."
+  fi
 
   local marker_instructions
   case "${markers}" in
@@ -395,11 +498,9 @@ Read that SKILL.md, then act as an INDEPENDENT second reviewer adjudicating the
 findings produced by a first-pass automated review. You did not perform the
 first pass and must not assume it was correct.
 
-The code under review is the same code the first pass examined. For diff-mode
-reviews that is, by default, the staged changes (\`git diff --cached\`); if
-AI_REVIEW_AGAINST is set in your environment, it is \`git diff \$AI_REVIEW_AGAINST HEAD\`.
-For audit-mode reviews it is the files cited in the report. Inspect the actual
-code yourself before judging each finding — do not rely on the report's summary.
+The code under review is the same code the first pass examined. ${code_scope_clause}
+Inspect the actual code yourself before judging each finding — do not rely on
+the report's summary.
 
 For each finding in the first-pass report below, classify it as CONFIRMED,
 FALSE_POSITIVE, or OVERSTATED (with a corrected lower severity), each with a
@@ -430,9 +531,204 @@ PROMPT
 ai_review::adjudicate() {
   local report="$1"
   local markers="${2:-pre-commit}"
+  # Diff-mode: scope the second pass to the finding-bearing files (smaller,
+  # faster, same model). Audit-mode is already file-scoped by its report.
+  local scope_paths=""
+  if [[ "${markers}" != "audit" ]]; then
+    scope_paths="$(ai_review::extract_finding_paths "${report}")"
+  fi
   local prompt
-  prompt="$(ai_review::build_adjudication_prompt "${report}" "${markers}")"
+  prompt="$(ai_review::build_adjudication_prompt "${report}" "${markers}" "${scope_paths}")"
   ai_review::invoke_tool "${prompt}" "${AI_ADJUDICATION_MODEL:-}"
+}
+
+# ── Parallel fan-out for large diffs ─────────────────────────────────────────
+# When a commit touches enough files across enough batches, split the diff into
+# independent batches and review them concurrently, then fold the per-batch
+# gate markers into one decision. Each worker runs the SAME first-pass →
+# (BLOCK-only) adjudication sequence run() runs today, so quality and the gate
+# are identical; only wall-clock changes. Mirrors the codebase-audit fan-out.
+
+# ai_review::plan_diff_batches
+# Emits one record per batch:  <key>\t<file>|<file>|...
+# key = directory (default) or the file itself when AI_REVIEW_BATCH_BY=file.
+# bash 3.2 safe: no associative arrays / mapfile — we emit <key>\t<file> pairs,
+# sort (a tab-led sort groups a key's files together), then coalesce with awk.
+#
+# When a dispatcher defines SKILL_BATCH_FILE_FILTER_FN (a per-file predicate
+# returning 0 to keep a file), only matching files are batched. code-security
+# reviews everything (no filter); iac-compliance keeps only IaC files so fan-out
+# never spins up a worker on a non-IaC directory.
+ai_review::plan_diff_batches() {
+  local by="${AI_REVIEW_BATCH_BY:-dir}"
+  local filter_fn="${SKILL_BATCH_FILE_FILTER_FN:-}"
+  ai_review::changed_files | while IFS= read -r f; do
+    [[ -z "${f}" ]] && continue
+    if [[ -n "${filter_fn}" ]] && declare -F "${filter_fn}" >/dev/null 2>&1; then
+      "${filter_fn}" "${f}" || continue
+    fi
+    local key
+    if [[ "${by}" == "file" ]]; then
+      key="${f}"
+    else
+      key="$(dirname "${f}")"
+      [[ "${key}" == "." ]] && key="(root)"
+    fi
+    printf '%s\t%s\n' "${key}" "${f}"
+  done | LC_ALL=C sort | awk -F'\t' '
+    {
+      if ($1 != cur) {
+        if (cur != "") { print cur "\t" files }
+        cur = $1; files = $2
+      } else {
+        files = files "|" $2
+      }
+    }
+    END { if (cur != "") print cur "\t" files }
+  '
+}
+
+# ai_review::should_batch <nfiles> <nbatches>
+# Fan out only when it actually helps: more than one worker allowed, more than
+# one batch to spread, and the diff is large enough to be worth the per-batch
+# overhead. A single-directory change stays a single full-context call.
+ai_review::should_batch() {
+  local nfiles="$1" nbatches="$2"
+  local min_files="${AI_REVIEW_BATCH_MIN_FILES:-4}"
+  (( AI_REVIEW_JOBS > 1 )) && (( nbatches > 1 )) && (( nfiles >= min_files ))
+}
+
+# ai_review::context_budget <files_in_batch>
+# A worker reviewing few files needs few context files. clamp(3 × n, 4, 15).
+ai_review::context_budget() {
+  local n="$1" b
+  b=$(( 3 * n ))
+  (( b < 4 ))  && b=4
+  (( b > 15 )) && b=15
+  printf '%s' "${b}"
+}
+
+# ai_review::fold_markers   (reads AI_REVIEW_BATCH_RESULT sentinel lines on stdin)
+# Worst-of reduction: any BLOCK (or unparseable/blank) → BLOCK; else any WARN →
+# WARN; else PASS. No sentinels at all → UNPARSEABLE (caller fails safe).
+ai_review::fold_markers() {
+  awk -F'\t' '
+    $1 == "AI_REVIEW_BATCH_RESULT" {
+      seen++
+      m = $3
+      if      (m == "BLOCK" || m == "UNPARSEABLE" || m == "") block=1
+      else if (m == "WARN")  warn=1
+      else if (m == "PASS")  pass=1
+      else                   block=1
+    }
+    END {
+      if      (block) print "BLOCK"
+      else if (warn)  print "WARN"
+      else if (pass)  print "PASS"
+      else            print "UNPARSEABLE"
+    }
+  '
+}
+
+# ai_review::fan_out <record>...
+# Re-invokes this skill's dispatcher (AI_REVIEW_SELF) once per batch via
+# `xargs -0 -P AI_REVIEW_JOBS`. Each worker prints its human report to stderr
+# (so it streams live) and exactly one sentinel line to stdout (captured here).
+# Publishes the folded gate decision in AI_REVIEW_FOLDED_RESULT — returning it
+# via a global keeps this function's own logging on stdout from polluting it.
+ai_review::fan_out() {
+  local -a records=("$@")
+  local expected=${#records[@]}
+
+  if [[ -z "${AI_REVIEW_SELF:-}" ]]; then
+    ai_review::err "Internal error: AI_REVIEW_SELF not set; the dispatcher must export it for fan-out."
+    AI_REVIEW_FOLDED_RESULT="BLOCK"
+    return 0
+  fi
+
+  # Propagate config to the worker processes (they re-source this library).
+  export AI_REVIEW_TOOL
+  export AI_REVIEW_AGAINST
+  export AI_REVIEW_BATCH_BY="${AI_REVIEW_BATCH_BY:-dir}"
+  [[ "${AI_REVIEW_NO_ADJUDICATE:-0}" == "1" ]] && export AI_REVIEW_NO_ADJUDICATE
+  [[ -n "${AI_ADJUDICATION:-}" ]]       && export AI_ADJUDICATION
+  [[ -n "${AI_ADJUDICATION_MODEL:-}" ]] && export AI_ADJUDICATION_MODEL
+
+  ai_review::info "Fanning out ${expected} batch(es) across ${AI_REVIEW_JOBS} workers (batch-by=${AI_REVIEW_BATCH_BY})..."
+
+  local sentinels fan_rc=0
+  # NUL-delimited records so embedded tabs/spaces in paths survive.
+  sentinels="$(printf '%s\0' "${records[@]}" \
+    | xargs -0 -P "${AI_REVIEW_JOBS}" -n1 bash "${AI_REVIEW_SELF}" --__review-one)" || fan_rc=$?
+
+  local seen folded
+  seen="$(printf '%s\n' "${sentinels}" | grep -c '^AI_REVIEW_BATCH_RESULT' || true)"
+  folded="$(printf '%s\n' "${sentinels}" | ai_review::fold_markers)"
+
+  # Fail-safe: a crashed worker (xargs returns 123) or a missing sentinel means
+  # a batch was not reviewed — treat the whole commit as BLOCK rather than risk
+  # letting unreviewed code through.
+  if (( fan_rc != 0 )) || (( seen < expected )); then
+    ai_review::warn "Some batches did not return a result (xargs rc=${fan_rc}; ${seen}/${expected} reported). Folding to BLOCK (fail-safe)."
+    folded="BLOCK"
+  fi
+
+  ai_review::info "Per-batch results folded to: ${folded} (worst-of across ${expected} batch(es))."
+  AI_REVIEW_FOLDED_RESULT="${folded}"
+}
+
+# ai_review::worker_main <record>
+# The --__review-one entry point: reviews exactly one batch and prints a single
+# sentinel line. The batch's paths are exposed to the AI via AI_REVIEW_SCOPE_PATHS
+# and the context-file ceiling via AI_REVIEW_CONTEXT_BUDGET (both consulted by the
+# SKILL_PROMPT). Runs first pass → BLOCK-only adjudication, exactly like run().
+ai_review::worker_main() {
+  local record="$1"
+  ai_review::resolve_tool >/dev/null    # parent already announced the tool
+
+  local key="${record%%$'\t'*}"
+  local files_pipe="${record#*$'\t'}"
+  local files_nl nfiles
+  files_nl="$(printf '%s' "${files_pipe}" | tr '|' '\n' | grep -v '^$' || true)"
+  nfiles="$(printf '%s\n' "${files_nl}" | grep -cv '^$' || true)"
+
+  # Scope this worker to its files; everything to stderr except the sentinel.
+  export AI_REVIEW_SCOPE_PATHS="${files_nl}"
+  export AI_REVIEW_CONTEXT_BUDGET
+  AI_REVIEW_CONTEXT_BUDGET="$(ai_review::context_budget "${nfiles}")"
+  export AI_REVIEW_AGAINST
+
+  local output rc=0 marker="UNPARSEABLE"
+  output="$(ai_review::invoke_ai)" || rc=$?
+  if (( rc != 0 )); then
+    ai_review::err "[${key}] AI invocation failed (rc=${rc})." >&2
+  else
+    marker="$(ai_review::parse_result "${output}")"
+    # Per-worker second opinion — same BLOCK-only policy as run().
+    if [[ "${marker}" == "BLOCK" ]] && ai_review::adjudication_enabled; then
+      ai_review::info "[${key}] BLOCK — running adjudication (second opinion)..." >&2
+      local adj_output adj_rc=0 adj_marker=""
+      adj_output="$(ai_review::adjudicate "${output}" "pre-commit")" || adj_rc=$?
+      if (( adj_rc == 0 )); then
+        adj_marker="$(ai_review::parse_result "${adj_output}")"
+      fi
+      if (( adj_rc != 0 )) || [[ "${adj_marker}" == "UNPARSEABLE" ]]; then
+        ai_review::warn "[${key}] adjudication unavailable/unparseable; keeping first-pass BLOCK." >&2
+      else
+        output="${adj_output}"
+        marker="${adj_marker}"
+      fi
+    fi
+  fi
+
+  # Human-readable report → stderr (streams live; never captured by the parent).
+  {
+    printf '\n──────── [%s] (%s file(s)) ────────\n' "${key}" "${nfiles}"
+    printf '%s\n' "${output}"
+  } >&2
+
+  # Machine sentinel → stdout (the ONLY thing this process writes to stdout).
+  printf 'AI_REVIEW_BATCH_RESULT\t%s\t%s\n' "${key}" "${marker}"
 }
 
 # ── Main entry point ────────────────────────────────────────────────────────
@@ -467,12 +763,51 @@ ai_review::run() {
   # Resolve and announce the AI tool.
   ai_review::resolve_tool
 
+  # ── Plan the batches (consulted by --list-batches, --dry-run, executor) ────
+  local -a _batch_records=()
+  local _rec
+  while IFS= read -r _rec; do
+    [[ -z "${_rec}" ]] && continue
+    _batch_records+=("${_rec}")
+  done < <(ai_review::plan_diff_batches)
+  local _nbatches=${#_batch_records[@]}
+  # Count files actually planned for review (post per-file filter), summed across
+  # batches — not the raw changed-file count — so the threshold reflects the work
+  # this skill will really do (e.g. iac-compliance counts only IaC files).
+  local _nfiles=0 _fp _c
+  for _rec in "${_batch_records[@]}"; do
+    _fp="${_rec#*$'\t'}"
+    _c="$(printf '%s' "${_fp}" | tr '|' '\n' | grep -cv '^$' || true)"
+    _nfiles=$(( _nfiles + _c ))
+  done
+
+  # --list-batches: print the plan and the routing decision; no AI call.
+  if (( AI_REVIEW_LIST_BATCHES == 1 )); then
+    ai_review::info "Batch plan (batch-by=${AI_REVIEW_BATCH_BY:-dir}): ${_nfiles} file(s) in ${_nbatches} batch(es)"
+    for _rec in "${_batch_records[@]}"; do
+      local _k="${_rec%%$'\t'*}" _fp="${_rec#*$'\t'}" _n
+      _n="$(printf '%s' "${_fp}" | tr '|' '\n' | grep -cv '^$' || true)"
+      printf '  %-50s %s file(s)\n' "${_k}" "${_n}"
+    done
+    if ai_review::should_batch "${_nfiles}" "${_nbatches}"; then
+      ai_review::log "  → would FAN OUT across ${AI_REVIEW_JOBS} worker(s)."
+    else
+      ai_review::log "  → would run as a SINGLE call (needs jobs>1, >1 batch, and ≥${AI_REVIEW_BATCH_MIN_FILES:-4} files)."
+    fi
+    exit 0
+  fi
+
   # Dry-run path: print plan, do not invoke AI.
   if (( AI_REVIEW_DRY_RUN == 1 )); then
     ai_review::info "DRY-RUN — no AI invocation will be made."
     ai_review::log  "  Skill:       ${SKILL_HUMAN_NAME} (${SKILL_NAME})"
     ai_review::log  "  AI tool:     ${AI_REVIEW_TOOL_RESOLVED}"
     ai_review::log  "  Diff source: $(ai_review::diff_command_description)"
+    if ai_review::should_batch "${_nfiles}" "${_nbatches}"; then
+      ai_review::log "  Routing:     FAN OUT — ${_nfiles} file(s) across ${_nbatches} batch(es), jobs=${AI_REVIEW_JOBS}"
+    else
+      ai_review::log "  Routing:     SINGLE call — ${_nfiles} file(s), ${_nbatches} batch(es)"
+    fi
     ai_review::log  "  Changed files:"
     ai_review::changed_files | sed 's/^/    /'
     ai_review::log  ""
@@ -483,62 +818,76 @@ ai_review::run() {
     exit 0
   fi
 
-  # Run the actual review.
-  ai_review::info "Running ${SKILL_HUMAN_NAME} on $(ai_review::diff_command_description) via ${AI_REVIEW_TOOL_RESOLVED}..."
-  ai_review::log  "────────────────────────────────────────────────────────────"
-
   # Export AI_REVIEW_AGAINST so the AI subprocess can see it (it tells the AI
   # which git diff range to use; the skill consults this variable).
   export AI_REVIEW_AGAINST
 
-  local review_output
-  local invoke_rc=0
-  # We capture both stdout and stderr from the AI CLI. set -e is in effect,
-  # so wrap the call to allow inspection of the exit code.
-  review_output="$(ai_review::invoke_ai)" || invoke_rc=$?
-
-  printf '%s\n' "${review_output}"
-  ai_review::log  "────────────────────────────────────────────────────────────"
-
-  if (( invoke_rc != 0 )); then
-    ai_review::err "AI CLI (${AI_REVIEW_TOOL_RESOLVED}) exited with code ${invoke_rc}."
-    ai_review::log "  Treating as BLOCK to fail safe."
-    if (( AI_REVIEW_NO_BLOCK == 1 )); then
-      ai_review::warn "--no-block in effect: not blocking despite CLI failure."
-      exit 0
-    fi
-    exit 1
-  fi
-
-  # Parse the first-pass result marker.
   local result
-  result="$(ai_review::parse_result "${review_output}")"
 
-  # Independent second-opinion adjudication. Runs only when the first pass found
-  # something (WARN/BLOCK) and adjudication is enabled — a clean pass is final.
-  if [[ "${result}" == "WARN" || "${result}" == "BLOCK" ]] && ai_review::adjudication_enabled; then
-    ai_review::info "First pass result: ${result}. Running independent adjudication (second opinion)${AI_ADJUDICATION_MODEL:+ via model ${AI_ADJUDICATION_MODEL}}..."
-    local adj_output adj_rc=0
-    adj_output="$(ai_review::adjudicate "${review_output}" "pre-commit")" || adj_rc=$?
+  if ai_review::should_batch "${_nfiles}" "${_nbatches}"; then
+    # ── Parallel fan-out path ──────────────────────────────────────────────
+    # Each batch runs the same first-pass → BLOCK-only adjudication sequence the
+    # single-call path runs; ai_review::fan_out folds the per-batch markers
+    # (worst-of) into AI_REVIEW_FOLDED_RESULT.
+    ai_review::info "Running ${SKILL_HUMAN_NAME} on $(ai_review::diff_command_description) via ${AI_REVIEW_TOOL_RESOLVED} — ${_nfiles} file(s) across ${_nbatches} batch(es)..."
+    ai_review::log  "────────────────────────────────────────────────────────────"
+    AI_REVIEW_FOLDED_RESULT=""
+    ai_review::fan_out "${_batch_records[@]}"
+    result="${AI_REVIEW_FOLDED_RESULT}"
+    ai_review::log  "────────────────────────────────────────────────────────────"
+  else
+    # ── Single-call path (full diff in one review) ─────────────────────────
+    ai_review::info "Running ${SKILL_HUMAN_NAME} on $(ai_review::diff_command_description) via ${AI_REVIEW_TOOL_RESOLVED}..."
+    ai_review::log  "────────────────────────────────────────────────────────────"
 
-    if (( adj_rc != 0 )); then
-      ai_review::warn "Adjudication pass failed (rc=${adj_rc}); keeping the first-pass result (${result})."
-    else
-      ai_review::log  "──────── Adjudication (independent second opinion) ────────"
-      printf '%s\n' "${adj_output}"
-      ai_review::log  "────────────────────────────────────────────────────────────"
-      local adj_result
-      adj_result="$(ai_review::parse_result "${adj_output}")"
-      if [[ "${adj_result}" == "UNPARSEABLE" ]]; then
-        ai_review::warn "Adjudication produced no parseable result marker; keeping the first-pass result (${result})."
+    local review_output invoke_rc=0
+    # set -e is in effect, so wrap the call to inspect the exit code.
+    review_output="$(ai_review::invoke_ai)" || invoke_rc=$?
+
+    printf '%s\n' "${review_output}"
+    ai_review::log  "────────────────────────────────────────────────────────────"
+
+    if (( invoke_rc != 0 )); then
+      ai_review::err "AI CLI (${AI_REVIEW_TOOL_RESOLVED}) exited with code ${invoke_rc}."
+      ai_review::log "  Treating as BLOCK to fail safe."
+      if (( AI_REVIEW_NO_BLOCK == 1 )); then
+        ai_review::warn "--no-block in effect: not blocking despite CLI failure."
+        exit 0
+      fi
+      exit 1
+    fi
+
+    result="$(ai_review::parse_result "${review_output}")"
+
+    # Independent second-opinion adjudication. Runs only when the first pass
+    # would BLOCK and adjudication is enabled. PASS and WARN are final and skip
+    # it: a WARN commit proceeds regardless (exit 0), so a second pass could
+    # only move it WARN→WARN or WARN→PASS — both non-blocking — making it pure
+    # latency with no effect on the gate.
+    if [[ "${result}" == "BLOCK" ]] && ai_review::adjudication_enabled; then
+      ai_review::info "First pass result: ${result}. Running independent adjudication (second opinion)${AI_ADJUDICATION_MODEL:+ via model ${AI_ADJUDICATION_MODEL}}..."
+      local adj_output adj_rc=0
+      adj_output="$(ai_review::adjudicate "${review_output}" "pre-commit")" || adj_rc=$?
+
+      if (( adj_rc != 0 )); then
+        ai_review::warn "Adjudication pass failed (rc=${adj_rc}); keeping the first-pass result (${result})."
       else
-        ai_review::info "Adjudicated result: ${result} → ${adj_result} (gate decided by adjudication)."
-        result="${adj_result}"
+        ai_review::log  "──────── Adjudication (independent second opinion) ────────"
+        printf '%s\n' "${adj_output}"
+        ai_review::log  "────────────────────────────────────────────────────────────"
+        local adj_result
+        adj_result="$(ai_review::parse_result "${adj_output}")"
+        if [[ "${adj_result}" == "UNPARSEABLE" ]]; then
+          ai_review::warn "Adjudication produced no parseable result marker; keeping the first-pass result (${result})."
+        else
+          ai_review::info "Adjudicated result: ${result} → ${adj_result} (gate decided by adjudication)."
+          result="${adj_result}"
+        fi
       fi
     fi
   fi
 
-  # Act on the (possibly adjudicated) result marker.
+  # Act on the (possibly adjudicated / folded) result marker.
   case "${result}" in
     PASS)
       ai_review::ok "${AI_C_BOLD}✅  ${SKILL_HUMAN_NAME} passed. No findings detected.${AI_C_RESET}"
