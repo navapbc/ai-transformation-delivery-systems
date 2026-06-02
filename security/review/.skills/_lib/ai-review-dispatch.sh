@@ -210,8 +210,11 @@ Environment variables:
                          cannot see cross-file context).
   AI_REVIEW_BATCH_MIN_FILES
                          Minimum changed files before the diff is fanned out
-                         (default 4). Smaller commits run as a single call so
-                         they never pay the per-batch overhead multiplier.
+                         (default 10). Smaller commits run as a single call so
+                         they never pay the per-batch token overhead for a
+                         marginal wall-clock gain. When fan-out does happen, the
+                         batches are packed into at most AI_REVIEW_JOBS groups so
+                         it always runs as one concurrent wave.
   AI_REVIEW_CONTEXT_BUDGET
                          Ceiling on how many context files the AI loads for one
                          call. The single-call path uses the skill default (15);
@@ -588,13 +591,53 @@ ai_review::plan_diff_batches() {
   '
 }
 
+# ai_review::pack_batches <max_bins>   (reads <key>\t<files> records on stdin)
+# Coalesces per-directory records into at most <max_bins> batches via greedy
+# bin-packing (assign the largest remaining record to the least-loaded bin),
+# balancing file counts. This is the cap that keeps fan-out to a SINGLE wave:
+# without it, N directories become N batches that serialize into ceil(N/jobs)
+# waves, each paying the full model cold-start + SKILL.md read — which made a
+# many-directory commit *slower* than a single call. With batches ≤ jobs, every
+# batch runs concurrently and wall-clock can't exceed a single full-diff call.
+# bash 3.2 safe: all array work is in awk.
+ai_review::pack_batches() {
+  local max_bins="$1"
+  awk -F'\t' -v N="${max_bins}" '
+    {
+      files=$2
+      c=gsub(/\|/,"|",files)+1   # file count = (#pipes)+1; records are non-empty
+      rkey[NR]=$1; rfiles[NR]=$2; rcnt[NR]=c; nrec=NR
+    }
+    END {
+      if (N < 1) N=1
+      if (nrec <= N) {           # already within the cap — pass through unchanged
+        for (i=1;i<=nrec;i++) printf "%s\t%s\n", rkey[i], rfiles[i]
+      } else {
+        for (i=1;i<=N;i++) { load[i]=0; bin[i]="" }
+        for (a=1;a<=nrec;a++) order[a]=a
+        # selection sort by count desc (record counts are tiny)
+        for (a=1;a<=nrec;a++) for (b=a+1;b<=nrec;b++)
+          if (rcnt[order[b]]>rcnt[order[a]]) { t=order[a];order[a]=order[b];order[b]=t }
+        for (a=1;a<=nrec;a++) {
+          r=order[a]; m=1
+          for (i=2;i<=N;i++) if (load[i]<load[m]) m=i
+          bin[m] = (bin[m]=="") ? rfiles[r] : bin[m] "|" rfiles[r]
+          load[m]+=rcnt[r]
+        }
+        b=0
+        for (i=1;i<=N;i++) if (bin[i]!="") { b++; printf "batch %d (%d file(s))\t%s\n", b, load[i], bin[i] }
+      }
+    }
+  '
+}
+
 # ai_review::should_batch <nfiles> <nbatches>
 # Fan out only when it actually helps: more than one worker allowed, more than
 # one batch to spread, and the diff is large enough to be worth the per-batch
 # overhead. A single-directory change stays a single full-context call.
 ai_review::should_batch() {
   local nfiles="$1" nbatches="$2"
-  local min_files="${AI_REVIEW_BATCH_MIN_FILES:-4}"
+  local min_files="${AI_REVIEW_BATCH_MIN_FILES:-10}"
   (( AI_REVIEW_JOBS > 1 )) && (( nbatches > 1 )) && (( nfiles >= min_files ))
 }
 
@@ -781,6 +824,22 @@ ai_review::run() {
     _nfiles=$(( _nfiles + _c ))
   done
 
+  # Cap the batch count to the worker count. If we're going to fan out and there
+  # are more (per-directory/per-file) batches than workers, pack them into at
+  # most AI_REVIEW_JOBS bins so execution is a SINGLE concurrent wave rather than
+  # ceil(batches/jobs) waves that each re-pay the model cold-start. Without this,
+  # an 11-file commit spread over 10 directories became 10 batches / 3 waves —
+  # slower than one call. We decide on the raw batch count, then repack.
+  if ai_review::should_batch "${_nfiles}" "${_nbatches}" && (( _nbatches > AI_REVIEW_JOBS )); then
+    local -a _packed=()
+    while IFS= read -r _rec; do
+      [[ -z "${_rec}" ]] && continue
+      _packed+=("${_rec}")
+    done < <(printf '%s\n' "${_batch_records[@]}" | ai_review::pack_batches "${AI_REVIEW_JOBS}")
+    _batch_records=("${_packed[@]}")
+    _nbatches=${#_batch_records[@]}
+  fi
+
   # --list-batches: print the plan and the routing decision; no AI call.
   if (( AI_REVIEW_LIST_BATCHES == 1 )); then
     ai_review::info "Batch plan (batch-by=${AI_REVIEW_BATCH_BY:-dir}): ${_nfiles} file(s) in ${_nbatches} batch(es)"
@@ -792,7 +851,7 @@ ai_review::run() {
     if ai_review::should_batch "${_nfiles}" "${_nbatches}"; then
       ai_review::log "  → would FAN OUT across ${AI_REVIEW_JOBS} worker(s)."
     else
-      ai_review::log "  → would run as a SINGLE call (needs jobs>1, >1 batch, and ≥${AI_REVIEW_BATCH_MIN_FILES:-4} files)."
+      ai_review::log "  → would run as a SINGLE call (needs jobs>1, >1 batch, and ≥${AI_REVIEW_BATCH_MIN_FILES:-10} files)."
     fi
     exit 0
   fi
