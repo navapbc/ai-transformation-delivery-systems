@@ -47,6 +47,7 @@ SKILLS=(
   "iac-compliance"
   "pr-review"
   "codebase-audit"
+  "finding-adjudication"
 )
 
 # ── Tool-to-destination mapping ────────────────────────────────────────────

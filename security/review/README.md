@@ -88,9 +88,12 @@ Both hooks **block** commits on critical, high, or medium findings, and
 ├── pr-review/                                         ← PR-level review skill
 │   ├── SKILL.md
 │   └── scripts/pr-review-dispatcher.sh
-└── codebase-audit/                                    ← full-repo audit skill
+├── codebase-audit/                                    ← full-repo audit skill
+│   ├── SKILL.md
+│   └── scripts/codebase-audit-dispatcher.sh
+└── finding-adjudication/                              ← second-opinion adjudicator
     ├── SKILL.md
-    └── scripts/codebase-audit-dispatcher.sh
+    └── scripts/finding-adjudication-dispatcher.sh
 
 .github/                                               ← GitHub-specific config
 ├── copilot-instructions.md                            ← global Copilot PR review
@@ -122,8 +125,8 @@ matching their `AI_REVIEW_TOOL`; these are gitignored):
 ```
 
 Each contains derived copies of `code-security/SKILL.md`,
-`iac-compliance/SKILL.md`, `pr-review/SKILL.md`, and
-`codebase-audit/SKILL.md`. A developer using only Codex will see `.skills/`
+`iac-compliance/SKILL.md`, `pr-review/SKILL.md`, `codebase-audit/SKILL.md`, and
+`finding-adjudication/SKILL.md`. A developer using only Codex will see `.skills/`
 and `.codex/` in their checkout. No `.claude/` or `.github/copilot/skills/`
 directories ever appear unless they choose those tools.
 
@@ -170,6 +173,38 @@ You can use any combination of paths; most teams pair Path A + Path B.
 
 The codebase-audit layer is documented in this README under
 [Codebase audit](#codebase-audit).
+
+### Second-opinion adjudication (false-positive reduction)
+
+The **pre-commit** and **codebase-audit** layers are wrapped by an independent
+**adjudication pass** that cuts false positives before they reach you — no
+suppression files, no inline annotations, no manual bookkeeping.
+
+When a first-pass review reports findings, the dispatcher invokes the
+`finding-adjudication` skill: a **fresh agent**, with no memory of the first
+pass, re-inspects the cited code and classifies each finding as **confirmed**,
+**false positive**, or **overstated** (downgraded), each with a one-line reason.
+The gate is then decided from the confirmed findings only, and the dismissed /
+downgraded findings are shown in a transparency section so nothing is silently
+hidden.
+
+Key properties:
+
+- **Cost scales with noise, not commit volume.** A clean first pass (`PASS` /
+  `CLEAN`) is final and triggers **no** second call — most commits stay
+  single-pass and fast. Only finding-bearing reviews pay for adjudication, which
+  is exactly when a second opinion is worth it.
+- **Tool-neutral.** It runs on the same `AI_REVIEW_TOOL` CLI as the first pass.
+  Set `AI_ADJUDICATION_MODEL` to run the second opinion on a *different model*
+  of that same CLI for stronger independence; leave it unset to use the default.
+- **Security-first.** The adjudicator may only confirm, dismiss, or downgrade —
+  never escalate or invent findings — and must keep any finding it cannot
+  positively show to be benign. If the pass fails or returns no marker, the
+  stricter first-pass result stands.
+- **Opt-out.** Disable with `AI_ADJUDICATION=0` (env) or `--no-adjudicate` (flag).
+
+PR-level review is **not** adjudicated (the Copilot path can't be customized for
+it). The full skill contract is in `.skills/finding-adjudication/SKILL.md`.
 
 ---
 
@@ -365,6 +400,20 @@ code 2 (configuration error) and refuses to run.
 > **Using multiple tools (rare):** Set `AI_REVIEW_SYNC_TARGETS=claude,codex`
 > to keep multiple derived directories in sync. `AI_REVIEW_TOOL` still
 > controls which one is actually invoked at commit time.
+
+### Adjudication settings (optional)
+
+Two optional variables tune the [second-opinion adjudication
+pass](#second-opinion-adjudication-false-positive-reduction):
+
+| Variable | Default | Effect |
+|---|---|---|
+| `AI_ADJUDICATION` | enabled | Set to `0` to disable the adjudication pass entirely (first-pass results then stand). |
+| `AI_ADJUDICATION_MODEL` | unset | Model name passed to the **same** `AI_REVIEW_TOOL` CLI for the adjudication pass only. Unset = the tool's default model. Use it to get a second opinion from a different model on the same CLI — e.g. a Claude shop running the first pass on one model and adjudication on another. (Confirm your CLI's accepted model names: `claude --model`, `codex exec --model`, or the Copilot equivalent.) |
+
+Both are optional; the system works out of the box with adjudication on and the
+default model. Adjudication never fires on a clean first pass, so leaving it on
+adds no cost to commits that have no findings.
 
 ### macOS setup
 
@@ -620,6 +669,7 @@ pre-commit run iac-compliance                 # only runs if IaC files match
 |---|---|
 | `-n`, `--dry-run`     | Print resolved tool, prompt, and file list; do not invoke AI. Exits 0. |
 | `--no-block`          | Run the full review but always exit 0, regardless of findings. |
+| `--no-adjudicate`     | Skip the second-opinion adjudication pass (same as `AI_ADJUDICATION=0`). |
 | `--against <ref>`     | Review the diff between `<ref>` and `HEAD` (instead of staged). |
 | `-h`, `--help`        | Show help. |
 
@@ -933,6 +983,7 @@ remove that line and commit the reports.
 | `--dry-run` | Show settings and batch count and exit (no AI calls) |
 | `--output-dir <path>` | Override the default `audit-reports/` location |
 | `--no-block` | Always exit 0 even if individual batches fail |
+| `--no-adjudicate` | Skip the second-opinion adjudication pass on finding-bearing directories |
 | `-h`, `--help` | Show help |
 
 ---
@@ -1432,18 +1483,34 @@ but does not replace static analysis. Run these in CI alongside it:
 
 ## False positives
 
-If you believe a finding is incorrect:
+**Most false positives are removed automatically** by the second-opinion
+adjudication pass (see
+[Second-opinion adjudication](#second-opinion-adjudication-false-positive-reduction)).
+When a first pass flags something, a fresh independent agent re-inspects the code
+and dismisses or downgrades findings that aren't genuine — synthetic test data,
+already-mitigated patterns, controls satisfied elsewhere — before the gate is
+decided. The dismissed findings are listed in the report's "Dismissed /
+Downgraded by adjudication" section with the reason, so you can see what was
+filtered and why.
 
-1. **Read the finding carefully** — the description explains why it was flagged.
+If a finding **survives adjudication but you still believe it is incorrect:**
+
+1. **Read the finding and the adjudicator's rationale carefully** — the
+   adjudicator keeps findings it cannot positively prove benign, so it may be
+   asking for context only you have.
 2. **For secrets:** confirm the value is not a real credential. Placeholder-
    looking strings sometimes turn out to be real.
 3. **For PII/PHI:** confirm the data is clearly synthetic (`example.com`, fake
-   names like `Test User`, fake IDs like `000-00-0000`). These should be
-   reported at Low rather than Medium/High.
-4. **For IaC:** add a clarifying comment in the resource so the reviewer can
-   account for environment context.
+   names like `Test User`, fake IDs like `000-00-0000`). Making the synthetic
+   nature obvious in the code often lets the adjudicator dismiss it on the next run.
+4. **For IaC:** add a clarifying comment in the resource (e.g. referencing the
+   base module that applies the control) so the next adjudication can account for
+   the environment context.
 
-If confirmed false and you need to commit, see the next section.
+If, after that, the finding is confirmed false and you need to commit, the
+residual escape hatch is to bypass the hook for that one commit — see the next
+section. For CMS systems under an ATO, note the bypass in the commit message and
+track it as a POA&M item, exactly as before.
 
 ---
 
@@ -1594,6 +1661,11 @@ the prompt is intact, and run the CLI interactively (`claude` / `codex` /
 - The first call after a CLI auth refresh can be slow.
 - Network conditions affect all three tools.
 - Verify your AI CLI works interactively to rule out a CLI-side problem.
+- **Finding-bearing commits run a second (adjudication) pass.** This roughly
+  doubles the time for commits that have findings — but clean commits are
+  unaffected (no second call). If you need the fastest possible turnaround on a
+  noisy commit, `--no-adjudicate` (or `AI_ADJUDICATION=0`) skips it; you then see
+  the raw first-pass findings, false positives included.
 
 ### IDE git commits don't see `AI_REVIEW_TOOL`
 
@@ -1603,13 +1675,17 @@ seen by non-interactive shells.
 
 ### A finding looks like a false positive
 
-1. Check whether the cited control/category applies to your environment
+1. **Check the "Dismissed / Downgraded by adjudication" section first** — the
+   second-opinion pass may have already removed it, or explained why it kept it.
+2. Check whether the cited control/category applies to your environment
    (dev vs production).
-2. Check whether helpful context files were loaded — the dispatcher reports
+3. Check whether helpful context files were loaded — the dispatcher reports
    which ones at the top.
-3. Add a clarifying comment in your code; re-run the hook.
-4. If genuinely false, bypass with `SKIP=<hook-id>` and note the reason in
-   your commit message.
+4. Add a clarifying comment in your code (e.g. make synthetic data obviously
+   fake, or reference the base module that applies a control); re-run the hook so
+   the adjudicator can re-evaluate with that context.
+5. If a finding genuinely survives adjudication but is still false, bypass with
+   `SKIP=<hook-id>` and note the reason in your commit message.
 
 ### I committed a secret before the hook was installed
 

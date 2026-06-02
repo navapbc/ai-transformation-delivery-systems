@@ -36,6 +36,15 @@
 #   0  — PASS or WARN (commit may proceed)
 #   1  — BLOCK or unrecoverable error (commit must be rejected)
 #   2  — Configuration error (AI_REVIEW_TOOL unset or invalid)
+#
+# Adjudication (second opinion):
+#   When a first pass yields WARN or BLOCK, an independent adjudication pass
+#   (finding-adjudication skill) re-inspects the cited code and confirms,
+#   dismisses, or downgrades each finding; the gate is then decided by the
+#   adjudicated marker. A PASS first pass is final (no second call). Controlled
+#   by AI_ADJUDICATION (default on) and AI_ADJUDICATION_MODEL (optional model
+#   override for the same CLI). If the adjudication pass fails or returns no
+#   marker, the stricter first-pass result stands (fail-safe).
 
 set -euo pipefail
 
@@ -78,6 +87,7 @@ ai_review::err()  { printf '%s[%s] ERROR: %s%s\n' "${AI_C_RED}" "${SKILL_NAME}" 
 ai_review::parse_args() {
   AI_REVIEW_DRY_RUN=0
   AI_REVIEW_NO_BLOCK=0
+  AI_REVIEW_NO_ADJUDICATE=0
   AI_REVIEW_AGAINST=""
   AI_REVIEW_REMAINING=()
 
@@ -89,6 +99,10 @@ ai_review::parse_args() {
         ;;
       --no-block)
         AI_REVIEW_NO_BLOCK=1
+        shift
+        ;;
+      --no-adjudicate)
+        AI_REVIEW_NO_ADJUDICATE=1
         shift
         ;;
       --against)
@@ -132,16 +146,28 @@ Options:
                        but do not invoke the AI. Exits 0.
   --no-block           Run the full review but always exit 0, regardless of
                        findings (useful for testing in CI without blocking).
+  --no-adjudicate      Skip the independent second-opinion adjudication pass
+                       even when the first pass reports findings. Equivalent to
+                       AI_ADJUDICATION=0.
   --against <ref>      Review the diff between <ref> and HEAD (or working tree)
                        instead of the staged changes. Useful for ad-hoc review,
                        e.g.  --against HEAD~1   or  --against main
   -h, --help           Show this help and exit.
 
 Environment variables:
-  AI_REVIEW_TOOL       Required. One of: claude | codex | copilot.
-  CI                   If "true", colors are suppressed and errors prefer the
-                       fail-fast path.
-  NO_COLOR             If set (any value), suppress ANSI color codes.
+  AI_REVIEW_TOOL         Required. One of: claude | codex | copilot.
+  AI_ADJUDICATION        If "0", disable the second-opinion adjudication pass.
+                         Default: enabled. When enabled, a finding-bearing first
+                         pass triggers a fresh, independent review that confirms,
+                         dismisses, or downgrades each finding before the gate is
+                         decided. A clean first pass never triggers it.
+  AI_ADJUDICATION_MODEL  Optional. Model name passed to the same AI_REVIEW_TOOL
+                         CLI for the adjudication pass only (e.g. a different
+                         model for an independent second opinion). If unset, the
+                         tool's default model is used.
+  CI                     If "true", colors are suppressed and errors prefer the
+                         fail-fast path.
+  NO_COLOR               If set (any value), suppress ANSI color codes.
 
 Exit codes:
   0   PASS or WARN (commit may proceed; or --dry-run / --no-block)
@@ -243,44 +269,60 @@ ai_review::diff_command_description() {
 # not. For a uniform, reliable contract, every tool receives the same explicit
 # prompt that references the SKILL.md path in that tool's standard location.
 
-ai_review::invoke_claude() {
-  ai_review::require_cli "claude" \
-    "Install Claude Code:  npm install -g @anthropic-ai/claude-code"
+# ai_review::invoke_tool <prompt> [model]
+# Invokes the resolved AI CLI in non-interactive mode with the given prompt,
+# printing the raw response to stdout. When [model] is non-empty, it is passed
+# to the CLI's model-selection flag — this is how the adjudication pass can run
+# on a different model from the first pass while staying on the same CLI (a
+# Claude shop has only the `claude` binary, so a cross-vendor second opinion is
+# not assumed). Any non-zero exit from the underlying CLI propagates.
+ai_review::invoke_tool() {
+  local prompt="$1"
+  local model="${2:-}"
 
-  # Claude Code auto-discovers .claude/skills/*/SKILL.md by description match,
-  # but for determinism we also reference the path explicitly in the prompt.
-  # -p = non-interactive (print) mode, exits after one response.
-  claude -p "${SKILL_PROMPT}" 2>&1
-}
-
-ai_review::invoke_codex() {
-  ai_review::require_cli "codex" \
-    "Install OpenAI Codex CLI:  npm install -g @openai/codex   (or see https://github.com/openai/codex)"
-
-  # codex exec = non-interactive subcommand.
-  # --sandbox read-only = filesystem read access (needed for git diff / file
-  # reads) with no write/network side effects, suitable for a pre-commit hook.
-  codex exec --sandbox read-only --skip-git-repo-check "${SKILL_PROMPT}" 2>&1
-}
-
-ai_review::invoke_copilot() {
-  ai_review::require_cli "copilot" \
-    "Install GitHub Copilot CLI (agentic):  https://github.com/github/copilot-cli"
-
-  # copilot -p = non-interactive single-prompt mode.
-  copilot -p "${SKILL_PROMPT}" 2>&1
-}
-
-ai_review::invoke_ai() {
   case "${AI_REVIEW_TOOL_RESOLVED}" in
-    claude)  ai_review::invoke_claude ;;
-    codex)   ai_review::invoke_codex  ;;
-    copilot) ai_review::invoke_copilot ;;
+    claude)
+      ai_review::require_cli "claude" \
+        "Install Claude Code:  npm install -g @anthropic-ai/claude-code"
+      # -p = non-interactive (print) mode, exits after one response.
+      if [[ -n "${model}" ]]; then
+        claude -p "${prompt}" --model "${model}" 2>&1
+      else
+        claude -p "${prompt}" 2>&1
+      fi
+      ;;
+    codex)
+      ai_review::require_cli "codex" \
+        "Install OpenAI Codex CLI:  npm install -g @openai/codex   (or see https://github.com/openai/codex)"
+      # --sandbox read-only = filesystem read access (git diff / file reads)
+      # with no write/network side effects, suitable for a pre-commit hook.
+      if [[ -n "${model}" ]]; then
+        codex exec --sandbox read-only --skip-git-repo-check --model "${model}" "${prompt}" 2>&1
+      else
+        codex exec --sandbox read-only --skip-git-repo-check "${prompt}" 2>&1
+      fi
+      ;;
+    copilot)
+      ai_review::require_cli "copilot" \
+        "Install GitHub Copilot CLI (agentic):  https://github.com/github/copilot-cli"
+      # copilot -p = non-interactive single-prompt mode.
+      if [[ -n "${model}" ]]; then
+        copilot -p "${prompt}" --model "${model}" 2>&1
+      else
+        copilot -p "${prompt}" 2>&1
+      fi
+      ;;
     *)
       ai_review::err "Internal error: unknown resolved tool '${AI_REVIEW_TOOL_RESOLVED}'"
       exit 1
       ;;
   esac
+}
+
+# First-pass invocation: the configured tool, its default model, the dispatcher's
+# SKILL_PROMPT.
+ai_review::invoke_ai() {
+  ai_review::invoke_tool "${SKILL_PROMPT}" ""
 }
 
 # ── Result marker parsing ───────────────────────────────────────────────────
@@ -299,6 +341,98 @@ ai_review::parse_result() {
   else
     echo "UNPARSEABLE"
   fi
+}
+
+# ── Adjudication (independent second-opinion pass) ──────────────────────────
+# When a first pass reports findings, a fresh agent re-inspects the cited code
+# and confirms / dismisses / downgrades each finding. This removes false
+# positives before they reach the developer, with no manual suppression list.
+# It runs ONLY when the first pass found something, so clean commits stay
+# single-pass and fast — cost scales with noise, not commit volume.
+
+ai_review::adjudication_enabled() {
+  [[ "${AI_REVIEW_NO_ADJUDICATE:-0}" != "1" ]] && [[ "${AI_ADJUDICATION:-1}" != "0" ]]
+}
+
+# Strip any result marker lines so an embedded first-pass report cannot be
+# mistaken for the adjudicator's own (authoritative) marker.
+ai_review::strip_markers() {
+  sed -E '/<<<AI_REVIEW_RESULT:(PASS|WARN|BLOCK|CLEAN|FINDINGS)>>>/d'
+}
+
+# ai_review::build_adjudication_prompt <first_pass_report> <markers>
+#   <markers> is "pre-commit" (PASS/WARN/BLOCK) or "audit" (CLEAN/FINDINGS).
+ai_review::build_adjudication_prompt() {
+  local report="$1"
+  local markers="$2"
+  local clean_report
+  clean_report="$(printf '%s\n' "${report}" | ai_review::strip_markers)"
+
+  local marker_instructions
+  case "${markers}" in
+    audit)
+      marker_instructions="End your response with EXACTLY ONE of these markers, on its own line:
+  <<<AI_REVIEW_RESULT:CLEAN>>>      — no confirmed findings remain at or above threshold
+  <<<AI_REVIEW_RESULT:FINDINGS>>>   — one or more confirmed findings remain at or above threshold"
+      ;;
+    *)
+      marker_instructions="End your response with EXACTLY ONE of these markers, on its own line:
+  <<<AI_REVIEW_RESULT:PASS>>>    — no confirmed findings remain at any severity
+  <<<AI_REVIEW_RESULT:WARN>>>    — only confirmed LOW findings remain
+  <<<AI_REVIEW_RESULT:BLOCK>>>   — one or more confirmed Critical/High/Medium findings remain"
+      ;;
+  esac
+
+  cat <<PROMPT
+You have access to the finding-adjudication skill. Its full instructions are at:
+
+  .skills/finding-adjudication/SKILL.md
+
+(Tool-specific byte-identical copies may exist under .claude/, .codex/, or
+.github/copilot/.)
+
+Read that SKILL.md, then act as an INDEPENDENT second reviewer adjudicating the
+findings produced by a first-pass automated review. You did not perform the
+first pass and must not assume it was correct.
+
+The code under review is the same code the first pass examined. For diff-mode
+reviews that is, by default, the staged changes (\`git diff --cached\`); if
+AI_REVIEW_AGAINST is set in your environment, it is \`git diff \$AI_REVIEW_AGAINST HEAD\`.
+For audit-mode reviews it is the files cited in the report. Inspect the actual
+code yourself before judging each finding — do not rely on the report's summary.
+
+For each finding in the first-pass report below, classify it as CONFIRMED,
+FALSE_POSITIVE, or OVERSTATED (with a corrected lower severity), each with a
+one-line rationale, following the finding-adjudication skill exactly. Do NOT
+introduce new findings. Then produce the revised report in the format the skill
+specifies: the surviving confirmed findings (at their final severity), followed
+by a "Dismissed / Downgraded by adjudication" section that lists every change
+with its reason, so nothing is silently removed.
+
+Compute the result marker from the CONFIRMED findings only (after dismissals and
+downgrades). ${marker_instructions}
+
+If the first-pass report contains a SARIF block delimited by
+<!-- AUDIT_SARIF_BEGIN --> and <!-- AUDIT_SARIF_END -->, emit an updated SARIF
+block between the same delimiters reflecting only the confirmed findings at
+their final severities.
+
+──────────────────────── FIRST-PASS REPORT ────────────────────────
+${clean_report}
+────────────────────────────────────────────────────────────────────
+PROMPT
+}
+
+# ai_review::adjudicate <first_pass_report> <markers>
+# Runs the adjudication pass on the configured tool using AI_ADJUDICATION_MODEL
+# (if set). Prints the adjudicated report to stdout; status logs go to stderr so
+# callers can safely capture stdout.
+ai_review::adjudicate() {
+  local report="$1"
+  local markers="${2:-pre-commit}"
+  local prompt
+  prompt="$(ai_review::build_adjudication_prompt "${report}" "${markers}")"
+  ai_review::invoke_tool "${prompt}" "${AI_ADJUDICATION_MODEL:-}"
 }
 
 # ── Main entry point ────────────────────────────────────────────────────────
@@ -376,10 +510,35 @@ ai_review::run() {
     exit 1
   fi
 
-  # Parse and act on the result marker.
+  # Parse the first-pass result marker.
   local result
   result="$(ai_review::parse_result "${review_output}")"
 
+  # Independent second-opinion adjudication. Runs only when the first pass found
+  # something (WARN/BLOCK) and adjudication is enabled — a clean pass is final.
+  if [[ "${result}" == "WARN" || "${result}" == "BLOCK" ]] && ai_review::adjudication_enabled; then
+    ai_review::info "First pass result: ${result}. Running independent adjudication (second opinion)${AI_ADJUDICATION_MODEL:+ via model ${AI_ADJUDICATION_MODEL}}..."
+    local adj_output adj_rc=0
+    adj_output="$(ai_review::adjudicate "${review_output}" "pre-commit")" || adj_rc=$?
+
+    if (( adj_rc != 0 )); then
+      ai_review::warn "Adjudication pass failed (rc=${adj_rc}); keeping the first-pass result (${result})."
+    else
+      ai_review::log  "──────── Adjudication (independent second opinion) ────────"
+      printf '%s\n' "${adj_output}"
+      ai_review::log  "────────────────────────────────────────────────────────────"
+      local adj_result
+      adj_result="$(ai_review::parse_result "${adj_output}")"
+      if [[ "${adj_result}" == "UNPARSEABLE" ]]; then
+        ai_review::warn "Adjudication produced no parseable result marker; keeping the first-pass result (${result})."
+      else
+        ai_review::info "Adjudicated result: ${result} → ${adj_result} (gate decided by adjudication)."
+        result="${adj_result}"
+      fi
+    fi
+  fi
+
+  # Act on the (possibly adjudicated) result marker.
   case "${result}" in
     PASS)
       ai_review::ok "${AI_C_BOLD}✅  ${SKILL_HUMAN_NAME} passed. No findings detected.${AI_C_RESET}"

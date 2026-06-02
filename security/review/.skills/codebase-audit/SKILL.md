@@ -362,3 +362,18 @@ the env var when the SARIF file is actually wanted.
 - **Honor the severity filter strictly.** If the threshold is `high`,
   the report must contain zero Medium and zero Low entries — not even
   in a "noted but not reported" section.
+
+---
+
+## Second-opinion adjudication
+
+When a directory's audit returns `FINDINGS`, the dispatcher runs an
+**independent adjudication pass** (`.skills/finding-adjudication/SKILL.md`)
+before writing that directory's report: a fresh agent re-inspects the cited code
+and confirms, dismisses, or downgrades each finding, so the per-directory report,
+the `_INDEX.md` counts, and the SARIF all reflect the adjudicated result. The
+revised report keeps this skill's exact structure (summary table + findings
+sections) and appends a "Dismissed / Downgraded by adjudication" section. A
+`CLEAN` directory is final and is never adjudicated. Produce your findings
+faithfully at the right severity per the rules above; the adjudicator provides
+the independent second opinion (disable it with `--no-adjudicate` if needed).

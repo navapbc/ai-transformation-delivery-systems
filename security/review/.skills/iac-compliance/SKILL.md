@@ -519,3 +519,17 @@ a marker causes the dispatcher to fail safe (block the commit).
 - **CMS ARS applicability:** ARS 5.1 applies to CMS systems and contractors.
   For non-CMS projects, the NIST 800-53 Rev 5 controls still apply; the ARS
   column simply indicates the CMS tailoring.
+
+---
+
+## Second-opinion adjudication
+
+When this review reports findings (WARN or BLOCK), the dispatcher runs an
+**independent adjudication pass** (`.skills/finding-adjudication/SKILL.md`): a
+fresh agent re-inspects the cited resources and confirms, dismisses, or
+downgrades each finding before the commit gate is decided — for example,
+dismissing a "public bucket" finding when an account-level public-access block
+defined in a base module already covers it. This removes false positives without
+any suppression list. Report findings faithfully and cite the controlling
+resource/control; the adjudicator provides the second opinion. A clean (PASS)
+review is final and is never adjudicated.
