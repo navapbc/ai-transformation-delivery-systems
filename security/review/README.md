@@ -176,9 +176,18 @@ The codebase-audit layer is documented in this README under
 
 ### Second-opinion adjudication (false-positive reduction)
 
-The **pre-commit** and **codebase-audit** layers are wrapped by an independent
+The **pre-commit** and **codebase-audit** layers can run an independent
 **adjudication pass** that cuts false positives before they reach you — no
 suppression files, no inline annotations, no manual bookkeeping.
+
+> **Defaults differ by layer.** Pre-commit defaults this **off** to keep
+> blocking commits fast — set `AI_ADJUDICATION=1` (or commit, then re-run) to
+> get a second opinion when you disagree with a block. **Codebase-audit defaults
+> it on** (a slow batch job where the extra pass is cheap and false-positive
+> reduction matters most). Skipping adjudication never lowers detection — it can
+> only confirm/dismiss/downgrade findings — so the pre-commit default is the
+> *stricter* direction (you may see more false-positive blocks, never a missed
+> true finding).
 
 When a first-pass review would **block** the commit, the dispatcher invokes the
 `finding-adjudication` skill: a **fresh agent**, with no memory of the first
@@ -222,9 +231,9 @@ A clean or low-severity commit is a **single** AI pass — that one pass is the
 floor and typically the bulk of the wait. Two mechanisms keep larger or
 finding-bearing commits from dragging:
 
-1. **`BLOCK`-only, scoped adjudication** (above) — the common `PASS`/`WARN`
-   commit never pays for a second pass, and when a second pass does run it reads
-   only the finding-bearing files.
+1. **Adjudication is off by default for pre-commit** (above) — no commit pays
+   for a second pass unless you opt in with `AI_ADJUDICATION=1`, and even then it
+   fires only on a `BLOCK` and reads only the finding-bearing files.
 2. **Parallel fan-out for multi-file commits.** When a commit changes enough
    files across enough directories, the diff is split into independent batches
    reviewed **concurrently**, then their gate results are folded worst-of (any
@@ -469,14 +478,15 @@ pass](#second-opinion-adjudication-false-positive-reduction):
 
 | Variable | Default | Effect |
 |---|---|---|
-| `AI_ADJUDICATION` | enabled | Set to `0` to disable the adjudication pass entirely (first-pass results then stand). |
+| `AI_ADJUDICATION` | off for pre-commit, **on** for codebase-audit | Explicitly set the adjudication pass: `1` = on, `0` = off. The explicit value always wins; it only changes the per-layer default when unset. For pre-commit, set `1` to opt in to a second opinion on a blocking commit. |
 | `AI_ADJUDICATION_MODEL` | unset | Model name passed to the **same** `AI_REVIEW_TOOL` CLI for the adjudication pass only. Unset = the tool's default model. Use it to get a second opinion from a different model on the same CLI — e.g. a Claude shop running the first pass on one model and adjudication on another. (Confirm your CLI's accepted model names: `claude --model`, `codex exec --model`, or the Copilot equivalent.) |
 
-Both are optional; the system works out of the box with adjudication on and the
-default model. For pre-commit, adjudication fires only on a `BLOCK` first pass
-(not on `PASS` or `WARN`) and reads only the finding-bearing files, so leaving it
-on adds no cost to clean or low-severity commits — see [Pre-commit
-performance](#pre-commit-performance-keeping-the-hook-fast).
+Both are optional. For **pre-commit**, adjudication is **off by default**, so a
+blocking commit returns the raw first-pass findings immediately; set
+`AI_ADJUDICATION=1` when you want a second opinion (it then fires only on a
+`BLOCK`, reads only the finding-bearing files, and never touches `PASS`/`WARN`).
+For **codebase-audit** it is on by default; set `AI_ADJUDICATION=0` to disable.
+See [Pre-commit performance](#pre-commit-performance-keeping-the-hook-fast).
 
 Concurrency and batching for large diffs are tuned separately via
 `AI_REVIEW_JOBS`, `AI_REVIEW_BATCH_BY`, and `AI_REVIEW_BATCH_MIN_FILES` — also
@@ -1775,12 +1785,11 @@ the prompt is intact, and run the CLI interactively (`claude` / `codex` /
 - The first call after a CLI auth refresh can be slow.
 - Network conditions affect all three tools.
 - Verify your AI CLI works interactively to rule out a CLI-side problem.
-- **Blocking commits run a second (adjudication) pass.** Only a `BLOCK` first
-  pass triggers it (not `PASS` or `WARN`), and it reads only the finding-bearing
-  files, so it adds time to commits that have blocking findings — clean and
-  low-severity commits are unaffected. If you need the fastest possible
-  turnaround on a noisy commit, `--no-adjudicate` (or `AI_ADJUDICATION=0`) skips
-  it; you then see the raw first-pass findings, false positives included.
+- **Pre-commit adjudication is off by default**, so a blocking commit returns
+  the raw first-pass findings immediately with no second pass. Opt in with
+  `AI_ADJUDICATION=1` when you want a second opinion on a block; it then fires
+  only on a `BLOCK` (not `PASS`/`WARN`) and reads only the finding-bearing files.
+  (Codebase-audit keeps adjudication on by default.)
 - **Large commits fan out across workers.** A commit touching many files across
   several directories is reviewed in parallel (default `--jobs 4`); a few files
   in one directory still run as a single call. Tune or inspect this via

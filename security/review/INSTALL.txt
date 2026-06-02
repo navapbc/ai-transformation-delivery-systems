@@ -271,19 +271,27 @@ Codebase audit setup (optional, on-demand only)
     scheduled monthly audits.
 
 ------------------------------------------------------------------------------
-Second-opinion adjudication (optional — on by default, no setup required)
+Second-opinion adjudication (optional — OFF by default for pre-commit)
 ------------------------------------------------------------------------------
 
-    When a pre-commit review would BLOCK a commit, an independent second pass
-    re-inspects the finding-bearing files and drops false positives before the
-    result is decided. It is ON by default and needs no configuration. A clean
-    (PASS) or low-severity-only (WARN) first pass triggers no second call —
-    only BLOCK does. (Codebase-audit adjudicates any directory with findings.)
+    An independent second pass can re-inspect a BLOCKing commit's findings and
+    drop false positives before the result is decided.
 
-    Two optional environment variables tune it (full details in README.md,
-    section "Adjudication settings"):
+      • Pre-commit:     OFF by default (fast — a blocking commit returns the raw
+                        first-pass findings immediately). Opt in with
+                        AI_ADJUDICATION=1 when you want a second opinion on a
+                        block; it then fires only on BLOCK (never PASS/WARN) and
+                        reads only the finding-bearing files.
+      • Codebase-audit: ON by default (a slow batch job where the extra pass is
+                        cheap and false-positive reduction matters most). Set
+                        AI_ADJUDICATION=0 there to disable.
 
-      • AI_ADJUDICATION=0          disable the second pass entirely
+    Skipping adjudication never lowers detection — it can only confirm, dismiss,
+    or downgrade findings — so OFF is the stricter (block-more) direction.
+
+    Tuning (full details in README.md, section "Adjudication settings"):
+
+      • AI_ADJUDICATION=1          opt in (pre-commit) / =0 disable (audit)
       • AI_ADJUDICATION_MODEL=...  run the second opinion on a different model
                                    of the same AI_REVIEW_TOOL CLI (e.g. a
                                    stronger model for an independent check);

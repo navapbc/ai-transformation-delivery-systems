@@ -46,10 +46,14 @@
 #   only move WARN→WARN or WARN→PASS, both non-blocking, i.e. pure latency with
 #   no effect on the gate. To keep the cited code small (and the second pass
 #   fast), adjudication is scoped to just the files referenced in the first-pass
-#   findings; if none can be parsed it falls back to the whole diff. Controlled
-#   by AI_ADJUDICATION (default on) and AI_ADJUDICATION_MODEL (optional model
-#   override for the same CLI). If the adjudication pass fails or returns no
-#   marker, the stricter first-pass result stands (fail-safe).
+#   findings; if none can be parsed it falls back to the whole diff. For
+#   pre-commit it defaults OFF — set AI_ADJUDICATION=1 to opt in to a second
+#   opinion on a blocking commit (codebase-audit defaults it ON). The optional
+#   AI_ADJUDICATION_MODEL overrides the model for the same CLI. If the
+#   adjudication pass fails or returns no marker, the stricter first-pass result
+#   stands (fail-safe). Skipping adjudication never lowers detection — it can
+#   only confirm/dismiss/downgrade findings, so the off default is the stricter
+#   (block-more) direction, at the cost of more false-positive blocks.
 
 set -euo pipefail
 
@@ -189,14 +193,17 @@ Options:
 
 Environment variables:
   AI_REVIEW_TOOL         Required. One of: claude | codex | copilot.
-  AI_ADJUDICATION        If "0", disable the second-opinion adjudication pass.
-                         Default: enabled. When enabled, a BLOCK first pass
-                         triggers a fresh, independent review (scoped to the
-                         finding-bearing files) that confirms, dismisses, or
-                         downgrades each finding before the gate is decided.
-                         PASS and WARN first passes never trigger it — a WARN
-                         commit proceeds regardless, so a second pass could not
-                         change the outcome.
+  AI_ADJUDICATION        Second-opinion adjudication pass. For pre-commit this
+                         defaults to OFF; set AI_ADJUDICATION=1 to opt in to a
+                         second opinion on a blocking commit. (codebase-audit
+                         defaults it ON; set 0 there to disable.) When enabled, a
+                         BLOCK first pass triggers a fresh, independent review
+                         (scoped to the finding-bearing files) that confirms,
+                         dismisses, or downgrades each finding before the gate is
+                         decided. PASS and WARN never trigger it. Skipping it
+                         never lowers detection — it only removes findings — so
+                         off is the stricter direction (more false-positive
+                         blocks, no missed true findings).
   AI_ADJUDICATION_MODEL  Optional. Model name passed to the same AI_REVIEW_TOOL
                          CLI for the adjudication pass only (e.g. a different
                          model for an independent second opinion). If unset, the
@@ -407,8 +414,17 @@ ai_review::parse_result() {
 # It runs ONLY when the first pass found something, so clean commits stay
 # single-pass and fast — cost scales with noise, not commit volume.
 
+# ai_review::adjudication_enabled [default_on]
+# Whether to run the second-opinion pass. The explicit AI_ADJUDICATION env var
+# always wins; [default_on] (0 or 1) only sets what happens when it is UNSET, so
+# callers can differ: pre-commit passes 0 (off unless a developer opts in with
+# AI_ADJUDICATION=1), codebase-audit passes 1 (on — a slow batch job where
+# false-positive reduction matters and the extra pass is cheap relative to the
+# whole run). The --no-adjudicate flag (AI_REVIEW_NO_ADJUDICATE=1) forces off in
+# either context.
 ai_review::adjudication_enabled() {
-  [[ "${AI_REVIEW_NO_ADJUDICATE:-0}" != "1" ]] && [[ "${AI_ADJUDICATION:-1}" != "0" ]]
+  local default_on="${1:-1}"
+  [[ "${AI_REVIEW_NO_ADJUDICATE:-0}" != "1" ]] && [[ "${AI_ADJUDICATION:-${default_on}}" != "0" ]]
 }
 
 # Strip any result marker lines so an embedded first-pass report cannot be
@@ -748,7 +764,7 @@ ai_review::worker_main() {
   else
     marker="$(ai_review::parse_result "${output}")"
     # Per-worker second opinion — same BLOCK-only policy as run().
-    if [[ "${marker}" == "BLOCK" ]] && ai_review::adjudication_enabled; then
+    if [[ "${marker}" == "BLOCK" ]] && ai_review::adjudication_enabled 0; then
       ai_review::info "[${key}] BLOCK — running adjudication (second opinion)..." >&2
       local adj_output adj_rc=0 adj_marker=""
       adj_output="$(ai_review::adjudicate "${output}" "pre-commit")" || adj_rc=$?
@@ -923,7 +939,7 @@ ai_review::run() {
     # it: a WARN commit proceeds regardless (exit 0), so a second pass could
     # only move it WARN→WARN or WARN→PASS — both non-blocking — making it pure
     # latency with no effect on the gate.
-    if [[ "${result}" == "BLOCK" ]] && ai_review::adjudication_enabled; then
+    if [[ "${result}" == "BLOCK" ]] && ai_review::adjudication_enabled 0; then
       ai_review::info "First pass result: ${result}. Running independent adjudication (second opinion)${AI_ADJUDICATION_MODEL:+ via model ${AI_ADJUDICATION_MODEL}}..."
       local adj_output adj_rc=0
       adj_output="$(ai_review::adjudicate "${review_output}" "pre-commit")" || adj_rc=$?

@@ -656,7 +656,10 @@ audit::process_one_batch() {
   # no second AI call (cost scales with findings, not directory count). The
   # adjudicated output replaces the first-pass output, so the written report,
   # severity counts, _INDEX.md, and SARIF all reflect the confirmed findings.
-  if [[ "${marker}" == "<<<AI_REVIEW_RESULT:FINDINGS>>>" ]] && ai_review::adjudication_enabled; then
+  # Default ON for the audit (the explicit `1`): it's a slow batch job where
+  # false-positive reduction is worth a cheap extra pass. (Pre-commit defaults
+  # this OFF; both still honor an explicit AI_ADJUDICATION / --no-adjudicate.)
+  if [[ "${marker}" == "<<<AI_REVIEW_RESULT:FINDINGS>>>" ]] && ai_review::adjudication_enabled 1; then
     ai_review::info "    [${dir}] findings — running adjudication (second opinion)${AI_ADJUDICATION_MODEL:+ via model ${AI_ADJUDICATION_MODEL}}..."
     local adj_output adj_rc=0 adj_marker=""
     adj_output="$(ai_review::adjudicate "${output}" "audit")" || adj_rc=$?
