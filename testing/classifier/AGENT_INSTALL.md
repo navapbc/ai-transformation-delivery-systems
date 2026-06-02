@@ -12,11 +12,11 @@ classifier's reusable workflow by pinned SHA. No scripts are copied in.
 
 **Do not hand-type the YAML** (transcription corrupts the `name:`/`on:`/`uses:`
 lines). Instead, fetch the bundle's ready-made caller file — already pinned to
-the correct SHA — and write its exact bytes to the consumer repo. One command:
+the `@pilot` tag — and write its exact bytes to the consumer repo. One command:
 
 ```
 mkdir -p .github/workflows && \
-curl -fsSL https://raw.githubusercontent.com/navapbc/ai-transformation-delivery-systems/test-classifier-v0/testing/classifier/caller-workflow.yml \
+curl -fsSL https://raw.githubusercontent.com/navapbc/ai-transformation-delivery-systems/pilot/testing/classifier/caller-workflow.yml \
   -o .github/workflows/ai-test-classifier.yml
 ```
 
@@ -30,7 +30,7 @@ on:
     types: [opened, synchronize, reopened]
 jobs:
   classify:
-    uses: navapbc/ai-transformation-delivery-systems/.github/workflows/test-classifier.yml@test-classifier-v0
+    uses: navapbc/ai-transformation-delivery-systems/.github/workflows/test-classifier.yml@pilot
     with:
       tool: claude
     secrets:
@@ -76,5 +76,5 @@ setting is needed.)
 ## If you need to read more
 
 Full guide (humans, or when the above fails): `testing/classifier/docs/SETUP.md`
-at the same SHA. Fetch repo files with (quote the URL — the `?` is a shell glob):
-`curl -fsSL https://raw.githubusercontent.com/navapbc/ai-transformation-delivery-systems/test-classifier-v0/<path>`
+at the `@pilot` tag. Fetch repo files with (quote the URL — the `?` is a shell glob):
+`curl -fsSL https://raw.githubusercontent.com/navapbc/ai-transformation-delivery-systems/pilot/<path>`

@@ -4,7 +4,7 @@ on:
     types: [opened, synchronize, reopened]
 jobs:
   classify:
-    uses: navapbc/ai-transformation-delivery-systems/.github/workflows/test-classifier.yml@test-classifier-v0
+    uses: navapbc/ai-transformation-delivery-systems/.github/workflows/test-classifier.yml@pilot
     with:
       tool: claude
     secrets:

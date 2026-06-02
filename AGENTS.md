@@ -16,11 +16,11 @@ NOT vendor or copy files. Read **one** short doc and follow it (this repo is
 public — fetch the raw URL directly, no auth):
 
 ```
-curl -fsSL https://raw.githubusercontent.com/navapbc/ai-transformation-delivery-systems/test-classifier-v0/testing/classifier/AGENT_INSTALL.md
+curl -fsSL https://raw.githubusercontent.com/navapbc/ai-transformation-delivery-systems/pilot/testing/classifier/AGENT_INSTALL.md
 ```
 
 `AGENT_INSTALL.md` is ~40 lines and contains the exact caller workflow (pinned to
-the `test-classifier-v0` tag), the manual step to relay to the human (set the
+the `pilot` tag), the manual step to relay to the human (set the
 `ANTHROPIC_API_KEY` secret), and the success criteria. It is the whole task.
 Only fall back to `testing/classifier/docs/SETUP.md` (long-form, for humans) if
 the install doc doesn't cover your case.
@@ -28,10 +28,10 @@ the install doc doesn't cover your case.
 ## Fetching files from this repo
 
 This repo is **public**, so fetch raw files directly over HTTPS — no `gh`, no
-auth, no base64. Pin to the release tag `test-classifier-v0`:
+auth, no base64. Use the moving `pilot` tag (latest on main):
 
 ```
-curl -fsSL https://raw.githubusercontent.com/navapbc/ai-transformation-delivery-systems/test-classifier-v0/<path>
+curl -fsSL https://raw.githubusercontent.com/navapbc/ai-transformation-delivery-systems/pilot/<path>
 ```
 
 ## Conventions (if you work IN this repo, not just consume it)

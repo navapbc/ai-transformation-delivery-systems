@@ -4,7 +4,7 @@
 #
 # This is the supported way to consume the classifier in another repo WITHOUT
 # vendoring the bundle's files. A consumer repo adds a tiny caller workflow that
-# references this one with a pinned SHA — no copied scripts, one line to update:
+# references this one at the `@pilot` tag — no copied scripts:
 #
 #   # .github/workflows/ai-test-classifier.yml in the CONSUMER repo
 #   name: AI test classifier
@@ -13,19 +13,21 @@
 #       types: [opened, synchronize, reopened]
 #   jobs:
 #     classify:
-#       uses: navapbc/ai-transformation-delivery-systems/.github/workflows/test-classifier.yml@<commit-sha>
+#       uses: navapbc/ai-transformation-delivery-systems/.github/workflows/test-classifier.yml@pilot
 #       with:
 #         tool: claude          # claude | codex | copilot
-#         # ref: <sha>          # optional: bundle ref to fetch scripts from; defaults to the @<sha> above
+#         # ref: <sha>          # optional: override the bundle ref; defaults to @pilot
 #       secrets:
 #         ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
 #         # OPENAI_API_KEY:  ${{ secrets.OPENAI_API_KEY }}   # only if tool=codex
 #
-# Pin to the release tag (test-classifier-v0) for a reproducible, reviewed
-# version, with nothing copied into the consumer repo to drift. To upgrade,
-# bump the tag in the caller — that is the whole upgrade procedure. (The source
-# repo is public, so the consumer's default token can both resolve this
-# reusable workflow and check out its scripts; no PAT or access setting needed.)
+# `pilot` is a MOVING tag that always tracks the latest classifier on main — we
+# re-point it on every release. Consumers who reference `@pilot` therefore
+# auto-update with no yaml change; they set this caller up once and never touch
+# it. A team that wants to freeze a specific version can pin `@<commit-sha>`
+# instead, at the cost of bumping it manually. (The source repo is public, so
+# the consumer's default token resolves this workflow and checks out its
+# scripts; no PAT or access setting needed.)
 
 name: AI test classifier (reusable)
 
@@ -39,9 +41,9 @@ on:
       ref:
         description: >
           Git ref (tag/branch/SHA) of the source repo to check out the
-          classifier scripts from. Defaults to the release tag
-          'test-classifier-v0'. Override only to test an unreleased version;
-          keep it in sync with the tag you pinned the uses: line to.
+          classifier scripts from. Defaults to the moving 'pilot' tag (latest on
+          main). Override only to freeze a specific version; keep it in sync with
+          the ref you pinned the uses: line to.
         type: string
         default: ''
     secrets:
@@ -77,14 +79,14 @@ jobs:
 
       # 2. THIS bundle's scripts. The source repo is public, so a plain
       #    actions/checkout of it works with the default token — no tarball, no
-      #    PAT, no access gymnastics. We pin to `inputs.ref` (a tag/SHA the
-      #    caller can override), defaulting to the release tag so the scripts
-      #    match the workflow version. Lands in ./.classifier-bundle.
+      #    PAT, no access gymnastics. We use `inputs.ref` (a tag/SHA the caller
+      #    can override), defaulting to the moving `pilot` tag so the scripts
+      #    match the latest released workflow. Lands in ./.classifier-bundle.
       - name: Check out the classifier bundle (pinned)
         uses: actions/checkout@v4
         with:
           repository: navapbc/ai-transformation-delivery-systems
-          ref: ${{ inputs.ref != '' && inputs.ref || 'test-classifier-v0' }}
+          ref: ${{ inputs.ref != '' && inputs.ref || 'pilot' }}
           path: .classifier-bundle
           fetch-depth: 1
 
