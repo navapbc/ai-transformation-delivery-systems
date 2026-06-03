@@ -1,6 +1,6 @@
 # AI Test Classifier — Agent Install (Path A, reusable workflow)
 
-> For AI coding agents. This is the whole task. Do not read SETUP.md (full guide)
+> For AI coding agents. This is the whole task. Do not read SETUP.md (498 lines)
 > unless something below fails. Do not vendor or copy any files.
 
 ## What you are doing
@@ -8,15 +8,11 @@
 Add ONE workflow file to the **current (consumer) repo** that calls the
 classifier's reusable workflow by pinned SHA. No scripts are copied in.
 
-The classifier runs **after** the repo's test workflow finishes (`workflow_run`)
-so it can read the REAL test results. Your job includes wiring it to the **right**
-test workflow.
-
 ## Step 1 — fetch the ready-made caller file and write its bytes
 
-**Do not hand-type the YAML** (transcription corrupts the `on:`/`uses:` lines).
-Fetch the bundle's ready-made caller file — already pinned to the `@pilot` tag —
-and write its exact bytes to the consumer repo. One command:
+**Do not hand-type the YAML** (transcription corrupts the `name:`/`on:`/`uses:`
+lines). Instead, fetch the bundle's ready-made caller file — already pinned to
+the `@pilot` tag — and write its exact bytes to the consumer repo. One command:
 
 ```
 mkdir -p .github/workflows && \
@@ -24,42 +20,30 @@ curl -fsSL https://raw.githubusercontent.com/navapbc/ai-transformation-delivery-
   -o .github/workflows/ai-test-classifier.yml
 ```
 
-## Step 2 — point it at THIS repo's test workflow (REQUIRED — do not skip)
+That writes `.github/workflows/ai-test-classifier.yml` verbatim — no retyping,
+nothing to scramble. For reference, the file you just wrote should be exactly:
 
-`workflow_run` matches the test workflow by its **`name:`** field, not filename.
-The fetched file defaults to `"Test"`/`"CI"`/`"Tests"`; confirm one matches or
-fix it, else the classifier silently never runs.
+```yaml
+name: AI test classifier
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+jobs:
+  classify:
+    uses: navapbc/ai-transformation-delivery-systems/.github/workflows/test-classifier.yml@pilot
+    with:
+      tool: claude
+    secrets:
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+```
 
-1. **Find the repo's test workflow and read its `name:`:**
+Do not run a YAML linter. If you want a sanity check, `cat` the file and confirm
+the first line is `name: AI test classifier` and the `uses:` line is a single
+unbroken line with one `@`. Then move on.
 
-   ```
-   for f in .github/workflows/*.yml .github/workflows/*.yaml; do
-     [ -e "$f" ] || continue
-     echo "== $f =="; grep -nE '^name:|run:.*(pytest|go test|vitest|jest|npm (run )?test|pnpm (run )?test|yarn test|cargo test|rspec|mvn test|gradle test|tox|phpunit)' "$f"
-   done
-   ```
+## Step 2 — tell the human these two manual steps (you cannot do them)
 
-2. **Put that exact name in the caller's `workflows:` list** (leave it if a
-   default already matches), and say which you set in your summary:
-
-   ```yaml
-   on:
-     workflow_run:
-       workflows: ["Build and Test"]   # ← this repo's test workflow name
-       types: [completed]
-   ```
-
-3. **(Optional) results artifact for OBSERVED verdicts.** For real (not diff-only)
-   verdicts, have the test job upload its JUnit XML / log via
-   `actions/upload-artifact@v4` named `ai-test-results`. Without it the classifier
-   runs in INFERRED mode and labels its comment.
-
-**No test workflow at all?** `workflow_run` has nothing to attach to — add a test
-workflow first, or fall back to a `pull_request:` trigger (INFERRED-only).
-
-## Step 3 — tell the human the one manual step (you cannot do it)
-
-Print this to the user verbatim — it is out-of-band and blocks the run:
+Print this to the user verbatim — these are out-of-band and block the run:
 
 1. **Add the API key secret** (consumer repo): run, then paste the key from
    <https://console.anthropic.com/settings/keys> when prompted:
@@ -68,24 +52,26 @@ Print this to the user verbatim — it is out-of-band and blocks the run:
    ```
    (Replace `<owner>/<consumer-repo>` with this repo's slug from `gh repo view`.)
 
-Also warn them about the activation rule below.
+That is the only manual step. (The source repo is public, so no org-access
+setting is needed.)
 
-(The source repo is public, so no org-access setting is needed.)
+## Step 3 — set expectations, then stop
 
-## Step 4 — set expectations, then stop
-
-- **Must be on the default branch to activate.** GitHub reads `workflow_run`
-  triggers from the default branch only — it won't fire from a feature branch.
-  This is the #1 "why didn't it run" cause; tell the user.
-- After the test workflow finishes on a PR, the classifier posts **one
-  non-blocking PR comment** with the verdicts + a 👍/👎 ask (also uploaded as the
-  `ai-test-classification` artifact).
-- **OBSERVED vs INFERRED.** With an `ai-test-results` artifact, verdicts are
-  grounded in the real run ("Observed"); without one, predicted from the diff
-  ("Inferred, not observed") — the only mode where flaky/environment verdicts are
-  reliable is OBSERVED.
-- A push-triggered test run (no PR) skips cleanly. Don't enable gating
-  (`--gate`) — out of scope. Offer to commit on a branch and open a PR.
+- On a PR whose tests fail, the classifier triages each failure and posts **one
+  PR comment** with the verdicts + a mandatory 👍/👎 ask. It is non-blocking,
+  and the full report is also uploaded as an `ai-test-classification` CI
+  artifact. The success signal is a green Actions run that posts that one
+  triage comment.
+- **The classifier triages the failing tests your CI already produces — it does
+  NOT run your test suite.** If this repo's CI has no test job (or the PR's diff
+  touches no tested code), the classifier will legitimately return `NO_ACTION`
+  ("nothing to triage") and post nothing. That is expected, not a failure. To
+  see real verdicts, point it at a repo whose CI runs its suite on PRs and can
+  go red.
+- Do NOT enable gating. Gating (`--gate`) is a separate opt-in, out of scope
+  for this install.
+- Nothing triggers until a PR exists. Offer to commit the file on a branch and
+  open a PR.
 
 ## If you need to read more
 
