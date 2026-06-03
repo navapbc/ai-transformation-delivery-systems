@@ -138,28 +138,32 @@ jobs:
           BASE_REF:  ${{ github.event.pull_request.base.ref }}
 
           # ── Observability (Claude Code native OpenTelemetry) ───────────────
-          # Two streams, both collected as artifacts:
-          #   1. OTel spans/metrics/events via the `console` exporter. In -p mode
-          #      Claude writes this to STDERR (separate from the parsed stdout).
-          #   2. Full request/response bodies on disk via OTEL_LOG_RAW_API_BODIES=
-          #      file:<dir> — the untruncated conversation the agent saw/produced
-          #      (system prompt, every turn, tool outputs incl. repo code). The
-          #      span events carry a body_ref pointing at these files.
-          # To ship spans to a real backend later, set OTEL_EXPORTER_OTLP_ENDPOINT
-          # (+ _HEADERS) as repo/org vars and set the OTEL_EXPORTER var to `otlp` —
-          # no code change needed.
+          # Telemetry is enabled, but the span/metric EXPORTER defaults to `none`.
+          # Why: Claude's `console` exporter writes to STDOUT, which collides with
+          # the dispatcher's parsed result (it dumped ~875KB of metric JSON into
+          # the classification record before we caught it). So by default we do
+          # NOT export spans/metrics to a stream — we capture the run two cleaner
+          # ways instead:
+          #   • agent-bodies/  — full untruncated request/response JSON via
+          #     OTEL_LOG_RAW_API_BODIES=file:<dir> (written straight to disk, no
+          #     stream, no stdout collision). This is the rich per-call record.
+          #   • the CI log     — the dispatcher's own [test-classifier] progress.
+          # To ship real spans/metrics to a backend, set repo/org var
+          # OTEL_EXPORTER=otlp + OTEL_EXPORTER_OTLP_ENDPOINT (+ _PROTOCOL / the
+          # _HEADERS secret). OTLP is a NETWORK exporter, so it never touches
+          # stdout — safe to turn on without corrupting the result. No code change.
           CLAUDE_CODE_ENABLE_TELEMETRY: '1'
-          OTEL_METRICS_EXPORTER: ${{ vars.OTEL_EXPORTER || 'console' }}
-          OTEL_LOGS_EXPORTER:    ${{ vars.OTEL_EXPORTER || 'console' }}
-          OTEL_TRACES_EXPORTER:  ${{ vars.OTEL_EXPORTER || 'console' }}
+          OTEL_METRICS_EXPORTER: ${{ vars.OTEL_EXPORTER || 'none' }}
+          OTEL_LOGS_EXPORTER:    ${{ vars.OTEL_EXPORTER || 'none' }}
+          OTEL_TRACES_EXPORTER:  ${{ vars.OTEL_EXPORTER || 'none' }}
           # Short-lived run: shrink export intervals and raise the shutdown
-          # flush timeout so telemetry isn't lost when the process exits fast.
+          # flush timeout so telemetry isn't lost when OTLP export IS enabled.
           OTEL_METRIC_EXPORT_INTERVAL: '2000'
           OTEL_LOGS_EXPORT_INTERVAL:   '500'
           CLAUDE_CODE_OTEL_SHUTDOWN_TIMEOUT_MS: '8000'
           # Full conversation bodies to a dir (untruncated, written synchronously
-          # by Claude — no flush race). Contains repo code + full reasoning; lives
-          # only in the run's artifact on the ephemeral runner.
+          # by Claude — no flush race, no stdout collision). Contains repo code +
+          # full reasoning; lives only in the run's artifact on the ephemeral runner.
           OTEL_LOG_RAW_API_BODIES: 'file:classifier-out/agent-bodies'
           OTEL_LOG_TOOL_DETAILS: '1'
           # OTLP passthrough (only used when OTEL_EXPORTER=otlp is set):
@@ -186,22 +190,10 @@ jobs:
           mkdir -p classifier-out/agent-bodies
 
           # Classify the PR's failing tests and post ONE comment with the 👍/👎 ask.
-          # Plain redirects (no process-sub flush race), shown after the run:
-          #   stdout → classification record (parsed result + report)
-          #   stderr → OTel console telemetry
-          set +e
+          # stdout → the clean classification record (parsed result + report);
+          # stderr → normal diagnostics, echoed to the CI log.
           "${DISPATCHER}" --pr "${PR_NUMBER}" --post-comment \
-            >  classifier-out/classification.txt \
-            2> classifier-out/agent-telemetry.log
-          rc=$?
-          set -e
-          echo "::group::Classification report"
-          cat classifier-out/classification.txt || true
-          echo "::endgroup::"
-          echo "::group::Agent OTel telemetry (stderr)"
-          cat classifier-out/agent-telemetry.log || true
-          echo "::endgroup::"
-          exit $rc
+            | tee classifier-out/classification.txt
 
       - name: Upload classification record
         if: always()

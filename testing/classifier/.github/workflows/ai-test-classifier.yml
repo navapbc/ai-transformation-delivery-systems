@@ -120,14 +120,17 @@ jobs:
           BASE_REF:  ${{ github.event.pull_request.base.ref }}
 
           # ── Observability (Claude Code native OpenTelemetry) ───────────────
-          # OTel spans/metrics/events via the `console` exporter (Claude writes
-          # it to STDERR in -p mode, separate from parsed stdout) + full raw
-          # request/response bodies to a dir. Both collected as artifacts. Flip
-          # OTEL_EXPORTER to `otlp` (+ endpoint/headers vars) to ship to a backend.
+          # Telemetry on, but the span/metric EXPORTER defaults to `none`: Claude's
+          # `console` exporter writes to STDOUT and would corrupt the parsed result
+          # (it dumped ~875KB of metric JSON into the record before we caught it).
+          # Instead we capture full request/response bodies straight to disk
+          # (agent-bodies/, no stream collision). To ship real spans/metrics, set
+          # OTEL_EXPORTER=otlp + endpoint/headers — OTLP is a network exporter and
+          # never touches stdout. No code change.
           CLAUDE_CODE_ENABLE_TELEMETRY: '1'
-          OTEL_METRICS_EXPORTER: ${{ vars.OTEL_EXPORTER || 'console' }}
-          OTEL_LOGS_EXPORTER:    ${{ vars.OTEL_EXPORTER || 'console' }}
-          OTEL_TRACES_EXPORTER:  ${{ vars.OTEL_EXPORTER || 'console' }}
+          OTEL_METRICS_EXPORTER: ${{ vars.OTEL_EXPORTER || 'none' }}
+          OTEL_LOGS_EXPORTER:    ${{ vars.OTEL_EXPORTER || 'none' }}
+          OTEL_TRACES_EXPORTER:  ${{ vars.OTEL_EXPORTER || 'none' }}
           OTEL_METRIC_EXPORT_INTERVAL: '2000'
           OTEL_LOGS_EXPORT_INTERVAL:   '500'
           CLAUDE_CODE_OTEL_SHUTDOWN_TIMEOUT_MS: '8000'
@@ -154,24 +157,11 @@ jobs:
 
           # Post ONE PR comment with the per-test verdicts + rationale and the
           # mandatory 👍/👎 ask (the tuning signal). Non-blocking.
-          # stdout → classification record; stderr → OTel telemetry (plain
-          # redirects, no process-sub flush race), both shown after the run.
-          set +e
           "${DISPATCHER}" \
             --pr "${PR_NUMBER}" \
             --post-comment \
-            >  classifier-out/classification.txt \
-            2> classifier-out/agent-telemetry.log
+            | tee classifier-out/classification.txt
             # --gate   # (advisory by default — uncomment to fail the build on CLASSIFIED)
-          rc=$?
-          set -e
-          echo "::group::Classification report"
-          cat classifier-out/classification.txt || true
-          echo "::endgroup::"
-          echo "::group::Agent OTel telemetry (stderr)"
-          cat classifier-out/agent-telemetry.log || true
-          echo "::endgroup::"
-          exit $rc
 
       - name: Upload classification record
         # Always upload: the artifact is the audit trail alongside the posted

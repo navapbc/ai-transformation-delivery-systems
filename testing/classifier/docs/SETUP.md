@@ -132,22 +132,24 @@ The run is bounded: `timeout-minutes` on the job and `AI_SUITE_TIMEOUT_SECS` /
 
 #### Observability (OpenTelemetry)
 
-The CI run enables Claude Code's native OpenTelemetry. Each run uploads, in the
-`ai-test-classification` artifact:
+The CI run enables Claude Code's native OpenTelemetry, but the span/metric
+**exporter defaults to `none`** — Claude's `console` exporter writes to stdout
+and would corrupt the parsed result. Instead, each run captures the agent in the
+`ai-test-classification` artifact as:
 
-- `agent-telemetry.log` — the OTel spans/metrics/events (per-tool-call timings,
-  token/cost, turns) from the `console` exporter (Claude writes these to stderr
-  in `-p` mode, so they never pollute the parsed result on stdout).
 - `agent-bodies/` — the untruncated request/response bodies
   (`OTEL_LOG_RAW_API_BODIES=file:…`): the full conversation the agent saw and
-  produced. **This includes your repo's code and the agent's full reasoning** —
-  it lives only in the run's artifact on the ephemeral runner, but treat it as
-  sensitive.
+  produced, every tool call and model response. Written straight to disk (no
+  stream, no stdout collision). **This includes your repo's code and the agent's
+  full reasoning** — it lives only in the run's artifact on the ephemeral runner,
+  but treat it as sensitive.
+- `classification.txt` — the clean classification report + the parsed JSON.
 
-To ship spans to a real backend instead of (or in addition to) the file, set
-repo/org variables `OTEL_EXPORTER=otlp`, `OTEL_EXPORTER_OTLP_ENDPOINT` (+
-`OTEL_EXPORTER_OTLP_PROTOCOL`) and the secret `OTEL_EXPORTER_OTLP_HEADERS`. No
-workflow code change is required — the exporter vars are already wired through.
+To ship real spans/metrics to a backend, set repo/org variables
+`OTEL_EXPORTER=otlp`, `OTEL_EXPORTER_OTLP_ENDPOINT` (+
+`OTEL_EXPORTER_OTLP_PROTOCOL`) and the secret `OTEL_EXPORTER_OTLP_HEADERS`. OTLP
+is a network exporter, so it never touches stdout — safe to enable with no
+workflow code change (the vars are already wired through).
 
 ---
 

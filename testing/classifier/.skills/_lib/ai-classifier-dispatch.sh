@@ -290,19 +290,19 @@ ai_review::invoke_claude() {
   # -p = non-interactive (print) mode, exits after one response.
   #
   # Observability is handled out-of-band via Claude Code's native OpenTelemetry
-  # (CLAUDE_CODE_ENABLE_TELEMETRY + OTEL_* env, set by the workflow). It emits
-  # per-tool-call spans, metrics, and logs independently of stdout — so we keep
-  # the plain text output here and parse it for the result as before.
+  # (CLAUDE_CODE_ENABLE_TELEMETRY + OTEL_* env, set by the workflow). The
+  # span/metric exporter defaults to `none` (its console form writes to STDOUT
+  # and would corrupt this parsed result); the run is captured via
+  # OTEL_LOG_RAW_API_BODIES file output instead. So stdout here stays clean.
   if (( AI_RUN_SUITE == 1 )); then
     # Grant execution so the agent can install deps + run the suite headlessly.
     # Headless `claude -p` HANGS on any Bash call without a permission grant, so
     # this flag set is required for suite-running, not optional. --allowedTools
     # scopes it to exactly what the task needs; --max-turns bounds the loop.
     #
-    # NOTE: no 2>&1 here. In -p mode Claude writes OTel console telemetry and
-    # diagnostics to STDERR; we must keep stderr OUT of the captured stdout so it
-    # doesn't corrupt the JSON/marker parse. stderr still flows to the CI log
-    # (and the workflow tees it to the telemetry artifact).
+    # NOTE: no 2>&1 here — keep the agent's stderr diagnostics OUT of the
+    # captured stdout so they can't corrupt the JSON/marker parse. stderr still
+    # flows to the CI log.
     $(ai_review::timeout_prefix) claude -p "${SKILL_PROMPT}" \
       --permission-mode bypassPermissions \
       --allowedTools "Bash,Read,Edit" \
