@@ -324,36 +324,36 @@ else:
 lines.append("")
 lines.append(summary)
 lines.append("")
-lines.append("| Verdict | Test | Category | Confidence |")
-lines.append("|---|---|---|---|")
+lines.append("| Verdict | Test | Confidence |")
+lines.append("|---|---|---|")
 for c in classifications:
     verdict = c.get("verdict", "?")
     test = c.get("test", "?")
-    category = c.get("category", "other")
     confidence = c.get("confidence", "?")
-    lines.append(f"| {verdict} | `{test}` | {category} | {confidence} |")
+    lines.append(f"| {verdict} | `{test}` | {confidence} |")
 lines.append("")
 
-# Per-test rationales (path:line for orientation).
-for c in classifications:
-    test = c.get("test", "?")
-    path = c.get("path", "?")
-    line = c.get("line", "?")
-    verdict = c.get("verdict", "?")
-    rationale = c.get("rationale", "")
-    lines.append(f"- **{verdict}** — `{test}` ({path}:{line})")
-    lines.append(f"  {rationale}")
-lines.append("")
-lines.append("---")
-lines.append("")
-lines.append("### 👍 / 👎 required — this is how we tune the classifier")
-lines.append("")
-lines.append("**Please react to this comment with 👍 if these calls are right, or 👎 "
-             "if any are wrong.** Your reaction is the tuning signal we use to measure "
-             "classifier precision and improve the calls over time. A 👎 with a one-line reply telling us which verdict "
-             "was wrong is worth its weight in gold.")
-lines.append("")
-lines.append("This comment is advisory and non-blocking — it will never fail your build.")
+# Per-test rationales, collapsed by default so the comment stays scannable.
+# Full detail is one click away (and also in the run artifact JSON).
+if classifications:
+    lines.append("<details><summary>Per-test rationale</summary>")
+    lines.append("")
+    for c in classifications:
+        test = c.get("test", "?")
+        path = c.get("path", "?")
+        line = c.get("line", "?")
+        verdict = c.get("verdict", "?")
+        category = c.get("category", "other")
+        rationale = c.get("rationale", "")
+        lines.append(f"- **{verdict}** · {category} — `{test}` ({path}:{line})")
+        lines.append(f"  {rationale}")
+    lines.append("")
+    lines.append("</details>")
+    lines.append("")
+
+# One-line tuning ask (👍/👎 is the signal the metrics loop measures).
+lines.append("**React 👍 if right / 👎 if wrong** — your reaction tunes the classifier "
+             "(a 👎 + one-line reason is gold). Advisory, non-blocking.")
 
 print("\n".join(lines))
 '

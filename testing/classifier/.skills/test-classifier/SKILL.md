@@ -355,7 +355,7 @@ markers must be a single object with the schema below.
 <!-- AI_CLASSIFIER_JSON_BEGIN -->
 {
   "mode": "OBSERVED",
-  "summary": "Triaged 4 failing tests against the change: 1 APPLICATION_BUG (loyalty discount regressed — fix the code, do not relax the test), 1 TEST_BUG (stale banner snapshot, app is correct), 1 FLAKY_FAILURE (signup submit timed out on this run only — re-run to confirm), 1 ENVIRONMENT_ISSUE (orders DB unavailable on the runner).",
+  "summary": "Ran the suite: 4 failed / 40 passed. 1 APPLICATION_BUG, 1 TEST_BUG, 1 FLAKY_FAILURE, 1 ENVIRONMENT_ISSUE — see per-test detail.",
   "classifications": [
     {
       "test": "checkout › applies the loyalty discount",
@@ -404,8 +404,10 @@ markers must be a single object with the schema below.
   `"INFERRED"` if you predicted from the diff (see Step 1). The dispatcher labels
   the PR comment from this field so a prediction is never mistaken for a real
   run. Omitted ⇒ treated as `"INFERRED"`.
-- `summary` — a short overall triage summary. This seeds the top of the
-  posted PR comment. In `INFERRED` mode, state *why* you couldn't run the suite.
+- `summary` — ONE sentence (≤ ~200 chars). It seeds the top of the PR comment, so
+  keep it a high-level headline (e.g. counts + the dominant verdict) — do NOT
+  restate each per-test rationale here; the table and the per-test entries already
+  carry that. In `INFERRED` mode, state *why* you couldn't run the suite.
 - `classifications` — array, one entry per failing test considered. Each entry:
   - `test` — the failing test's name/id as the runner reports it.
   - `path` — repo-relative path to the test file (matches `git diff --name-only`
@@ -420,10 +422,11 @@ markers must be a single object with the schema below.
   - `category` — one of `"visual-drift"`, `"behavioral-drift"`,
     `"e2e-form-flow-drift"`, `"other"`.
   - `confidence` — one of `"high"`, `"medium"`, `"low"`.
-  - `rationale` — one to three sentences explaining the verdict and the evidence.
-    For `APPLICATION_BUG`, make explicit that the fix belongs in the application
-    code, not the test (this is the guardrail against no-op test generation). For
-    `FLAKY_FAILURE`, recommend the re-run as the disambiguator.
+  - `rationale` — ONE or at most TWO short sentences (≤ ~280 chars): the evidence
+    for the verdict and the fix. Be terse — name the mismatch and what to change,
+    not a narrative. For `APPLICATION_BUG`, say plainly the fix belongs in the app
+    code, not the test (the guardrail against no-op test generation). For
+    `FLAKY_FAILURE`, name the re-run as the disambiguator.
 
 If nothing failed, `classifications` is empty and the run emits the `NO_ACTION`
 marker. Any non-empty `classifications` array means at least one real failure
@@ -442,27 +445,22 @@ test-classifier: AI triage of failing tests
 
 > **Observed** — these verdicts are grounded in the actual test run output.
 
-<summary>
+<one-line summary>
 
-| Verdict | Test | Category | Confidence |
-|---|---|---|---|
-| APPLICATION_BUG | `checkout › applies the loyalty discount` | behavioral-drift | high |
-| TEST_BUG | `Banner › renders the announcement copy` | visual-drift | high |
-| FLAKY_FAILURE | `signup › submits the registration form` | e2e-form-flow-drift | low |
-| ENVIRONMENT_ISSUE | `orders › fetches the order history` | other | high |
+| Verdict | Test | Confidence |
+|---|---|---|
+| APPLICATION_BUG | `checkout › applies the loyalty discount` | high |
+| TEST_BUG | `Banner › renders the announcement copy` | high |
+| FLAKY_FAILURE | `signup › submits the registration form` | low |
+| ENVIRONMENT_ISSUE | `orders › fetches the order history` | high |
 
-<per-test rationales>
+<details><summary>Per-test rationale</summary>
 
----
+<per-test rationales (verdict · category — test (path:line) + one-line reason)>
 
-### 👍 / 👎 required — this is how we tune the classifier
+</details>
 
-**Please react to this comment with 👍 if these calls are right, or 👎 if any are wrong.**
-Your reaction is the tuning signal we use to measure classifier precision and
-improve the calls over time. A 👎 with a
-one-line reply telling us which verdict was wrong is worth its weight in gold.
-
-This comment is advisory and non-blocking — it will never fail your build.
+**React 👍 if right / 👎 if wrong** — your reaction tunes the classifier (a 👎 + one-line reason is gold). Advisory, non-blocking.
 ```
 
 The reaction ask is not optional decoration; it is the core of the feedback
