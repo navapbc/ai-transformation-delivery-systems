@@ -8,10 +8,9 @@
 Add ONE workflow file to the **current (consumer) repo** that calls the
 classifier's reusable workflow by pinned SHA. No scripts are copied in.
 
-The classifier runs **after** the repo's test workflow finishes (a
-`workflow_run` trigger) so it can read the repo's REAL test results — that is the
-mode in which its verdicts are grounded in an actual run rather than guessed from
-the diff. Your job includes wiring it to the **right** test workflow.
+The classifier runs **after** the repo's test workflow finishes (`workflow_run`)
+so it can read the REAL test results. Your job includes wiring it to the **right**
+test workflow.
 
 ## Step 1 — fetch the ready-made caller file and write its bytes
 
@@ -27,15 +26,11 @@ curl -fsSL https://raw.githubusercontent.com/navapbc/ai-transformation-delivery-
 
 ## Step 2 — point it at THIS repo's test workflow (REQUIRED — do not skip)
 
-The caller fires on completion of the repo's test workflow, identified by that
-workflow's **`name:`** field. The fetched file lists conventional defaults
-(`"Test"`, `"CI"`, `"Tests"`). You must confirm one of those is correct, or fix
-it — otherwise the classifier silently never runs.
+`workflow_run` matches the test workflow by its **`name:`** field, not filename.
+The fetched file defaults to `"Test"`/`"CI"`/`"Tests"`; confirm one matches or
+fix it, else the classifier silently never runs.
 
-1. **Find the repo's test workflow and read its `name:`.** Inspect the existing
-   workflows and identify the one that runs the test suite (it invokes the
-   project's test command — e.g. `pytest`, `go test`, `vitest`/`jest`,
-   `npm/pnpm test`, `cargo test`, `rspec`, `mvn test`, etc.):
+1. **Find the repo's test workflow and read its `name:`:**
 
    ```
    for f in .github/workflows/*.yml .github/workflows/*.yaml; do
@@ -44,37 +39,23 @@ it — otherwise the classifier silently never runs.
    done
    ```
 
-   The `name:` value of the matching file (NOT its filename) is the test
-   workflow name. Example: a file `.github/workflows/ci.yml` whose first line is
-   `name: Build and Test` has the workflow name `Build and Test`.
-
-2. **Make the caller's `workflows:` list contain that exact name.** Edit
-   `.github/workflows/ai-test-classifier.yml` so the `workflow_run.workflows`
-   array is your repo's test workflow name. If the repo's name already matches
-   one of the defaults (`Test`/`CI`/`Tests`), leave it; otherwise replace the
-   list, e.g.:
+2. **Put that exact name in the caller's `workflows:` list** (leave it if a
+   default already matches), and say which you set in your summary:
 
    ```yaml
    on:
      workflow_run:
-       workflows: ["Build and Test"]   # ← this repo's actual test workflow name
+       workflows: ["Build and Test"]   # ← this repo's test workflow name
        types: [completed]
    ```
 
-   State plainly in your summary which workflow name you set and why.
+3. **(Optional) results artifact for OBSERVED verdicts.** For real (not diff-only)
+   verdicts, have the test job upload its JUnit XML / log via
+   `actions/upload-artifact@v4` named `ai-test-results`. Without it the classifier
+   runs in INFERRED mode and labels its comment.
 
-3. **(Optional but recommended) results artifact for OBSERVED verdicts.** The
-   classifier reads real test output when the test workflow uploads it as an
-   artifact named `ai-test-results` (the `test-results-artifact` input). If the
-   repo's test job does not already upload one, you may add an
-   `actions/upload-artifact@v4` step to it that uploads its JUnit XML / log under
-   that name. If you do not, the classifier still runs but in INFERRED
-   (diff-only) mode and labels its comment accordingly.
-
-If this repo has **no** test workflow at all, say so: the `workflow_run` trigger
-has nothing to attach to. Either help the user add a test workflow first, or fall
-back to a `pull_request:` trigger (INFERRED-only) and tell them the classifier
-will guess from the diff until a real test workflow exists.
+**No test workflow at all?** `workflow_run` has nothing to attach to — add a test
+workflow first, or fall back to a `pull_request:` trigger (INFERRED-only).
 
 ## Step 3 — tell the human the one manual step (you cannot do it)
 
@@ -93,27 +74,18 @@ Also warn them about the activation rule below.
 
 ## Step 4 — set expectations, then stop
 
-- **It must be merged to the default branch to activate.** GitHub reads
-  `workflow_run` triggers from the workflow file on the repo's DEFAULT branch.
-  The classifier will NOT fire from a feature branch — the caller has to land on
-  the default branch first. Tell the user this; it is the #1 "why didn't it run"
-  cause.
-- On a PR, after the test workflow finishes, the classifier triages each failing
-  test and posts **one PR comment** with the verdicts + a mandatory 👍/👎 ask. It
-  is non-blocking, and the full report is also uploaded as an
-  `ai-test-classification` CI artifact.
-- **OBSERVED vs INFERRED.** If the test workflow uploaded an `ai-test-results`
-  artifact, verdicts are grounded in the real run (comment marked "Observed"). If
-  not, the classifier predicts from the diff (comment marked "Inferred, not
-  observed"). Both are valid; OBSERVED is stronger and is the only mode where
-  flaky/environment verdicts are reliable.
-- If a test run was for a push (not a PR), the classifier cleanly skips — there
-  is no PR to comment on. That is expected, not a failure.
-- Do NOT enable gating. Gating (`--gate`) is a separate opt-in, out of scope for
-  this install.
-- Nothing triggers until (a) the caller is on the default branch and (b) a PR's
-  test workflow completes. Offer to commit the file on a branch and open a PR
-  toward the default branch.
+- **Must be on the default branch to activate.** GitHub reads `workflow_run`
+  triggers from the default branch only — it won't fire from a feature branch.
+  This is the #1 "why didn't it run" cause; tell the user.
+- After the test workflow finishes on a PR, the classifier posts **one
+  non-blocking PR comment** with the verdicts + a 👍/👎 ask (also uploaded as the
+  `ai-test-classification` artifact).
+- **OBSERVED vs INFERRED.** With an `ai-test-results` artifact, verdicts are
+  grounded in the real run ("Observed"); without one, predicted from the diff
+  ("Inferred, not observed") — the only mode where flaky/environment verdicts are
+  reliable is OBSERVED.
+- A push-triggered test run (no PR) skips cleanly. Don't enable gating
+  (`--gate`) — out of scope. Offer to commit on a branch and open a PR.
 
 ## If you need to read more
 

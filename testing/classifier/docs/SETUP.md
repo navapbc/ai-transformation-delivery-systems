@@ -99,19 +99,13 @@ and vendored paths below.)
 
 #### Two things you must get right for the `workflow_run` trigger
 
-1. **Name your test workflow in `workflows:`.** GitHub matches a `workflow_run`
-   trigger by the upstream workflow's `name:` field (the human-readable name at
-   the top of the file), **not** its filename. Find the workflow that runs your
-   suite, read its `name:`, and make sure it appears in the `workflows:` list. If
-   the name does not match, the classifier silently never fires. (When you have
-   the bundle's `caller-workflow.yml` to hand, an installing agent can detect the
-   suite and set this for you — see `AGENT_INSTALL.md`.)
-
-2. **It activates only from the default branch.** GitHub reads `workflow_run`
-   triggers from the workflow file on your repo's **default** branch. The trigger
-   will not fire while the caller lives only on a feature branch — merge it to
-   the default branch to turn it on. (This is also why forked-PR runs do not
-   carry your secrets — a platform constraint, not a bug.)
+1. **Name your test workflow in `workflows:`.** It matches by the upstream
+   workflow's `name:` field, **not** filename — if it doesn't match, the
+   classifier silently never fires. (An installing agent can set this for you —
+   see `AGENT_INSTALL.md`.)
+2. **It activates only from the default branch.** `workflow_run` triggers are
+   read from the default branch, so the caller won't fire from a feature branch
+   until merged. (Same reason forked-PR runs don't carry secrets.)
 
 #### OBSERVED vs INFERRED — what the classifier actually sees
 

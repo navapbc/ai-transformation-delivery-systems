@@ -186,39 +186,20 @@ ai_review::discover_pr_context() {
 }
 
 # ── Classification mode: OBSERVED vs INFERRED ───────────────────────────────
-# The classifier's verdicts are only as good as the failing-test signal it sees.
-# Two modes:
-#
-#   OBSERVED — AI_TEST_RESULTS points at a readable file containing the REAL
-#     test output (JUnit XML / captured run log) from the consumer's test run.
-#     We inject that output into the prompt as the authoritative failing-test
-#     signal. This is the ONLY mode on which FLAKY_FAILURE and ENVIRONMENT_ISSUE
-#     are genuinely reachable — you cannot observe a timeout, an OOM, or
-#     non-determinism from a diff alone.
-#
-#   INFERRED — no test results were supplied (no suite, no artifact, or a
-#     pull_request-triggered run). We reason statically over the git diff and
-#     PREDICT which changes would fail. Honest but weaker; we label the PR
-#     comment "inferred, not observed" so a reviewer never mistakes a prediction
-#     for a real run.
-#
-# AI_TEST_RESULTS is exported by the reusable workflow (steps.results). When set
-# and the file is non-empty, we run OBSERVED; otherwise INFERRED.
+# AI_TEST_RESULTS (set by the workflow) points at the real test output when
+# available → OBSERVED. Otherwise INFERRED (predict from the diff). The signal
+# section of the prompt below differs accordingly.
 CLASSIFY_MODE="INFERRED"
 TEST_RESULTS_BLOCK=""
 if [[ -n "${AI_TEST_RESULTS:-}" && -s "${AI_TEST_RESULTS}" ]]; then
   CLASSIFY_MODE="OBSERVED"
-  # Cap the injected output so a pathological multi-MB log can't blow the prompt
-  # budget; the head of a failure log carries the signal that matters.
+  # Cap the injected output so a multi-MB log can't blow the prompt budget.
   TEST_RESULTS_BLOCK="$(head -c 200000 "${AI_TEST_RESULTS}")"
 fi
 
 # ── Prompt construction ─────────────────────────────────────────────────────
-# We instruct the AI to emit BOTH a human-readable report AND a fenced JSON
-# block. The dispatcher extracts the JSON block to render the PR comment. The
-# "failing-test signal" section (step 1) differs by mode: in OBSERVED mode we
-# embed the real test output; in INFERRED mode we tell the AI to predict from
-# the diff and be explicit about the lower confidence that implies.
+# The AI emits a human-readable report AND a fenced JSON block (which the
+# dispatcher extracts to render the PR comment).
 
 if [[ "${CLASSIFY_MODE}" == "OBSERVED" ]]; then
   read -r -d '' SIGNAL_SECTION <<SIGNAL || true
@@ -344,9 +325,7 @@ lines.append("test-classifier: AI triage of failing tests")
 lines.append("")
 lines.append("## AI Test Classifier — triage of failing tests")
 lines.append("")
-# Signal-provenance banner. OBSERVED = grounded in the real test run; INFERRED =
-# predicted from the diff with no test results. We label INFERRED explicitly so a
-# reviewer never mistakes a static prediction for an observed failure.
+# Signal-provenance banner so a prediction is never mistaken for a real run.
 if mode == "OBSERVED":
     lines.append("> **Observed** — these verdicts are grounded in the actual test run output.")
 else:

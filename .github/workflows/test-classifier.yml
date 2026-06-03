@@ -24,23 +24,10 @@
 #         ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
 #         # OPENAI_API_KEY:  ${{ secrets.OPENAI_API_KEY }}   # only if tool=codex
 #
-# ── Two ways the classifier gets its "failing-test signal" ──────────────────
-# The classifier's verdicts (APPLICATION_BUG / TEST_BUG / FLAKY_FAILURE /
-# ENVIRONMENT_ISSUE) are only as good as the signal it sees. There are two:
-#
-#   (A) OBSERVED — preferred. When this workflow is triggered by a `workflow_run`
-#       on the consumer's test workflow, it downloads that run's test-results
-#       artifact (JUnit XML / captured log named `ai-test-results`, if present)
-#       and feeds the REAL failing-test output to the classifier. This is the
-#       only path on which FLAKY_FAILURE and ENVIRONMENT_ISSUE are reachable —
-#       you cannot see a timeout, an OOM, or non-determinism from a diff alone.
-#
-#   (B) INFERRED — fallback. When no test-results artifact is available (the repo
-#       has no test suite, the suite produced no artifact, or the caller still
-#       triggers on `pull_request`), the classifier reasons statically over the
-#       git diff and PREDICTS which changes would fail. Honest but weaker; the
-#       posted PR comment is explicitly labeled "inferred, not observed" so a
-#       reviewer never mistakes a prediction for a real run.
+# Signal: triggered via workflow_run, it downloads the test run's results
+# artifact and classifies the REAL failures (OBSERVED). With no artifact it falls
+# back to diff-only prediction (INFERRED), labeled as such. See the
+# test-results-artifact input below.
 #
 # `pilot` is a MOVING tag that always tracks the latest classifier on main; the
 # move-tag.yml workflow re-points it automatically whenever the classifier
@@ -69,14 +56,10 @@ on:
         default: ''
       test-results-artifact:
         description: >
-          Name of the artifact the consumer's test workflow uploads containing
-          its test results (JUnit XML and/or a captured run log). When this
-          workflow is triggered by a `workflow_run` on the test workflow, that
-          run's artifact of this name is downloaded and fed to the classifier as
-          the REAL failing-test signal (OBSERVED mode). If the artifact is absent
-          — or the caller triggers on `pull_request` instead of `workflow_run` —
-          the classifier falls back to diff-only INFERRED mode and labels its PR
-          comment accordingly. Defaults to 'ai-test-results'.
+          Artifact name the test workflow uploads with its results (JUnit XML /
+          run log). On a workflow_run trigger it's downloaded and fed to the
+          classifier (OBSERVED mode); absent, the classifier falls back to
+          diff-only (INFERRED).
         type: string
         default: 'ai-test-results'
     secrets:
@@ -96,12 +79,8 @@ permissions:
 jobs:
   classify:
     runs-on: ubuntu-latest
-    # Run for:
-    #   • pull_request events that are not drafts (INFERRED fallback path); and
-    #   • workflow_run events where the triggering test run was for a PR
-    #     (OBSERVED path). For workflow_run, github.event.pull_request is absent,
-    #     so we cannot test draft here — the "is it a PR?" check happens in the
-    #     Resolve PR context step, which exits 0 cleanly when there is no PR.
+    # Non-draft PRs, or any workflow_run (the "is it a PR?" check happens in
+    # Resolve PR context, which skips cleanly when there's no PR).
     if: >-
       (github.event_name == 'pull_request' && github.event.pull_request.draft == false)
       || github.event_name == 'workflow_run'
@@ -114,12 +93,8 @@ jobs:
             echo "::error::inputs.tool='${TOOL}' invalid. Must be claude | codex | copilot"; exit 1 ;;
           esac
 
-      # ── Resolve PR context for BOTH trigger types ─────────────────────────
-      # pull_request: the PR fields are on the event directly.
-      # workflow_run: the event carries the triggering run, whose
-      #   pull_requests[] array (when the run was for a PR) gives us the number,
-      #   head SHA, and base ref. If the triggering run was not for a PR (e.g. a
-      #   push to main), we set SKIP=1 and the later steps no-op.
+      # Resolve PR number/head/base for either trigger. workflow_run that wasn't
+      # for a PR → skip=1 and later steps no-op.
       - name: Resolve PR context
         id: pr
         env:
@@ -181,8 +156,7 @@ jobs:
           emit run_id    "${WR_RUN_ID}"
           echo "[classifier] workflow_run event → PR #${local_pr} (base: ${base_ref}); test run ${WR_RUN_ID} concluded '${WR_CONCLUSION}'."
 
-      # 1. The CONSUMER's repo — this is what the dispatcher diffs and classifies.
-      #    Checked out at the PR head SHA resolved above (works for both triggers).
+      # The consumer's repo at the resolved PR head — what the dispatcher diffs.
       - name: Check out the caller's repo (the change under test)
         if: steps.pr.outputs.skip != '1'
         uses: actions/checkout@v4
@@ -190,11 +164,8 @@ jobs:
           fetch-depth: 0
           ref: ${{ steps.pr.outputs.head_sha }}
 
-      # ── Download the triggering test run's results artifact (OBSERVED mode) ─
-      # Only on workflow_run, and only when a run_id was resolved. We download
-      # the artifact named by inputs.test-results-artifact from that specific
-      # run. If it does not exist (repo uploads nothing), this is non-fatal: the
-      # dispatcher then falls back to INFERRED/diff-only mode and labels it.
+      # Download the test run's results artifact (workflow_run only). Missing or
+      # empty is non-fatal — the dispatcher falls back to diff-only.
       - name: Download test results from the triggering run
         id: results
         if: steps.pr.outputs.skip != '1' && steps.pr.outputs.run_id != ''
@@ -283,9 +254,7 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ steps.pr.outputs.pr_number }}
           BASE_REF:  ${{ steps.pr.outputs.base_ref }}
-          # Path to the downloaded real test-results signal, or empty for
-          # INFERRED/diff-only mode. The dispatcher reads this to decide which
-          # mode to run and how to label the PR comment.
+          # Real test-results file, or empty → INFERRED/diff-only.
           AI_TEST_RESULTS: ${{ steps.results.outputs.results_path }}
         run: |
           set -euo pipefail
@@ -303,9 +272,7 @@ jobs:
           git fetch --no-tags --depth=200 origin "${BASE_REF}:refs/remotes/origin/${BASE_REF}" || true
 
           # Classify the PR's failing tests and post ONE comment with the 👍/👎 ask.
-          # When AI_TEST_RESULTS points at a real results file the dispatcher runs
-          # in OBSERVED mode; otherwise it falls back to INFERRED/diff-only and
-          # labels the comment. The full report is also captured as a CI artifact.
+          # The full report is also captured as a CI artifact.
           mkdir -p classifier-out
           "${DISPATCHER}" --pr "${PR_NUMBER}" --post-comment \
             | tee classifier-out/classification.txt
