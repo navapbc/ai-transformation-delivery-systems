@@ -185,9 +185,63 @@ ai_review::discover_pr_context() {
   echo "[test-classifier] Auto-discovered PR #${AI_REVIEW_PR_NUMBER} (base: ${AI_REVIEW_PR_BASE})"
 }
 
+# ── Classification mode: OBSERVED vs INFERRED ───────────────────────────────
+# The classifier's verdicts are only as good as the failing-test signal it sees.
+# Two modes:
+#
+#   OBSERVED — AI_TEST_RESULTS points at a readable file containing the REAL
+#     test output (JUnit XML / captured run log) from the consumer's test run.
+#     We inject that output into the prompt as the authoritative failing-test
+#     signal. This is the ONLY mode on which FLAKY_FAILURE and ENVIRONMENT_ISSUE
+#     are genuinely reachable — you cannot observe a timeout, an OOM, or
+#     non-determinism from a diff alone.
+#
+#   INFERRED — no test results were supplied (no suite, no artifact, or a
+#     pull_request-triggered run). We reason statically over the git diff and
+#     PREDICT which changes would fail. Honest but weaker; we label the PR
+#     comment "inferred, not observed" so a reviewer never mistakes a prediction
+#     for a real run.
+#
+# AI_TEST_RESULTS is exported by the reusable workflow (steps.results). When set
+# and the file is non-empty, we run OBSERVED; otherwise INFERRED.
+CLASSIFY_MODE="INFERRED"
+TEST_RESULTS_BLOCK=""
+if [[ -n "${AI_TEST_RESULTS:-}" && -s "${AI_TEST_RESULTS}" ]]; then
+  CLASSIFY_MODE="OBSERVED"
+  # Cap the injected output so a pathological multi-MB log can't blow the prompt
+  # budget; the head of a failure log carries the signal that matters.
+  TEST_RESULTS_BLOCK="$(head -c 200000 "${AI_TEST_RESULTS}")"
+fi
+
 # ── Prompt construction ─────────────────────────────────────────────────────
 # We instruct the AI to emit BOTH a human-readable report AND a fenced JSON
-# block. The dispatcher extracts the JSON block to render the PR comment.
+# block. The dispatcher extracts the JSON block to render the PR comment. The
+# "failing-test signal" section (step 1) differs by mode: in OBSERVED mode we
+# embed the real test output; in INFERRED mode we tell the AI to predict from
+# the diff and be explicit about the lower confidence that implies.
+
+if [[ "${CLASSIFY_MODE}" == "OBSERVED" ]]; then
+  read -r -d '' SIGNAL_SECTION <<SIGNAL || true
+  1. Failing-test signal — OBSERVED. The REAL test output from the change's CI
+     run is provided below between the markers. Treat THIS as ground truth for
+     which tests failed and why; do not guess at failures the output does not
+     show. Passing tests are not listed here and must not be classified.
+
+       <<<TEST_RESULTS_BEGIN>>>
+${TEST_RESULTS_BLOCK}
+       <<<TEST_RESULTS_END>>>
+SIGNAL
+else
+  read -r -d '' SIGNAL_SECTION <<'SIGNAL' || true
+  1. Failing-test signal — INFERRED (no real test results were supplied). You do
+     NOT have the actual test run; reason statically over the diff and PREDICT
+     which tests the change would cause to fail and why. Because this is a
+     prediction rather than an observation, prefer lower confidence, and note
+     that FLAKY_FAILURE and ENVIRONMENT_ISSUE are generally NOT determinable from
+     a diff alone (they require a real run) — only assert them with explicit
+     evidence in the diff.
+SIGNAL
+fi
 
 read -r -d '' SKILL_PROMPT <<PROMPT || true
 You have access to the test-classifier skill. The skill's full instructions are
@@ -206,7 +260,7 @@ AI_REVIEW_AGAINST and HEAD:
 
 Follow the skill instructions in test-classifier/SKILL.md exactly:
 
-  1. Collect the failing-test signal (which tests failed and the failure output).
+${SIGNAL_SECTION}
   2. Collect the change-under-test diff (above).
   3. For EACH failing test, decide ONE verdict using the four-verdict procedure
      (work it IN ORDER — rule out substrate causes before app-vs-test):
@@ -262,14 +316,15 @@ extract_classifier_json() {
 # mandatory 👍/👎 ask. We use python3 because pure-bash JSON handling is brittle.
 render_pr_comment_body() {
   local classifier_json="$1"
+  local mode="${2:-INFERRED}"
 
   if ! command -v python3 &>/dev/null; then
     echo "ERROR: python3 is required to render the PR comment from classifier JSON." >&2
     exit 1
   fi
 
-  echo "${classifier_json}" | python3 -c '
-import json, sys
+  echo "${classifier_json}" | CLASSIFY_MODE="${mode}" python3 -c '
+import json, os, sys
 
 try:
     data = json.load(sys.stdin)
@@ -277,6 +332,7 @@ except Exception as e:
     print(f"ERROR: could not parse classifier JSON from AI output: {e}", file=sys.stderr)
     sys.exit(1)
 
+mode = os.environ.get("CLASSIFY_MODE", "INFERRED")
 summary = data.get("summary", "AI test classifier triage of the failing tests.")
 classifications = data.get("classifications", [])
 
@@ -287,6 +343,17 @@ lines = []
 lines.append("test-classifier: AI triage of failing tests")
 lines.append("")
 lines.append("## AI Test Classifier — triage of failing tests")
+lines.append("")
+# Signal-provenance banner. OBSERVED = grounded in the real test run; INFERRED =
+# predicted from the diff with no test results. We label INFERRED explicitly so a
+# reviewer never mistakes a static prediction for an observed failure.
+if mode == "OBSERVED":
+    lines.append("> 🟢 **Observed** — these verdicts are grounded in the actual test run output.")
+else:
+    lines.append("> 🟡 **Inferred, not observed** — no test results were available to this "
+                 "run, so these verdicts are predicted statically from the diff. Treat them "
+                 "as a heads-up, not a confirmed test outcome. (To get observed verdicts, have "
+                 "your test workflow upload its results artifact — see the classifier setup docs.)")
 lines.append("")
 lines.append(summary)
 lines.append("")
@@ -375,6 +442,7 @@ test_classifier::run() {
     ai_review::log  "  AI tool:        ${AI_REVIEW_TOOL_RESOLVED}"
     ai_review::log  "  PR number:      ${AI_REVIEW_PR_NUMBER:-(none — using --against directly)}"
     ai_review::log  "  Diff source:    $(ai_review::diff_command_description)"
+    ai_review::log  "  Signal mode:    ${CLASSIFY_MODE}$([[ "${CLASSIFY_MODE}" == "OBSERVED" ]] && echo " (test results: ${AI_TEST_RESULTS})")"
     ai_review::log  "  Post comment:   ${POST_COMMENT}"
     ai_review::log  "  Gate mode:      ${GATE_MODE}"
     ai_review::log  "  Changed files:"
@@ -383,6 +451,11 @@ test_classifier::run() {
   fi
 
   ai_review::info "Running ${SKILL_HUMAN_NAME} on $(ai_review::diff_command_description) via ${AI_REVIEW_TOOL_RESOLVED}..."
+  if [[ "${CLASSIFY_MODE}" == "OBSERVED" ]]; then
+    ai_review::info "Signal: OBSERVED — using real test results from ${AI_TEST_RESULTS}"
+  else
+    ai_review::info "Signal: INFERRED — no test results supplied; predicting from the diff (comment will be labeled)"
+  fi
   ai_review::log  "────────────────────────────────────────────────────────────"
 
   export AI_REVIEW_AGAINST
@@ -444,7 +517,7 @@ test_classifier::run() {
         exit 1
       fi
       local comment_body
-      comment_body="$(render_pr_comment_body "${json_block}")"
+      comment_body="$(render_pr_comment_body "${json_block}" "${CLASSIFY_MODE}")"
       post_comment_to_github "${AI_REVIEW_PR_NUMBER}" "${comment_body}"
     fi
   fi

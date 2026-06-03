@@ -1,11 +1,35 @@
 name: AI test classifier
+#
+# Lifecycle-aware caller for the AI test classifier reusable workflow.
+#
+# This runs AFTER your test workflow finishes, so the classifier can read your
+# REAL test results (OBSERVED mode) instead of only guessing from the diff.
+#
+# ── IMPORTANT: set this to YOUR test workflow's name ────────────────────────
+# `workflow_run.workflows` must list the `name:` of the workflow that runs your
+# test suite — exactly as it appears at the top of that workflow file (the
+# `name:` field, NOT the filename). The convention names below cover the common
+# cases ("Test" / "CI" / "Tests"); edit this list so it contains your suite's
+# actual workflow name. If none match, this caller will silently never fire.
+#
+# NOTE: GitHub reads `workflow_run` triggers from the workflow file on your
+# repo's DEFAULT branch. The trigger will not fire while this file lives only on
+# a feature branch — merge it to the default branch to activate it. Forked-PR
+# runs also won't carry your secrets; that is a GitHub platform constraint.
 on:
-  pull_request:
-    types: [opened, synchronize, reopened]
+  workflow_run:
+    workflows: ["Test", "CI", "Tests"]   # ← your test workflow's name(s)
+    types: [completed]
+
 jobs:
   classify:
     uses: navapbc/ai-transformation-delivery-systems/.github/workflows/test-classifier.yml@pilot
     with:
       tool: claude
+      # Name of the artifact your test workflow uploads with its results
+      # (JUnit XML and/or a captured run log). Defaults to 'ai-test-results'.
+      # Have your test job upload results under this name to unlock OBSERVED mode;
+      # without it, the classifier still runs in INFERRED/diff-only mode.
+      test-results-artifact: ai-test-results
     secrets:
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
