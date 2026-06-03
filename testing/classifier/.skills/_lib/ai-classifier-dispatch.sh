@@ -288,15 +288,25 @@ ai_review::invoke_claude() {
   # Claude Code auto-discovers .claude/skills/*/SKILL.md by description match,
   # but for determinism we also reference the path explicitly in the prompt.
   # -p = non-interactive (print) mode, exits after one response.
+  #
+  # Observability is handled out-of-band via Claude Code's native OpenTelemetry
+  # (CLAUDE_CODE_ENABLE_TELEMETRY + OTEL_* env, set by the workflow). It emits
+  # per-tool-call spans, metrics, and logs independently of stdout — so we keep
+  # the plain text output here and parse it for the result as before.
   if (( AI_RUN_SUITE == 1 )); then
     # Grant execution so the agent can install deps + run the suite headlessly.
     # Headless `claude -p` HANGS on any Bash call without a permission grant, so
     # this flag set is required for suite-running, not optional. --allowedTools
     # scopes it to exactly what the task needs; --max-turns bounds the loop.
+    #
+    # NOTE: no 2>&1 here. In -p mode Claude writes OTel console telemetry and
+    # diagnostics to STDERR; we must keep stderr OUT of the captured stdout so it
+    # doesn't corrupt the JSON/marker parse. stderr still flows to the CI log
+    # (and the workflow tees it to the telemetry artifact).
     $(ai_review::timeout_prefix) claude -p "${SKILL_PROMPT}" \
       --permission-mode bypassPermissions \
       --allowedTools "Bash,Read,Edit" \
-      --max-turns "${AI_SUITE_MAX_TURNS}" 2>&1
+      --max-turns "${AI_SUITE_MAX_TURNS}"
   else
     claude -p "${SKILL_PROMPT}" 2>&1
   fi

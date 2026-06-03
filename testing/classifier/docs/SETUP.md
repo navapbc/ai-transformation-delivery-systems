@@ -130,6 +130,25 @@ needed either way; suites needing services legitimately land in INFERRED.
 The run is bounded: `timeout-minutes` on the job and `AI_SUITE_TIMEOUT_SECS` /
 `AI_SUITE_MAX_TURNS` (env, defaults 1500s / 40 turns) inside the dispatcher.
 
+#### Observability (OpenTelemetry)
+
+The CI run enables Claude Code's native OpenTelemetry. Each run uploads, in the
+`ai-test-classification` artifact:
+
+- `agent-telemetry.log` — the OTel spans/metrics/events (per-tool-call timings,
+  token/cost, turns) from the `console` exporter (Claude writes these to stderr
+  in `-p` mode, so they never pollute the parsed result on stdout).
+- `agent-bodies/` — the untruncated request/response bodies
+  (`OTEL_LOG_RAW_API_BODIES=file:…`): the full conversation the agent saw and
+  produced. **This includes your repo's code and the agent's full reasoning** —
+  it lives only in the run's artifact on the ephemeral runner, but treat it as
+  sensitive.
+
+To ship spans to a real backend instead of (or in addition to) the file, set
+repo/org variables `OTEL_EXPORTER=otlp`, `OTEL_EXPORTER_OTLP_ENDPOINT` (+
+`OTEL_EXPORTER_OTLP_PROTOCOL`) and the secret `OTEL_EXPORTER_OTLP_HEADERS`. No
+workflow code change is required — the exporter vars are already wired through.
+
 ---
 
 ## Path B — Local dispatcher run
