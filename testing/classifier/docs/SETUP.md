@@ -120,12 +120,12 @@ The classifier's verdicts are only as good as the failing-test signal it sees:
 - **OBSERVED** (preferred): when your test workflow uploads its results as an
   artifact named by `test-results-artifact` (default `ai-test-results`), the
   classifier downloads that run's artifact and triages the **real** failures. The
-  PR comment is marked 🟢 *Observed*. This is the only mode in which
+  PR comment is marked *Observed*. This is the only mode in which
   `FLAKY_FAILURE` and `ENVIRONMENT_ISSUE` are reliably reachable — you cannot
   see a timeout, an OOM, or non-determinism from a diff.
 - **INFERRED** (fallback): if no results artifact is available, the classifier
   reasons over the git diff and **predicts** which tests would fail. The PR
-  comment is marked 🟡 *Inferred, not observed* so a reviewer never mistakes a
+  comment is marked *Inferred, not observed* so a reviewer never mistakes a
   prediction for a real outcome. This is what you get with no test suite, no
   uploaded artifact, or a `pull_request`-triggered caller.
 
@@ -506,7 +506,7 @@ The most common cause is one of the two `workflow_run` rules:
   comment on; the classifier resolves no PR context and cleanly skips. Open a PR
   to exercise it.
 
-### The comment says 🟡 "Inferred, not observed" but I have a test suite
+### The comment says "Inferred, not observed" but I have a test suite
 
 The classifier ran in INFERRED mode because it received no real test results.
 Check that your **test** workflow uploads an artifact whose name matches the

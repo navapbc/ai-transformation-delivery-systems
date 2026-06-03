@@ -103,9 +103,9 @@ Also warn them about the activation rule below.
   is non-blocking, and the full report is also uploaded as an
   `ai-test-classification` CI artifact.
 - **OBSERVED vs INFERRED.** If the test workflow uploaded an `ai-test-results`
-  artifact, verdicts are grounded in the real run (comment shows 🟢 Observed). If
-  not, the classifier predicts from the diff (comment shows 🟡 Inferred, not
-  observed). Both are valid; OBSERVED is stronger and is the only mode where
+  artifact, verdicts are grounded in the real run (comment marked "Observed"). If
+  not, the classifier predicts from the diff (comment marked "Inferred, not
+  observed"). Both are valid; OBSERVED is stronger and is the only mode where
   flaky/environment verdicts are reliable.
 - If a test run was for a push (not a PR), the classifier cleanly skips — there
   is no PR to comment on. That is expected, not a failure.

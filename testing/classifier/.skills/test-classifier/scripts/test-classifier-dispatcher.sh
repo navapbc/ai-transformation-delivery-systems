@@ -348,9 +348,9 @@ lines.append("")
 # predicted from the diff with no test results. We label INFERRED explicitly so a
 # reviewer never mistakes a static prediction for an observed failure.
 if mode == "OBSERVED":
-    lines.append("> 🟢 **Observed** — these verdicts are grounded in the actual test run output.")
+    lines.append("> **Observed** — these verdicts are grounded in the actual test run output.")
 else:
-    lines.append("> 🟡 **Inferred, not observed** — no test results were available to this "
+    lines.append("> **Inferred, not observed** — no test results were available to this "
                  "run, so these verdicts are predicted statically from the diff. Treat them "
                  "as a heads-up, not a confirmed test outcome. (To get observed verdicts, have "
                  "your test workflow upload its results artifact — see the classifier setup docs.)")
