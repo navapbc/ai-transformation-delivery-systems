@@ -70,20 +70,13 @@ Create `.github/workflows/ai-test-classifier.yml` in your **consumer** repo:
 # .github/workflows/ai-test-classifier.yml in the CONSUMER repo
 name: AI test classifier
 on:
-  # Run AFTER your test workflow finishes, so the classifier reads your REAL
-  # test results. Set workflows: to YOUR test workflow's name (its `name:`
-  # field, not its filename). The defaults cover the common conventions.
-  workflow_run:
-    workflows: ["Test", "CI", "Tests"]   # ← your test workflow's name(s)
-    types: [completed]
+  pull_request:
+    types: [opened, synchronize, reopened]
 jobs:
   classify:
     uses: navapbc/ai-transformation-delivery-systems/.github/workflows/test-classifier.yml@<commit-sha>
     with:
       tool: claude        # claude | codex | copilot
-      # Artifact name your test workflow uploads with its results (JUnit XML
-      # and/or a captured run log). Defaults to 'ai-test-results'.
-      test-results-artifact: ai-test-results
     secrets:
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
 ```
@@ -96,47 +89,6 @@ no merge.
 In this path, `tool` is a **workflow input** in the caller's `with:` block —
 **not** a repository variable. (Repository variables only apply to the local
 and vendored paths below.)
-
-#### Two things you must get right for the `workflow_run` trigger
-
-1. **Name your test workflow in `workflows:`.** It matches by the upstream
-   workflow's `name:` field, **not** filename — if it doesn't match, the
-   classifier silently never fires. (An installing agent can set this for you —
-   see `AGENT_INSTALL.md`.)
-2. **It activates only from the default branch.** `workflow_run` triggers are
-   read from the default branch, so the caller won't fire from a feature branch
-   until merged. (Same reason forked-PR runs don't carry secrets.)
-
-#### OBSERVED vs INFERRED — what the classifier actually sees
-
-The classifier's verdicts are only as good as the failing-test signal it sees:
-
-- **OBSERVED** (preferred): when your test workflow uploads its results as an
-  artifact named by `test-results-artifact` (default `ai-test-results`), the
-  classifier downloads that run's artifact and triages the **real** failures. The
-  PR comment is marked *Observed*. This is the only mode in which
-  `FLAKY_FAILURE` and `ENVIRONMENT_ISSUE` are reliably reachable — you cannot
-  see a timeout, an OOM, or non-determinism from a diff.
-- **INFERRED** (fallback): if no results artifact is available, the classifier
-  reasons over the git diff and **predicts** which tests would fail. The PR
-  comment is marked *Inferred, not observed* so a reviewer never mistakes a
-  prediction for a real outcome. This is what you get with no test suite, no
-  uploaded artifact, or a `pull_request`-triggered caller.
-
-To unlock OBSERVED mode, have your test job upload its JUnit XML / run log:
-
-```yaml
-# in your TEST workflow's job, after the test step (even on failure):
-- name: Upload test results for the AI classifier
-  if: always()
-  uses: actions/upload-artifact@v4
-  with:
-    name: ai-test-results      # must match test-results-artifact above
-    path: |
-      junit.xml                # your JUnit/xUnit report(s)
-      test-output.log          # and/or a captured run log
-    if-no-files-found: ignore
-```
 
 ### Step 2 — Set the API-key secret
 
@@ -483,31 +435,6 @@ Check the workflow logs:
   nothing. That is expected, not an error.
 - AI returned no result marker (`<<<AI_REVIEW_RESULT:...>>>`) → the dispatcher
   errors and exits non-zero. This can happen on transient model issues; retry.
-
-### The classifier never runs at all (Path A, `workflow_run`)
-
-The most common cause is one of the two `workflow_run` rules:
-
-- **The caller isn't on the default branch yet.** GitHub reads `workflow_run`
-  triggers from the file on the repo's **default** branch. Until the caller is
-  merged there, it will not fire — even though it sits in your PR. Merge it to
-  the default branch to activate.
-- **The `workflows:` name doesn't match.** `workflow_run.workflows` matches the
-  upstream workflow's `name:` field, not its filename. Open your test workflow,
-  read its `name:`, and confirm that exact string is in the caller's
-  `workflows:` list.
-- **The triggering run wasn't for a PR.** A push-triggered test run has no PR to
-  comment on; the classifier resolves no PR context and cleanly skips. Open a PR
-  to exercise it.
-
-### The comment says "Inferred, not observed" but I have a test suite
-
-The classifier ran in INFERRED mode because it received no real test results.
-Check that your **test** workflow uploads an artifact whose name matches the
-caller's `test-results-artifact` (default `ai-test-results`), with
-`if: always()` so it uploads even when tests fail. Without that artifact, the
-classifier falls back to diff-only prediction (which is still useful, just
-labeled as such).
 
 ### Metrics script writes nothing to the Sheet
 
