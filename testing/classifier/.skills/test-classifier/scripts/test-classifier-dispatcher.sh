@@ -188,6 +188,29 @@ ai_review::discover_pr_context() {
 # ── Prompt construction ─────────────────────────────────────────────────────
 # We instruct the AI to emit BOTH a human-readable report AND a fenced JSON
 # block. The dispatcher extracts the JSON block to render the PR comment.
+#
+# Step 1 (the failing-test signal) is mode-dependent: with AI_RUN_SUITE=1 the
+# agent has shell execution and must locate + run the suite (OBSERVED); otherwise
+# it predicts from the diff (INFERRED). See SKILL.md Step 1 for the full procedure.
+if [[ "${AI_RUN_SUITE:-0}" == "1" ]]; then
+  read -r -d '' SIGNAL_STEP <<'SIGNAL' || true
+  1. Collect the failing-test signal in OBSERVED mode (AI_RUN_SUITE=1 — you have
+     shell execution): LOCATE this repo's test command (package.json scripts,
+     Makefile, pytest/tox, go.mod, Cargo.toml, or its CI workflow's test step),
+     INSTALL deps from the repo's lockfile (best-effort), and RUN the suite to
+     get the real pass/fail output. Set "mode":"OBSERVED" in the JSON. If you
+     cannot locate/install/run it (no suite, missing toolchain, needs services,
+     times out), fall back to predicting from the diff, set "mode":"INFERRED",
+     and state the reason in "summary".
+SIGNAL
+else
+  read -r -d '' SIGNAL_STEP <<'SIGNAL' || true
+  1. Collect the failing-test signal in INFERRED mode (no suite execution): reason
+     statically over the diff and PREDICT which tests would fail and why. Set
+     "mode":"INFERRED" in the JSON. Prefer lower confidence; FLAKY_FAILURE and
+     ENVIRONMENT_ISSUE are generally not determinable from a diff alone.
+SIGNAL
+fi
 
 read -r -d '' SKILL_PROMPT <<PROMPT || true
 You have access to the test-classifier skill. The skill's full instructions are
@@ -206,7 +229,7 @@ AI_REVIEW_AGAINST and HEAD:
 
 Follow the skill instructions in test-classifier/SKILL.md exactly:
 
-  1. Collect the failing-test signal (which tests failed and the failure output).
+${SIGNAL_STEP}
   2. Collect the change-under-test diff (above).
   3. For EACH failing test, decide ONE verdict using the four-verdict procedure
      (work it IN ORDER — rule out substrate causes before app-vs-test):
@@ -224,10 +247,12 @@ Follow the skill instructions in test-classifier/SKILL.md exactly:
   5. Assign a confidence: high | medium | low (be honest about uncertainty).
   6. Emit a human-readable terminal report (formatted markdown).
   7. After the report, emit ONE machine-readable JSON block delimited by these
-     exact markers on their own lines:
+     exact markers on their own lines. The object MUST include a top-level
+     "mode" of "OBSERVED" or "INFERRED" (per step 1), plus "summary" and
+     "classifications" as specified in test-classifier/SKILL.md section 6B:
 
        <!-- AI_CLASSIFIER_JSON_BEGIN -->
-       { ...JSON object as specified in test-classifier/SKILL.md section 6B... }
+       { "mode": "...", "summary": "...", "classifications": [ ... ] }
        <!-- AI_CLASSIFIER_JSON_END -->
 
 After the JSON block, end your response with EXACTLY ONE of the following
@@ -277,6 +302,7 @@ except Exception as e:
     print(f"ERROR: could not parse classifier JSON from AI output: {e}", file=sys.stderr)
     sys.exit(1)
 
+mode = str(data.get("mode", "INFERRED")).upper()
 summary = data.get("summary", "AI test classifier triage of the failing tests.")
 classifications = data.get("classifications", [])
 
@@ -284,42 +310,50 @@ lines = []
 # Conventional-Comment label so the comment is greppable and the metrics
 # harvester (testing/metrics/test_classifier_comments.sh) can identify it by a
 # stable leading marker. Keep this in sync with CLASSIFIER_LABEL there.
+# IMPORTANT: this anchor line must stay byte-identical — the banner goes AFTER it.
 lines.append("test-classifier: AI triage of failing tests")
 lines.append("")
 lines.append("## AI Test Classifier — triage of failing tests")
 lines.append("")
+# Signal-provenance banner so a prediction is never mistaken for a real run.
+if mode == "OBSERVED":
+    lines.append("> **Observed** — these verdicts are grounded in the actual test run output.")
+else:
+    lines.append("> **Inferred, not observed** — the suite was not run for this triage, so these "
+                 "verdicts are predicted from the diff. See the summary for why.")
+lines.append("")
 lines.append(summary)
 lines.append("")
-lines.append("| Verdict | Test | Category | Confidence |")
-lines.append("|---|---|---|---|")
+lines.append("| Verdict | Test | Confidence |")
+lines.append("|---|---|---|")
 for c in classifications:
     verdict = c.get("verdict", "?")
     test = c.get("test", "?")
-    category = c.get("category", "other")
     confidence = c.get("confidence", "?")
-    lines.append(f"| {verdict} | `{test}` | {category} | {confidence} |")
+    lines.append(f"| {verdict} | `{test}` | {confidence} |")
 lines.append("")
 
-# Per-test rationales (path:line for orientation).
-for c in classifications:
-    test = c.get("test", "?")
-    path = c.get("path", "?")
-    line = c.get("line", "?")
-    verdict = c.get("verdict", "?")
-    rationale = c.get("rationale", "")
-    lines.append(f"- **{verdict}** — `{test}` ({path}:{line})")
-    lines.append(f"  {rationale}")
-lines.append("")
-lines.append("---")
-lines.append("")
-lines.append("### 👍 / 👎 required — this is how we tune the classifier")
-lines.append("")
-lines.append("**Please react to this comment with 👍 if these calls are right, or 👎 "
-             "if any are wrong.** Your reaction is the tuning signal we use to measure "
-             "classifier precision and improve the calls over time. A 👎 with a one-line reply telling us which verdict "
-             "was wrong is worth its weight in gold.")
-lines.append("")
-lines.append("This comment is advisory and non-blocking — it will never fail your build.")
+# Per-test rationales, collapsed by default so the comment stays scannable.
+# Full detail is one click away (and also in the run artifact JSON).
+if classifications:
+    lines.append("<details><summary>Per-test rationale</summary>")
+    lines.append("")
+    for c in classifications:
+        test = c.get("test", "?")
+        path = c.get("path", "?")
+        line = c.get("line", "?")
+        verdict = c.get("verdict", "?")
+        category = c.get("category", "other")
+        rationale = c.get("rationale", "")
+        lines.append(f"- **{verdict}** · {category} — `{test}` ({path}:{line})")
+        lines.append(f"  {rationale}")
+    lines.append("")
+    lines.append("</details>")
+    lines.append("")
+
+# One-line tuning ask (👍/👎 is the signal the metrics loop measures).
+lines.append("**React 👍 if right / 👎 if wrong** — your reaction tunes the classifier "
+             "(a 👎 + one-line reason is gold). Advisory, non-blocking.")
 
 print("\n".join(lines))
 '

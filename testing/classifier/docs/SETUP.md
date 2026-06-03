@@ -111,6 +111,46 @@ That is the whole setup for Path A. On the next PR the workflow runs, triages
 any failing tests, and posts one comment with the verdicts + a mandatory 👍/👎.
 The full report is also uploaded as a CI artifact, and the run is non-blocking.
 
+#### OBSERVED vs INFERRED — what the classifier actually sees
+
+In CI the workflow sets `AI_RUN_SUITE=1`, which grants the agent shell execution
+so it **runs your suite itself**: it locates your test command (package.json,
+Makefile, pytest/tox, go.mod, Cargo.toml, or your CI's test step), installs deps
+from your lockfile best-effort, runs the tests, and triages the **real**
+failures. That comment is marked **Observed**.
+
+If it can't run the suite — no test command found, a toolchain it can't install
+on the stock `ubuntu-latest` image, the suite needs services (a database, etc.),
+or it times out — it falls back to predicting from the diff and marks the comment
+**Inferred, not observed**, stating the reason in the summary. OBSERVED is the
+only mode in which `FLAKY_FAILURE`/`ENVIRONMENT_ISSUE` are reliably reachable
+(you can't see a timeout or non-determinism from a diff). No per-repo config is
+needed either way; suites needing services legitimately land in INFERRED.
+
+The run is bounded: `timeout-minutes` on the job and `AI_SUITE_TIMEOUT_SECS` /
+`AI_SUITE_MAX_TURNS` (env, defaults 1500s / 40 turns) inside the dispatcher.
+
+#### Observability (OpenTelemetry)
+
+The CI run enables Claude Code's native OpenTelemetry, but the span/metric
+**exporter defaults to `none`** — Claude's `console` exporter writes to stdout
+and would corrupt the parsed result. Instead, each run captures the agent in the
+`ai-test-classification` artifact as:
+
+- `agent-bodies/` — the untruncated request/response bodies
+  (`OTEL_LOG_RAW_API_BODIES=file:…`): the full conversation the agent saw and
+  produced, every tool call and model response. Written straight to disk (no
+  stream, no stdout collision). **This includes your repo's code and the agent's
+  full reasoning** — it lives only in the run's artifact on the ephemeral runner,
+  but treat it as sensitive.
+- `classification.txt` — the clean classification report + the parsed JSON.
+
+To ship real spans/metrics to a backend, set repo/org variables
+`OTEL_EXPORTER=otlp`, `OTEL_EXPORTER_OTLP_ENDPOINT` (+
+`OTEL_EXPORTER_OTLP_PROTOCOL`) and the secret `OTEL_EXPORTER_OTLP_HEADERS`. OTLP
+is a network exporter, so it never touches stdout — safe to enable with no
+workflow code change (the vars are already wired through).
+
 ---
 
 ## Path B — Local dispatcher run
@@ -162,7 +202,17 @@ testing/classifier/.skills/test-classifier/scripts/test-classifier-dispatcher.sh
 # Dry run — show the plan (tool, PR, diff range), make no AI call:
 testing/classifier/.skills/test-classifier/scripts/test-classifier-dispatcher.sh \
   --dry-run
+
+# Opt in to running the suite locally (OBSERVED). OFF by default for Path B so a
+# local run never auto-installs deps or executes tests on your machine:
+AI_RUN_SUITE=1 \
+testing/classifier/.skills/test-classifier/scripts/test-classifier-dispatcher.sh \
+  --post-comment
 ```
+
+By default a **local** run is read-only and INFERRED (predicts from the diff) —
+it will not install deps or run your suite. Set `AI_RUN_SUITE=1` to let the agent
+run the suite locally (the same OBSERVED behavior CI uses). CI sets this for you.
 
 By default the dispatcher prints the classification report to the terminal
 only. Add `--post-comment` to also post the PR comment.
@@ -435,6 +485,17 @@ Check the workflow logs:
   nothing. That is expected, not an error.
 - AI returned no result marker (`<<<AI_REVIEW_RESULT:...>>>`) → the dispatcher
   errors and exits non-zero. This can happen on transient model issues; retry.
+
+### The comment says "Inferred, not observed" but I have a test suite
+
+The agent couldn't run your suite, so it fell back to predicting from the diff.
+The `summary` states the reason — typically: no test command it recognized, a
+toolchain it couldn't install on the stock runner, the suite needs a service
+(database/Redis) the runner doesn't provide, or it hit the timeout
+(`AI_SUITE_TIMEOUT_SECS`, default 1500s, and the job's `timeout-minutes`). Make
+the test command discoverable (a `test` script / standard config) and runnable
+with only the repo's lockfile to get **Observed** verdicts. Suites that genuinely
+need services will remain INFERRED — that's expected.
 
 ### Metrics script writes nothing to the Sheet
 

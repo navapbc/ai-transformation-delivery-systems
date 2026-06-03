@@ -44,6 +44,9 @@ jobs:
     runs-on: ubuntu-latest
     # Skip on draft PRs by default — classify only when the PR is ready.
     if: github.event_name == 'workflow_dispatch' || github.event.pull_request.draft == false
+    # The agent runs the repo's suite (AI_RUN_SUITE=1), slower than triage —
+    # bound the job so a stuck install/test can't run for the 6h default.
+    timeout-minutes: 30
 
     steps:
       - name: Validate workflow configuration
@@ -103,6 +106,9 @@ jobs:
         env:
           AI_REVIEW_TOOL: ${{ vars.AI_REVIEW_TOOL }}
           CI: 'true'
+          # Grant the agent execution so it runs the repo's suite for OBSERVED
+          # verdicts (safe on the ephemeral runner; read-only by default locally).
+          AI_RUN_SUITE: '1'
           # Pass through whichever API key matches the chosen tool. Each secret
           # is set only if the team uses that tool — unused ones stay blank.
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
@@ -112,6 +118,28 @@ jobs:
           # PR number and base ref come from the workflow context.
           PR_NUMBER: ${{ github.event.pull_request.number }}
           BASE_REF:  ${{ github.event.pull_request.base.ref }}
+
+          # ── Observability (Claude Code native OpenTelemetry) ───────────────
+          # Telemetry on, but the span/metric EXPORTER defaults to `none`: Claude's
+          # `console` exporter writes to STDOUT and would corrupt the parsed result
+          # (it dumped ~875KB of metric JSON into the record before we caught it).
+          # Instead we capture full request/response bodies straight to disk
+          # (agent-bodies/, no stream collision). To ship real spans/metrics, set
+          # OTEL_EXPORTER=otlp + endpoint/headers — OTLP is a network exporter and
+          # never touches stdout. No code change.
+          CLAUDE_CODE_ENABLE_TELEMETRY: '1'
+          OTEL_METRICS_EXPORTER: ${{ vars.OTEL_EXPORTER || 'none' }}
+          OTEL_LOGS_EXPORTER:    ${{ vars.OTEL_EXPORTER || 'none' }}
+          OTEL_TRACES_EXPORTER:  ${{ vars.OTEL_EXPORTER || 'none' }}
+          OTEL_METRIC_EXPORT_INTERVAL: '2000'
+          OTEL_LOGS_EXPORT_INTERVAL:   '500'
+          CLAUDE_CODE_OTEL_SHUTDOWN_TIMEOUT_MS: '8000'
+          OTEL_LOG_RAW_API_BODIES: 'file:classifier-out/agent-bodies'
+          OTEL_LOG_TOOL_DETAILS: '1'
+          OTEL_EXPORTER_OTLP_ENDPOINT: ${{ vars.OTEL_EXPORTER_OTLP_ENDPOINT }}
+          OTEL_EXPORTER_OTLP_PROTOCOL: ${{ vars.OTEL_EXPORTER_OTLP_PROTOCOL }}
+          OTEL_EXPORTER_OTLP_HEADERS:  ${{ secrets.OTEL_EXPORTER_OTLP_HEADERS }}
+          OTEL_RESOURCE_ATTRIBUTES: service.name=ai-test-classifier,pr=${{ github.event.pull_request.number }},repo=${{ github.repository }}
         run: |
           set -euo pipefail
 
@@ -124,7 +152,7 @@ jobs:
           # fetches the head SHA but may not set up a refs/remotes entry.
           git fetch --no-tags --depth=200 origin "${BASE_REF}:refs/remotes/origin/${BASE_REF}" || true
 
-          mkdir -p classifier-out
+          mkdir -p classifier-out/agent-bodies
           DISPATCHER=".skills/test-classifier/scripts/test-classifier-dispatcher.sh"
 
           # Post ONE PR comment with the per-test verdicts + rationale and the

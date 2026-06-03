@@ -107,26 +107,53 @@ out of current scope.
 
 ## Step 1 — Collect the Failing-Test Signal
 
-> **The classifier triages an existing failing-test signal — it does not run the
-> suite itself.** The signal comes from the consumer repo's own CI test job
-> (the failure output it already produces). If you are running in an environment
-> where the suite has not been executed and no failure output is present, you
-> have no signal to triage: do the diff-based sanity check below, and if no test
-> is even implicated by the change, emit `NO_ACTION`. (This is the correct,
-> honest result — not a bug. A repo with no CI test job, or a diff that touches
-> no tested code, will legitimately produce `NO_ACTION`.)
+The classifier needs to know *what failed and why it says it failed*. There are
+two ways to get that signal, and which one you use determines the result `mode`:
 
-The classifier needs to know *what failed and why it says it failed*. Gather, in
-order of preference:
+### OBSERVED — run the suite yourself (when `AI_RUN_SUITE=1`)
 
-- The CI test runner's failure output (assertion messages, diffs of
-  expected-vs-actual, stack traces, snapshot diffs).
-- The names and file paths of the failing tests.
-- For visual/snapshot tests, the recorded baseline-vs-actual diff if available.
+When the environment variable `AI_RUN_SUITE=1` is set (the CI workflows set it,
+and you have been granted shell execution), **locate and run the repo's test
+suite yourself**, then classify the failures you actually observe:
 
-If no test failed (the run is green), there is nothing to classify: emit an
-empty `classifications` array and the `NO_ACTION` marker, and stop. Passing
-tests are never listed.
+1. **Locate the test command.** Inspect the checked-out repo: `package.json`
+   `scripts.test`, a `Makefile` `test:` target, `pytest.ini`/`tox.ini`/
+   `pyproject.toml`, `go.mod`, `Cargo.toml`, `Gemfile`, or the repo's own CI
+   workflow's test step (`.github/workflows/*`). Use what the repo actually uses.
+2. **Install dependencies** using the repo's own lockfile, best-effort —
+   `npm ci`/`pnpm i`/`yarn`, `pip install -r …`/`poetry install`, `go mod
+   download`, `cargo fetch`, etc. Only what the stock runner image supports.
+3. **Run the suite** (prefer the non-watch / single-run invocation; e.g. add
+   `--run` for vitest) and capture pass/fail plus the failure output. This is
+   your OBSERVED signal.
+4. Set the result `mode` to `"OBSERVED"` in the JSON.
+
+### INFERRED — predict from the diff (fallback)
+
+If `AI_RUN_SUITE` is not set, **or** you cannot locate / install / run the suite
+(no test command found, missing toolchain, the suite needs services like a
+database, it times out, etc.), do **not** fabricate a run. Instead reason
+statically over the diff (Step 2) and PREDICT which tests the change would cause
+to fail and why. Then:
+
+- Set the result `mode` to `"INFERRED"`.
+- State the reason you fell back in the `summary` (e.g. "no test script found",
+  "deps failed to install", "suite timed out", "AI_RUN_SUITE not set") so the
+  reviewer sees why this is a prediction, not an observation.
+- Prefer lower confidence, and remember `FLAKY_FAILURE`/`ENVIRONMENT_ISSUE` are
+  generally NOT determinable from a diff alone — only assert them with explicit
+  evidence.
+
+### Either way
+
+Gather, in order of preference: the test runner's failure output (assertion
+messages, expected-vs-actual diffs, stack traces, snapshot diffs); the names and
+file paths of the failing tests; for visual/snapshot tests, the recorded
+baseline-vs-actual diff if available.
+
+If no test failed (the run is green, or the diff implicates no test), there is
+nothing to classify: emit an empty `classifications` array and the `NO_ACTION`
+marker, and stop. Passing tests are never listed.
 
 ---
 
@@ -327,7 +354,8 @@ markers must be a single object with the schema below.
 ```
 <!-- AI_CLASSIFIER_JSON_BEGIN -->
 {
-  "summary": "Triaged 4 failing tests against the change: 1 APPLICATION_BUG (loyalty discount regressed — fix the code, do not relax the test), 1 TEST_BUG (stale banner snapshot, app is correct), 1 FLAKY_FAILURE (signup submit timed out on this run only — re-run to confirm), 1 ENVIRONMENT_ISSUE (orders DB unavailable on the runner).",
+  "mode": "OBSERVED",
+  "summary": "Ran the suite: 4 failed / 40 passed. 1 APPLICATION_BUG, 1 TEST_BUG, 1 FLAKY_FAILURE, 1 ENVIRONMENT_ISSUE — see per-test detail.",
   "classifications": [
     {
       "test": "checkout › applies the loyalty discount",
@@ -372,8 +400,14 @@ markers must be a single object with the schema below.
 
 **JSON schema requirements:**
 
-- `summary` — a short overall triage summary. This seeds the top of the
-  posted PR comment.
+- `mode` — `"OBSERVED"` if you ran the suite and triaged real failures, or
+  `"INFERRED"` if you predicted from the diff (see Step 1). The dispatcher labels
+  the PR comment from this field so a prediction is never mistaken for a real
+  run. Omitted ⇒ treated as `"INFERRED"`.
+- `summary` — ONE sentence (≤ ~200 chars). It seeds the top of the PR comment, so
+  keep it a high-level headline (e.g. counts + the dominant verdict) — do NOT
+  restate each per-test rationale here; the table and the per-test entries already
+  carry that. In `INFERRED` mode, state *why* you couldn't run the suite.
 - `classifications` — array, one entry per failing test considered. Each entry:
   - `test` — the failing test's name/id as the runner reports it.
   - `path` — repo-relative path to the test file (matches `git diff --name-only`
@@ -388,10 +422,11 @@ markers must be a single object with the schema below.
   - `category` — one of `"visual-drift"`, `"behavioral-drift"`,
     `"e2e-form-flow-drift"`, `"other"`.
   - `confidence` — one of `"high"`, `"medium"`, `"low"`.
-  - `rationale` — one to three sentences explaining the verdict and the evidence.
-    For `APPLICATION_BUG`, make explicit that the fix belongs in the application
-    code, not the test (this is the guardrail against no-op test generation). For
-    `FLAKY_FAILURE`, recommend the re-run as the disambiguator.
+  - `rationale` — ONE or at most TWO short sentences (≤ ~280 chars): the evidence
+    for the verdict and the fix. Be terse — name the mismatch and what to change,
+    not a narrative. For `APPLICATION_BUG`, say plainly the fix belongs in the app
+    code, not the test (the guardrail against no-op test generation). For
+    `FLAKY_FAILURE`, name the re-run as the disambiguator.
 
 If nothing failed, `classifications` is empty and the run emits the `NO_ACTION`
 marker. Any non-empty `classifications` array means at least one real failure
@@ -408,27 +443,24 @@ test-classifier: AI triage of failing tests
 
 ## AI Test Classifier — triage of failing tests
 
-<summary>
+> **Observed** — these verdicts are grounded in the actual test run output.
 
-| Verdict | Test | Category | Confidence |
-|---|---|---|---|
-| APPLICATION_BUG | `checkout › applies the loyalty discount` | behavioral-drift | high |
-| TEST_BUG | `Banner › renders the announcement copy` | visual-drift | high |
-| FLAKY_FAILURE | `signup › submits the registration form` | e2e-form-flow-drift | low |
-| ENVIRONMENT_ISSUE | `orders › fetches the order history` | other | high |
+<one-line summary>
 
-<per-test rationales>
+| Verdict | Test | Confidence |
+|---|---|---|
+| APPLICATION_BUG | `checkout › applies the loyalty discount` | high |
+| TEST_BUG | `Banner › renders the announcement copy` | high |
+| FLAKY_FAILURE | `signup › submits the registration form` | low |
+| ENVIRONMENT_ISSUE | `orders › fetches the order history` | high |
 
----
+<details><summary>Per-test rationale</summary>
 
-### 👍 / 👎 required — this is how we tune the classifier
+<per-test rationales (verdict · category — test (path:line) + one-line reason)>
 
-**Please react to this comment with 👍 if these calls are right, or 👎 if any are wrong.**
-Your reaction is the tuning signal we use to measure classifier precision and
-improve the calls over time. A 👎 with a
-one-line reply telling us which verdict was wrong is worth its weight in gold.
+</details>
 
-This comment is advisory and non-blocking — it will never fail your build.
+**React 👍 if right / 👎 if wrong** — your reaction tunes the classifier (a 👎 + one-line reason is gold). Advisory, non-blocking.
 ```
 
 The reaction ask is not optional decoration; it is the core of the feedback
