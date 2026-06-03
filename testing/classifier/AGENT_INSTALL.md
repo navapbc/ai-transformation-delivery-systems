@@ -57,17 +57,21 @@ setting is needed.)
 
 ## Step 3 — set expectations, then stop
 
-- On a PR whose tests fail, the classifier triages each failure and posts **one
-  PR comment** with the verdicts + a mandatory 👍/👎 ask. It is non-blocking,
-  and the full report is also uploaded as an `ai-test-classification` CI
-  artifact. The success signal is a green Actions run that posts that one
-  triage comment.
-- **The classifier triages the failing tests your CI already produces — it does
-  NOT run your test suite.** If this repo's CI has no test job (or the PR's diff
-  touches no tested code), the classifier will legitimately return `NO_ACTION`
-  ("nothing to triage") and post nothing. That is expected, not a failure. To
-  see real verdicts, point it at a repo whose CI runs its suite on PRs and can
-  go red.
+- On each PR, the classifier triages the failing tests and posts **one PR
+  comment** with the verdicts + a mandatory 👍/👎 ask. It is non-blocking, and the
+  full report is also uploaded as an `ai-test-classification` CI artifact. The
+  success signal is a green Actions run that posts that one triage comment.
+- **The classifier runs your test suite itself.** Inside the CI run the agent
+  locates this repo's test command (package.json / Makefile / pytest / go /
+  cargo / your CI's test step), installs deps best-effort, and runs the suite,
+  then triages the real failures it observed — the comment is marked
+  **Observed**. No extra setup and no separate test job is required.
+- **If it can't run the suite** (no test command, a toolchain it can't install on
+  the stock runner, the suite needs services like a database, or it times out),
+  it falls back to predicting from the diff and marks the comment **Inferred,
+  not observed**, stating why in the summary. That is expected, not a failure.
+- If nothing failed (or the diff implicates no test), it posts nothing
+  (`NO_ACTION`).
 - Do NOT enable gating. Gating (`--gate`) is a separate opt-in, out of scope
   for this install.
 - Nothing triggers until a PR exists. Offer to commit the file on a branch and

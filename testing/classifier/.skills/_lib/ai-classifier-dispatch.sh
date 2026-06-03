@@ -52,6 +52,21 @@ if [[ "${_AI_CLASSIFIER_DISPATCH_LOADED:-0}" == "1" ]]; then
 fi
 _AI_CLASSIFIER_DISPATCH_LOADED=1
 
+# ── Suite-running mode ──────────────────────────────────────────────────────
+# By default the classifier is read-only: it triages whatever failing-test
+# signal already exists and never executes the repo's suite. When AI_RUN_SUITE=1
+# (the CI workflows set it) the agent is granted execution so it can locate,
+# install, and RUN the repo's tests, then classify the OBSERVED failures. This
+# gate keeps a local Path-B run safe — a developer's machine won't auto-install
+# deps or run tests unless they opt in with AI_RUN_SUITE=1.
+AI_RUN_SUITE="${AI_RUN_SUITE:-0}"
+
+# Bounds for the agent loop when it is running the suite, so a runaway
+# install/test cycle can't hang the job. The timeout wraps the whole CLI call;
+# --max-turns (claude) caps agentic iterations.
+AI_SUITE_TIMEOUT_SECS="${AI_SUITE_TIMEOUT_SECS:-1500}"   # 25 min hard ceiling
+AI_SUITE_MAX_TURNS="${AI_SUITE_MAX_TURNS:-40}"
+
 # ── Color helpers (suppressed in CI / non-TTY) ──────────────────────────────
 if [[ -t 1 ]] && [[ "${CI:-}" != "true" ]] && [[ "${NO_COLOR:-}" == "" ]]; then
   AI_C_RED=$'\033[0;31m'
@@ -250,6 +265,22 @@ ai_review::diff_command_description() {
 # not. For a uniform, reliable contract, every tool receives the same explicit
 # prompt that references the SKILL.md path in that tool's standard location.
 
+# Prefix the CLI call with `timeout` only when running the suite AND a timeout
+# binary is present (GNU coreutils `timeout`, or `gtimeout` on macOS). In
+# read-only mode we add no wrapper — there's no long-running shell loop to bound.
+ai_review::timeout_prefix() {
+  if (( AI_RUN_SUITE != 1 )); then
+    return 0
+  fi
+  if command -v timeout &>/dev/null; then
+    printf 'timeout %s' "${AI_SUITE_TIMEOUT_SECS}"
+  elif command -v gtimeout &>/dev/null; then
+    printf 'gtimeout %s' "${AI_SUITE_TIMEOUT_SECS}"
+  fi
+  # No timeout binary → no prefix; --max-turns and the job's timeout-minutes
+  # are the remaining backstops.
+}
+
 ai_review::invoke_claude() {
   ai_review::require_cli "claude" \
     "Install Claude Code:  npm install -g @anthropic-ai/claude-code"
@@ -257,7 +288,18 @@ ai_review::invoke_claude() {
   # Claude Code auto-discovers .claude/skills/*/SKILL.md by description match,
   # but for determinism we also reference the path explicitly in the prompt.
   # -p = non-interactive (print) mode, exits after one response.
-  claude -p "${SKILL_PROMPT}" 2>&1
+  if (( AI_RUN_SUITE == 1 )); then
+    # Grant execution so the agent can install deps + run the suite headlessly.
+    # Headless `claude -p` HANGS on any Bash call without a permission grant, so
+    # this flag set is required for suite-running, not optional. --allowedTools
+    # scopes it to exactly what the task needs; --max-turns bounds the loop.
+    $(ai_review::timeout_prefix) claude -p "${SKILL_PROMPT}" \
+      --permission-mode bypassPermissions \
+      --allowedTools "Bash,Read,Edit" \
+      --max-turns "${AI_SUITE_MAX_TURNS}" 2>&1
+  else
+    claude -p "${SKILL_PROMPT}" 2>&1
+  fi
 }
 
 ai_review::invoke_codex() {
@@ -265,9 +307,14 @@ ai_review::invoke_codex() {
     "Install OpenAI Codex CLI:  npm install -g @openai/codex   (or see https://github.com/openai/codex)"
 
   # codex exec = non-interactive subcommand.
-  # --sandbox read-only = filesystem read access (needed for git diff / file
-  # reads) with no write/network side effects, suitable for a CI triage step.
-  codex exec --sandbox read-only --skip-git-repo-check "${SKILL_PROMPT}" 2>&1
+  # read-only mode: filesystem read access only (git diff / file reads), no
+  # writes or network — the triage-only default.
+  # suite mode: workspace-write so it can install deps and run tests.
+  if (( AI_RUN_SUITE == 1 )); then
+    $(ai_review::timeout_prefix) codex exec --sandbox workspace-write --skip-git-repo-check "${SKILL_PROMPT}" 2>&1
+  else
+    codex exec --sandbox read-only --skip-git-repo-check "${SKILL_PROMPT}" 2>&1
+  fi
 }
 
 ai_review::invoke_copilot() {
@@ -275,7 +322,14 @@ ai_review::invoke_copilot() {
     "Install GitHub Copilot CLI (agentic):  https://github.com/github/copilot-cli"
 
   # copilot -p = non-interactive single-prompt mode.
-  copilot -p "${SKILL_PROMPT}" 2>&1
+  # suite mode: --allow-all-tools lets it run install/test commands headlessly;
+  # -s suppresses stats/decoration for clean scriptable output. Copilot has no
+  # built-in turn/timeout cap, so the timeout wrapper is the only bound.
+  if (( AI_RUN_SUITE == 1 )); then
+    $(ai_review::timeout_prefix) copilot -p "${SKILL_PROMPT}" --allow-all-tools -s 2>&1
+  else
+    copilot -p "${SKILL_PROMPT}" 2>&1
+  fi
 }
 
 ai_review::invoke_ai() {

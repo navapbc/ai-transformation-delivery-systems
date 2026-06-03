@@ -44,6 +44,9 @@ jobs:
     runs-on: ubuntu-latest
     # Skip on draft PRs by default — classify only when the PR is ready.
     if: github.event_name == 'workflow_dispatch' || github.event.pull_request.draft == false
+    # The agent runs the repo's suite (AI_RUN_SUITE=1), slower than triage —
+    # bound the job so a stuck install/test can't run for the 6h default.
+    timeout-minutes: 30
 
     steps:
       - name: Validate workflow configuration
@@ -103,6 +106,9 @@ jobs:
         env:
           AI_REVIEW_TOOL: ${{ vars.AI_REVIEW_TOOL }}
           CI: 'true'
+          # Grant the agent execution so it runs the repo's suite for OBSERVED
+          # verdicts (safe on the ephemeral runner; read-only by default locally).
+          AI_RUN_SUITE: '1'
           # Pass through whichever API key matches the chosen tool. Each secret
           # is set only if the team uses that tool — unused ones stay blank.
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
