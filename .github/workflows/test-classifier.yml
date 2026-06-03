@@ -9,8 +9,11 @@
 #   # .github/workflows/ai-test-classifier.yml in the CONSUMER repo
 #   name: AI test classifier
 #   on:
-#     pull_request:
-#       types: [opened, synchronize, reopened]
+#     # Lifecycle-aware: run AFTER the repo's test workflow finishes, so the
+#     # classifier can read the REAL test results. See caller-workflow.yml.
+#     workflow_run:
+#       workflows: ["Test"]            # the consumer's test workflow name
+#       types: [completed]
 #   jobs:
 #     classify:
 #       uses: navapbc/ai-transformation-delivery-systems/.github/workflows/test-classifier.yml@pilot
@@ -20,6 +23,11 @@
 #       secrets:
 #         ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
 #         # OPENAI_API_KEY:  ${{ secrets.OPENAI_API_KEY }}   # only if tool=codex
+#
+# Signal: triggered via workflow_run, it downloads the test run's results
+# artifact and classifies the REAL failures (OBSERVED). With no artifact it falls
+# back to diff-only prediction (INFERRED), labeled as such. See the
+# test-results-artifact input below.
 #
 # `pilot` is a MOVING tag that always tracks the latest classifier on main; the
 # move-tag.yml workflow re-points it automatically whenever the classifier
@@ -46,6 +54,14 @@ on:
           the ref you pinned the uses: line to.
         type: string
         default: ''
+      test-results-artifact:
+        description: >
+          Artifact name the test workflow uploads with its results (JUnit XML /
+          run log). On a workflow_run trigger it's downloaded and fed to the
+          classifier (OBSERVED mode); absent, the classifier falls back to
+          diff-only (INFERRED).
+        type: string
+        default: 'ai-test-results'
     secrets:
       ANTHROPIC_API_KEY:
         required: false
@@ -53,14 +69,21 @@ on:
         required: false
 
 # Least-privilege: read the consumer's code; write the PR comment.
+# `actions: read` is needed to list and download the triggering test run's
+# artifact when this workflow is invoked via `workflow_run`.
 permissions:
   contents: read
   pull-requests: write
+  actions: read
 
 jobs:
   classify:
     runs-on: ubuntu-latest
-    if: github.event.pull_request.draft == false
+    # Non-draft PRs, or any workflow_run (the "is it a PR?" check happens in
+    # Resolve PR context, which skips cleanly when there's no PR).
+    if: >-
+      (github.event_name == 'pull_request' && github.event.pull_request.draft == false)
+      || github.event_name == 'workflow_run'
     steps:
       - name: Validate inputs
         env:
@@ -70,12 +93,113 @@ jobs:
             echo "::error::inputs.tool='${TOOL}' invalid. Must be claude | codex | copilot"; exit 1 ;;
           esac
 
-      # 1. The CONSUMER's repo — this is what the dispatcher diffs and classifies.
+      # Resolve PR number/head/base for either trigger. workflow_run that wasn't
+      # for a PR → skip=1 and later steps no-op.
+      - name: Resolve PR context
+        id: pr
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          # pull_request fields
+          PR_EVENT_NUMBER:  ${{ github.event.pull_request.number }}
+          PR_EVENT_HEAD:    ${{ github.event.pull_request.head.sha }}
+          PR_EVENT_BASE:    ${{ github.event.pull_request.base.ref }}
+          # workflow_run fields
+          WR_HEAD_SHA:      ${{ github.event.workflow_run.head_sha }}
+          WR_CONCLUSION:    ${{ github.event.workflow_run.conclusion }}
+          WR_RUN_ID:        ${{ github.event.workflow_run.id }}
+          # workflow_run.pull_requests[] is only populated for same-repo PRs;
+          # fork PRs leave it empty, so we also fall back to an API lookup by SHA.
+          WR_PR_NUMBER:     ${{ github.event.workflow_run.pull_requests[0].number }}
+          WR_PR_BASE:       ${{ github.event.workflow_run.pull_requests[0].base.ref }}
+          GH_TOKEN:         ${{ github.token }}
+          REPO:             ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          emit() { echo "$1=$2" >> "$GITHUB_OUTPUT"; }
+
+          if [[ "${EVENT_NAME}" == "pull_request" ]]; then
+            emit skip "0"
+            emit pr_number "${PR_EVENT_NUMBER}"
+            emit head_sha  "${PR_EVENT_HEAD}"
+            emit base_ref  "${PR_EVENT_BASE}"
+            emit run_id    ""          # no upstream test run → INFERRED mode
+            echo "[classifier] pull_request event → PR #${PR_EVENT_NUMBER} (INFERRED/diff-only unless results are attached)."
+            exit 0
+          fi
+
+          # workflow_run path.
+          local_pr="${WR_PR_NUMBER}"
+          base_ref="${WR_PR_BASE}"
+
+          # Fork PRs (and some configs) leave pull_requests[] empty. Recover the
+          # PR by matching the triggering run's head SHA to an open PR.
+          if [[ -z "${local_pr}" ]]; then
+            echo "[classifier] workflow_run.pull_requests[] empty — looking up PR by head SHA ${WR_HEAD_SHA}."
+            local_pr="$(gh pr list --repo "${REPO}" --state open \
+              --json number,headRefOid \
+              --jq "map(select(.headRefOid==\"${WR_HEAD_SHA}\")) | .[0].number" 2>/dev/null || true)"
+            if [[ -n "${local_pr}" && "${local_pr}" != "null" ]]; then
+              base_ref="$(gh pr view "${local_pr}" --repo "${REPO}" --json baseRefName --jq '.baseRefName' 2>/dev/null || true)"
+            fi
+          fi
+
+          if [[ -z "${local_pr}" || "${local_pr}" == "null" ]]; then
+            echo "::notice::Triggering test run was not associated with a PR — nothing to classify. Skipping."
+            emit skip "1"
+            exit 0
+          fi
+
+          emit skip "0"
+          emit pr_number "${local_pr}"
+          emit head_sha  "${WR_HEAD_SHA}"
+          emit base_ref  "${base_ref}"
+          emit run_id    "${WR_RUN_ID}"
+          echo "[classifier] workflow_run event → PR #${local_pr} (base: ${base_ref}); test run ${WR_RUN_ID} concluded '${WR_CONCLUSION}'."
+
+      # The consumer's repo at the resolved PR head — what the dispatcher diffs.
       - name: Check out the caller's repo (the change under test)
+        if: steps.pr.outputs.skip != '1'
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          ref: ${{ github.event.pull_request.head.sha }}
+          ref: ${{ steps.pr.outputs.head_sha }}
+
+      # Download the test run's results artifact (workflow_run only). Missing or
+      # empty is non-fatal — the dispatcher falls back to diff-only.
+      - name: Download test results from the triggering run
+        id: results
+        if: steps.pr.outputs.skip != '1' && steps.pr.outputs.run_id != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO:     ${{ github.repository }}
+          RUN_ID:   ${{ steps.pr.outputs.run_id }}
+          ARTIFACT: ${{ inputs.test-results-artifact }}
+        run: |
+          set -euo pipefail
+          dest="$GITHUB_WORKSPACE/.ai-test-results"
+          mkdir -p "${dest}"
+          if gh run download "${RUN_ID}" --repo "${REPO}" --name "${ARTIFACT}" --dir "${dest}" 2>/dev/null; then
+            # Flatten everything readable into one signal file for the dispatcher.
+            signal="${dest}/_signal.txt"
+            : > "${signal}"
+            found=0
+            while IFS= read -r -d '' f; do
+              {
+                echo "===== ${f#${dest}/} ====="
+                cat "${f}"
+                echo
+              } >> "${signal}"
+              found=1
+            done < <(find "${dest}" -type f ! -name '_signal.txt' -print0)
+            if [[ "${found}" == "1" ]]; then
+              echo "results_path=${signal}" >> "$GITHUB_OUTPUT"
+              echo "[classifier] OBSERVED mode — downloaded '${ARTIFACT}' from run ${RUN_ID}."
+            else
+              echo "::notice::Artifact '${ARTIFACT}' was empty — falling back to INFERRED/diff-only."
+            fi
+          else
+            echo "::notice::No '${ARTIFACT}' artifact on run ${RUN_ID} — falling back to INFERRED/diff-only."
+          fi
 
       # 2. THIS bundle's scripts. The source repo is public, so a plain
       #    actions/checkout of it works with the default token — no tarball, no
@@ -95,6 +219,7 @@ jobs:
       # testing/classifier/.skills/test-classifier/SKILL.md) resolves exactly as
       # in a local or vendored install — one dispatcher code path for all.
       - name: Stage the bundle into the workspace
+        if: steps.pr.outputs.skip != '1'
         run: |
           set -euo pipefail
           cp -R .classifier-bundle/testing "$GITHUB_WORKSPACE/testing"
@@ -103,30 +228,34 @@ jobs:
           chmod +x testing/classifier/scripts/sync-skills.sh
 
       - name: Sync canonical SKILL.md into the chosen tool's directory
+        if: steps.pr.outputs.skip != '1'
         working-directory: testing/classifier
         env:
           AI_REVIEW_TOOL: ${{ inputs.tool }}
         run: scripts/sync-skills.sh
 
       - name: Install AI CLI — Claude Code
-        if: inputs.tool == 'claude'
+        if: steps.pr.outputs.skip != '1' && inputs.tool == 'claude'
         run: npm install -g @anthropic-ai/claude-code
       - name: Install AI CLI — Codex
-        if: inputs.tool == 'codex'
+        if: steps.pr.outputs.skip != '1' && inputs.tool == 'codex'
         run: npm install -g @openai/codex
       - name: Install AI CLI — Copilot
-        if: inputs.tool == 'copilot'
+        if: steps.pr.outputs.skip != '1' && inputs.tool == 'copilot'
         run: npm install -g @github/copilot
 
       - name: Run AI test classifier
+        if: steps.pr.outputs.skip != '1'
         env:
           AI_REVIEW_TOOL: ${{ inputs.tool }}
           CI: 'true'
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           OPENAI_API_KEY:    ${{ secrets.OPENAI_API_KEY }}
           GITHUB_TOKEN: ${{ github.token }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-          BASE_REF:  ${{ github.event.pull_request.base.ref }}
+          PR_NUMBER: ${{ steps.pr.outputs.pr_number }}
+          BASE_REF:  ${{ steps.pr.outputs.base_ref }}
+          # Real test-results file, or empty → INFERRED/diff-only.
+          AI_TEST_RESULTS: ${{ steps.results.outputs.results_path }}
         run: |
           set -euo pipefail
 
@@ -149,7 +278,7 @@ jobs:
             | tee classifier-out/classification.txt
 
       - name: Upload classification record
-        if: always()
+        if: always() && steps.pr.outputs.skip != '1'
         uses: actions/upload-artifact@v4
         with:
           name: ai-test-classification
