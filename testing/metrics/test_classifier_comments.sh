@@ -67,9 +67,12 @@ set -euo pipefail
 # classifier comment, with a header line. Copy-paste straight into a sheet.
 #
 # OPTIONAL Google Sheets sink: if BOTH GOOGLE_SHEETS_TOKEN and SHEET_ID are set
-# in the environment, each row is also appended to the sheet via the Sheets API
-# values:append endpoint. If either is unset we silently skip the sink and only
-# print the TSV — no error, no noise.
+# in the environment, each row is UPSERTED into the sheet keyed on comment_id
+# (col C): an existing comment's row is updated in place, a new comment_id is
+# appended. This keeps the tab at one row per classifier comment even on a
+# nightly cadence — a comment's 👍/👎 counts evolve over days, and we overwrite
+# that row rather than stacking a new snapshot each run. If either var is unset
+# we silently skip the sink and only print the TSV — no error, no noise.
 #
 #   Google Sheets service-account setup (shareable with Brian's metrics):
 #     1. Create a Google Cloud service account; grant it nothing at the project
@@ -121,10 +124,41 @@ GOOGLE_SHEETS_TOKEN="${GOOGLE_SHEETS_TOKEN:-}"
 SHEET_ID="${SHEET_ID:-}"
 # Default tab is the repo-keyed "Testing Events" source-of-truth tab in the
 # "Weekly Pilot Team Metrics Gathering" sheet (one row per classifier comment;
-# header repo|pr|comment_id|verdict|category|confidence|thumbs_up|thumbs_down).
-# The space in the tab name MUST be quoted in the A1 range — values:append
-# tolerates an unquoted single-cell anchor, but quote it to be safe.
+# header repo|pr|comment_id|comment_created_at|verdict|category|confidence|
+# thumbs_up|thumbs_down). The space in the tab name MUST be quoted in the A1
+# range — values:append tolerates an unquoted single-cell anchor, but quote it
+# to be safe.
 SHEET_RANGE="${SHEET_RANGE:-'Testing Events'!A1}"
+
+# The tab name alone (SHEET_RANGE without its trailing cell anchor), used to
+# build per-row ranges for in-place updates, e.g. 'Testing Events'!A5:I5.
+SHEET_TAB="${SHEET_RANGE%%!*}"
+
+# comment_id -> sheet row index, kept as a temp file of "comment_id<TAB>rownum"
+# lines (NOT a bash associative array: `declare -A` needs bash 4+, and macOS
+# ships bash 3.2, so an assoc array would break local runs under `set -e`). The
+# index is primed once from the tab so the sink UPDATES an existing comment's
+# row in place rather than appending a duplicate — keeping the tab at one row
+# per comment_id even on a nightly cadence (a comment's 👍/👎 evolve over days;
+# we overwrite, not stack). Created lazily when the sink is on; cleaned up on
+# exit.
+CID_INDEX=""
+cid_index_cleanup() { [ -n "$CID_INDEX" ] && rm -f "$CID_INDEX"; }
+trap cid_index_cleanup EXIT
+
+# Look up the row for a comment_id in the index file; prints the row number or
+# nothing. Exact match on the first tab-separated field.
+cid_row_lookup() {
+    [ -n "$CID_INDEX" ] && [ -f "$CID_INDEX" ] || return 0
+    awk -F'\t' -v c="$1" '$1 == c { print $2; exit }' "$CID_INDEX"
+}
+
+# Record a comment_id -> row mapping so a later occurrence in the same run
+# resolves to UPDATE rather than a second append.
+cid_row_set() {
+    [ -n "$CID_INDEX" ] || return 0
+    printf '%s\t%s\n' "$1" "$2" >> "$CID_INDEX"
+}
 
 # --- Diagnostics go to stderr so stdout stays a clean TSV stream. ---
 log() { echo "$@" >&2; }
@@ -163,9 +197,49 @@ fetch_api() {
     ' 2>/dev/null || echo "[]"
 }
 
-# Append one already-tab-joined row to the Google Sheet, if the sink is on.
-# Builds a Sheets values:append payload (a single-row 2D array) and POSTs it.
-# Failures are logged but never abort the run — the TSV is the source of truth.
+# Percent-encode a Sheets A1 range for use in a URL path. The Sheets API expects
+# a LITERAL `!` separating the tab name from the cell range (encoding it as %21
+# makes the read silently fail), so we encode only the characters that actually
+# break the URL: spaces and the single quotes around a spaced tab name.
+url_encode_range() {
+    local s="$1"
+    s="${s//\'/%27}"
+    s="${s// /%20}"
+    printf '%s' "$s"
+}
+
+# Prime CID_ROW from the tab's comment_id column (col C) in ONE read, so the
+# upsert below can update an existing row instead of appending a duplicate. Row
+# numbers are 1-based and include the header (row 1), so the Nth value in col C
+# sits on sheet row N. Safe no-op if the sink is off or the tab is empty.
+sheets_prime_index() {
+    [ -n "$GOOGLE_SHEETS_TOKEN" ] && [ -n "$SHEET_ID" ] || return 0
+    CID_INDEX=$(mktemp)
+    local enc col_c
+    enc=$(url_encode_range "${SHEET_TAB}!C:C")
+    col_c=$(curl -sS -f \
+        -H "Authorization: Bearer ${GOOGLE_SHEETS_TOKEN}" \
+        "https://sheets.googleapis.com/v4/spreadsheets/${SHEET_ID}/values/${enc}?majorDimension=COLUMNS" \
+        2>/dev/null) || { log "  WARNING: could not prime comment-id index; will append without dedup."; return 0; }
+
+    # Write "comment_id<TAB>rownum" for each non-empty cell, skipping the header
+    # (row 1). values is [[c1,c2,...]] in COLUMNS form; the array is 0-based and
+    # index 0 == sheet row 1, so sheet row = jq index + 1.
+    printf '%s' "$col_c" | jq -r '
+        (.values[0] // []) | to_entries[]
+        | select(.key > 0 and (.value // "") != "")
+        | "\(.value)\t\(.key + 1)"
+    ' 2>/dev/null > "$CID_INDEX"
+    local n
+    n=$(grep -c . "$CID_INDEX" 2>/dev/null) || n=0
+    log "  Primed comment-id index: ${n} existing row(s) in ${SHEET_TAB}."
+}
+
+# Upsert one row into the Google Sheet, if the sink is on. If comment_id (col C)
+# already has a row, UPDATE that row in place (PUT to 'Tab'!A<row>); otherwise
+# APPEND and record the new row number so a re-occurrence within the same run
+# updates rather than duplicates. Failures are logged but never abort the run —
+# the TSV is the source of truth.
 sheets_append_row() {
     local repo="$1" pr="$2" cid="$3" created_at="$4" verdict="$5" category="$6" conf="$7" up="$8" down="$9"
     [ -n "$GOOGLE_SHEETS_TOKEN" ] && [ -n "$SHEET_ID" ] || return 0
@@ -178,14 +252,42 @@ sheets_append_row() {
         { values: [[ $repo, $pr, $cid, $created_at, $verdict, $category, $conf, $up, $down ]] }
     ')
 
-    local url="https://sheets.googleapis.com/v4/spreadsheets/${SHEET_ID}/values/${SHEET_RANGE}:append?valueInputOption=RAW&insertDataOption=INSERT_ROWS"
-    if ! curl -sS -f -X POST "$url" \
+    local row
+    row=$(cid_row_lookup "$cid")
+    if [ -n "$row" ]; then
+        # UPDATE in place: overwrite A<row>:I<row> on the tab.
+        local enc
+        enc=$(url_encode_range "${SHEET_TAB}!A${row}")
+        if ! curl -sS -f -X PUT \
+                "https://sheets.googleapis.com/v4/spreadsheets/${SHEET_ID}/values/${enc}?valueInputOption=RAW" \
+                -H "Authorization: Bearer ${GOOGLE_SHEETS_TOKEN}" \
+                -H "Content-Type: application/json" \
+                -d "$payload" >/dev/null 2>&1; then
+            log "  WARNING: Sheets update failed for $repo PR#$pr comment $cid row $row (row kept in TSV)."
+        fi
+        return 0
+    fi
+
+    # APPEND: new comment_id. Capture the row it landed on so a duplicate within
+    # this same run hits the UPDATE path above instead of stacking another row.
+    local enc resp updated_row
+    enc=$(url_encode_range "${SHEET_RANGE}")
+    resp=$(curl -sS -f -X POST \
+            "https://sheets.googleapis.com/v4/spreadsheets/${SHEET_ID}/values/${enc}:append?valueInputOption=RAW&insertDataOption=INSERT_ROWS" \
             -H "Authorization: Bearer ${GOOGLE_SHEETS_TOKEN}" \
             -H "Content-Type: application/json" \
-            -d "$payload" >/dev/null 2>&1; then
+            -d "$payload" 2>/dev/null) || {
         log "  WARNING: Sheets append failed for $repo PR#$pr comment $cid (row kept in TSV)."
-    fi
+        return 0
+    }
+    # updatedRange looks like 'Testing Events'!A7:I7 — pull the first row number.
+    updated_row=$(printf '%s' "$resp" | jq -r '.updates.updatedRange // ""' 2>/dev/null \
+                  | sed -n 's/.*![A-Z]\{1,\}\([0-9]\{1,\}\).*/\1/p')
+    [ -n "$updated_row" ] && cid_row_set "$cid" "$updated_row"
 }
+
+# Prime the comment_id -> row index once, up front, so the sink upserts.
+sheets_prime_index
 
 # --- TSV header (stdout). ---
 printf 'repo\tpr\tcomment_id\tcomment_created_at\tverdict\tcategory\tconfidence\tthumbs_up\tthumbs_down\n'

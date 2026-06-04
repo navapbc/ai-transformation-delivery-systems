@@ -21,12 +21,15 @@
 name: Classifier metrics sweep
 
 on:
-  # Weekly cron is DISABLED until one manual workflow_dispatch run confirms the
+  # Nightly cron is DISABLED until one manual workflow_dispatch run confirms the
   # WIF auth chain (GitHub OIDC → service account → Sheets) works end-to-end.
-  # Once a dispatch run succeeds, uncomment to turn on the weekly sweep.
+  # Once a dispatch run succeeds, uncomment to turn on the nightly sweep.
+  # The sink UPSERTS by comment_id (updates a comment's row in place rather than
+  # appending), so a nightly cadence keeps the tab at one row per comment while
+  # refreshing 👍/👎 counts as they accrue — it does not stack a row per night.
   # schedule:
-  #   # Mondays 13:00 UTC — once per week is the cadence of the pilot metrics sheet.
-  #   - cron: "0 13 * * 1"
+  #   # 07:00 UTC daily.
+  #   - cron: "0 7 * * *"
   workflow_dispatch:
     # Manual trigger, with an optional override of the harvest window so a
     # backfill or a one-off can be run on demand from the Actions tab.
