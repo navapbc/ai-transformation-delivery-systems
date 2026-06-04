@@ -242,7 +242,7 @@ The classifier is **advisory** — posting a comment never fails anything. Use
 | `--pr <number>`   | Explicit PR number. Overrides auto-discovery via `gh pr view`. |
 | `--post-comment`  | Post the classifier comment (verdicts + 👍/👎 ask) via `gh api`. Without it, the report only prints / uploads as an artifact. |
 | `--gate`          | Exit non-zero on any unconfirmed triaged failure (e.g. an `APPLICATION_BUG`). For CI gating (out of pilot scope). |
-| `--json-only`     | Print only the JSON block (for piping into the metrics harvest). |
+| `--json-only`     | Print only the classifier JSON block (e.g. for scripting). |
 
 Plus the shared dispatcher-library flags (identical to security/review):
 
@@ -412,13 +412,14 @@ gh auth status
 
 ## Metrics read access (maintainer task — not a consumer step)
 
-A **central** weekly sweep in the bundle repo
+A **central** nightly backfill in the bundle repo
 (`navapbc/ai-transformation-delivery-systems`,
-`.github/workflows/classifier-metrics-sweep.yml`) reads each pilot repo's
-classifier comments + reactions via the GitHub API and appends them to the
-metrics sheet. (It's a scheduled pull because GitHub fires no event on a
-reaction; it uses the Search API to touch only PRs with a `test-classifier:`
-comment, not every PR.) **Consumers do nothing for this** — read access is set
+`.github/workflows/classifier-metrics-sweep.yml`) reads the rows the classifier
+already wrote to the sheet and, for each, fetches that comment's current 👍/👎
+via the GitHub API to fill the reaction columns. (It's a scheduled pull because
+GitHub fires no event when a reaction is added; it reads one comment per existing
+row, not a search or PR crawl.) **Consumers do nothing for this** — read access
+is set
 up once, centrally, by the pilot maintainer.
 
 - **Public pilot repos** — nothing to do; the sweep's default token reads them.
@@ -436,42 +437,28 @@ up once, centrally, by the pilot maintainer.
 
 ---
 
-## Metrics sink configuration
+## How the metrics get into the sheet
 
-The metrics harvester lives at
-`testing/metrics/test_classifier_comments.sh`. It reads the 👍/👎 reactions off
-classifier comments and emits per-class precision inputs (see PLAYBOOK §5).
+Metrics land in the **`Testing Events`** tab via two writers (full detail in
+`testing/metrics/README.md`):
 
-### Primary sink — Google Sheet (service-account bearer token)
+1. **Post-time** — the classifier dispatcher appends a row
+   (`repo, pr, comment_id, comment_created_at, verdict, category, confidence`,
+   reactions blank) the moment it posts a comment, when `GOOGLE_SHEETS_TOKEN` +
+   `SHEET_ID` are set in its environment.
+2. **Nightly** — `testing/metrics/test_classifier_comments.sh` reads those rows,
+   fetches each comment's current 👍/👎, and writes back only the
+   `thumbs_up`/`thumbs_down` columns. (Reactions have no GitHub event, so they
+   are pulled on a schedule rather than pushed.) Runs from
+   `.github/workflows/classifier-metrics-sweep.yml`.
 
-```bash
-export SHEET_ID=<the target Google Sheet ID>
-export GOOGLE_SHEETS_TOKEN=<a Google service-account access token>
-
-testing/metrics/test_classifier_comments.sh
-```
-
-- The token is a **bearer token minted for a service account** that has edit
-  access to the target Sheet. Mint it out-of-band (e.g., `gcloud auth
-  print-access-token` for the service account, or your secrets manager) and
-  pass it via the environment — **never** as a command-line argument and
-  **never** committed.
-- Treat `GOOGLE_SHEETS_TOKEN` exactly like an API key: GitHub Actions secret
-  in CI, environment variable locally, kept out of logs.
-
-### Fallback sink — TSV to stdout (the realistic default)
-
-```bash
-# TSV to stdout (default for early pilots, before the Sheet is wired)
-testing/metrics/test_classifier_comments.sh
-
-# capture to a file (it's tab-separated; import as TSV)
-testing/metrics/test_classifier_comments.sh > classifier-metrics.tsv
-```
-
-This shares plumbing intent with `security/metrics/pr_review_comments.sh`
-(paginated `gh api`, `jq` reaction extraction). Pipe it into a spreadsheet, a
-notebook, or `column -t -s$'\t'` for a quick eyeball.
+Both use the same Sheets auth: a **short-lived service-account bearer token**
+(`GOOGLE_SHEETS_TOKEN`, scope `https://www.googleapis.com/auth/spreadsheets`)
+plus the static `SHEET_ID`. Mint the token out-of-band (`gcloud auth
+print-access-token --impersonate-service-account=...`, or CI's
+workload-identity exchange) and pass it via the environment — never as an
+argument, never committed. In CI both are supplied by Workload Identity
+Federation; there is no stored key.
 
 ---
 
@@ -523,13 +510,17 @@ the test command discoverable (a `test` script / standard config) and runnable
 with only the repo's lockfile to get **Observed** verdicts. Suites that genuinely
 need services will remain INFERRED — that's expected.
 
-### Metrics script writes nothing to the Sheet
+### Nightly backfill updates no reactions
 
-- `GOOGLE_SHEETS_TOKEN` is unset, expired, or the service account lacks edit
+- `GOOGLE_SHEETS_TOKEN` is unset/expired, or the service account lacks edit
   access to `SHEET_ID`. Re-mint the token and confirm Sheet sharing.
-- As a fast diagnostic, run it to confirm the harvester is
-  finding comments at all; if TSV is populated but the Sheet isn't, the problem
-  is in the token/Sheet auth, not the harvest.
+- The `Testing Events` tab has no rows yet — the backfill only updates rows the
+  classifier already wrote at post time. If the classifier hasn't posted (or
+  `GOOGLE_SHEETS_TOKEN`/`SHEET_ID` weren't set on the classifier run), there is
+  nothing to backfill. Confirm rows exist first.
+- Run with `DEBUG=1` to see per-comment fetch results on stderr. A comment whose
+  reaction fetch fails is **skipped** (its existing counts are left intact), so
+  a wrong `GH_TOKEN`/repo-access shows up as "fetch failed/skipped" lines.
 
 ### My team uses different AI tools
 

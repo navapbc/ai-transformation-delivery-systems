@@ -1,103 +1,79 @@
 # Testing metrics — classifier 👍/👎 capture
 
-This directory is the metrics counterpart of the AI **test-classifier** workstream,
-paralleling `security/metrics/`. It harvests the developer feedback signal that
-the classifier asks for and turns it into rows you can track over time.
+This directory is the metrics counterpart of the AI **test-classifier**
+workstream. The pilot tracks, per classifier comment, the verdict the classifier
+gave and the developer's 👍/👎 on it — the "is the classifier trusted?" signal.
 
-## What `test_classifier_comments.sh` measures
+## The two writers
 
-The classifier posts **one issue comment per CI run** that has findings.
-Each comment leads with the Conventional-Comment label `test-classifier:` and
-embeds a machine-readable verdict between the classifier's markers (defined in
-`testing/classifier/.skills/test-classifier/SKILL.md` section 6B):
+The metrics live in the **`Testing Events`** tab of the pilot Google Sheet, one
+row per classifier comment:
 
-```
-<!-- AI_CLASSIFIER_JSON_BEGIN -->
-{ "summary": "...", "classifications": [
-  { "verdict": "APPLICATION_BUG" | "TEST_BUG" | "FLAKY_FAILURE" | "ENVIRONMENT_ISSUE",
-    "category": "visual-drift" | "behavioral-drift" | "e2e-form-flow-drift" | "other",
-    "confidence": "high" | "medium" | "low", ... } ] }
-<!-- AI_CLASSIFIER_JSON_END -->
-```
+| repo | pr | comment_id | comment_created_at | verdict | category | confidence | thumbs_up | thumbs_down |
+|------|----|------------|--------------------|---------|----------|------------|-----------|-------------|
 
-The script summarizes the `classifications` array into one representative row
-(the most-actionable verdict in priority order
-`APPLICATION_BUG` > `TEST_BUG` > `FLAKY_FAILURE` > `ENVIRONMENT_ISSUE`, else the
-first entry).
+Two writers fill that row, because the data arrives at two different times:
 
-The comment requests a **mandatory 👍 / 👎 reaction** from the developer. That
-reaction is the tuning signal:
+1. **Post-time writer — the classifier dispatcher** (`testing/classifier/.skills/
+   test-classifier/scripts/test-classifier-dispatcher.sh`). When it posts a
+   `test-classifier:` PR comment, it already knows everything except the
+   reactions, so it **appends the row** with the first seven fields filled and
+   `thumbs_up`/`thumbs_down` left blank. (`verdict`/`category`/`confidence` are
+   summarized from the comment's JSON block to the most-actionable verdict, in
+   priority order `APPLICATION_BUG` > `TEST_BUG` > `FLAKY_FAILURE` >
+   `ENVIRONMENT_ISSUE`, else the first entry.)
 
-- 👍 (`+1`) — the classifier called it right.
-- 👎 (`-1`) — the classifier called it wrong.
+2. **Nightly backfill — `test_classifier_comments.sh`** (this directory).
+   Reactions are added by humans *after* the comment is posted, and **GitHub
+   emits no event when a reaction is added**
+   (<https://github.com/orgs/community/discussions/20824>), so they must be
+   pulled on a schedule. This script reads the rows already in the sheet, does
+   one `GET /repos/{repo}/issues/comments/{id}` per row to read its current
+   `.reactions` counts, and writes back **only** the `thumbs_up`/`thumbs_down`
+   columns. It does not search GitHub or crawl PRs — the sheet rows are the work
+   list. Because it updates rows in place, running it nightly just refreshes the
+   counts; it never duplicates a row.
 
-The script pairs **each verdict with its reaction counts**, producing one row
-per classifier comment:
+This split is why there's no repo list to maintain here: the post-time writer
+records which repo/PR/comment each row belongs to, and the backfill just follows
+those rows.
 
-| repo | pr | comment_id | verdict | category | confidence | thumbs_up | thumbs_down |
-|------|----|------------|---------|----------|------------|-----------|-------------|
-
-These are the two things the pilot needs:
-
-1. **👍-rate** — share of classifier comments that got a 👍 (overall and per
-   verdict bucket). This is the headline "is the classifier trusted?" number.
-2. **Classifier-precision inputs** — verdict × 👍/👎, so `APPLICATION_BUG` vs
-   `TEST_BUG` vs `FLAKY_FAILURE` vs `ENVIRONMENT_ISSUE` accuracy can be tracked
-   separately. We never want to ship a no-op test for genuinely broken code, so
-   `APPLICATION_BUG` precision is the one to watch.
-
-A classifier comment is identified by **two** signals, both required: the
-author matches `TARGET_USER` (the CI bot, default `github-actions[bot]`) **and**
-the body starts with `test-classifier:`. Reaction counts come from the
-reactions API (`GET /repos/{owner}/{repo}/issues/comments/{id}/reactions`),
-falling back to the inlined `.reactions` summary.
-
-## Running it (TSV fallback — the default)
-
-```bash
-./test_classifier_comments.sh                 # TSV to stdout, ready to paste into a sheet
-./test_classifier_comments.sh > rows.tsv      # capture to a file
-DEBUG=1 ./test_classifier_comments.sh         # per-PR fetched/matched counts on stderr
-```
-
-All diagnostics go to **stderr**, so stdout is always a clean TSV (header +
-rows). Configure the repos and window by editing `REPOSITORIES` or exporting
-`START_DATE` / `END_DATE` / `TARGET_USER`. Requires `gh` (authenticated) and
-`jq`.
-
-## Optional Google Sheets sink
-
-The primary sink is a single shared Google Sheet (shareable with Brian's
-security metrics). It is **off unless both env vars are set**; otherwise the
-script silently skips it and just prints the TSV.
+## Running the backfill
 
 ```bash
 export GOOGLE_SHEETS_TOKEN="ya29.<service-account-bearer-token>"
-export SHEET_ID="1AbC...xyz"          # static; from /spreadsheets/d/<SHEET_ID>/edit
-export SHEET_RANGE="Sheet1!A1"        # optional, this is the default
-./test_classifier_comments.sh
+export SHEET_ID="<spreadsheet id from its URL>"   # in CI: vars.METRICS_SHEET_ID
+export SHEET_RANGE="'Testing Events'!A1"          # optional; this is the default
+DEBUG=1 ./test_classifier_comments.sh        # per-comment counts on stderr
 ```
 
-Service-account setup (read+write scope, least privilege):
+Both `GOOGLE_SHEETS_TOKEN` and `SHEET_ID` are **required** — without a sheet to
+read there is no work list. Requires `gh` (authenticated, with read access to
+the pilot repos) and `jq`. A failed reaction fetch for a comment **skips** that
+row rather than overwriting its existing counts, so a transient error never
+clobbers good data. In CI this runs from `.github/workflows/
+classifier-metrics-sweep.yml` (nightly), authenticating to Sheets via Workload
+Identity Federation.
 
-1. Create a Google Cloud **service account**. Grant it nothing at the project
-   level. Share the target spreadsheet with the service account's email as an
-   **Editor** — that share is the only access it needs.
+## Auth setup (service account, least privilege)
+
+1. Create a Google Cloud **service account**, grant it nothing at the project
+   level, and share the spreadsheet with its email as an **Editor** — that share
+   is the only access it needs.
 2. Mint a **short-lived** OAuth2 bearer token with scope
-   `https://www.googleapis.com/auth/spreadsheets`, e.g.
-   `gcloud auth print-access-token --impersonate-service-account=...` or your
-   CI's workload-identity exchange. Export it as `GOOGLE_SHEETS_TOKEN`.
-3. Keep `SHEET_ID` **static** (the spreadsheet ID from its URL). The token is
-   short-lived and rotates; the sheet ID is permanent.
+   `https://www.googleapis.com/auth/spreadsheets`
+   (`gcloud auth print-access-token --impersonate-service-account=...`, or CI's
+   workload-identity exchange). Export it as `GOOGLE_SHEETS_TOKEN`.
+3. Keep `SHEET_ID` **static** (from the spreadsheet URL). The token rotates; the
+   sheet ID is permanent. Never commit either.
 
-Never commit the token or the sheet ID. Each row is appended via the Sheets
-`values:append` endpoint; an append failure is logged to stderr but never
-aborts the run — the stdout TSV remains the source of truth.
+For reading **private** pilot repos in CI, the maintainer provides one
+fine-grained read PAT — see `testing/classifier/docs/SETUP.md`
+"Metrics read access".
 
 ## Scope
 
 This covers the pilot's one behavior: the classifier posts the verdict +
-rationale and collects the mandatory 👍/👎, which this script harvests into
-per-verdict precision inputs. P2 (commit suggestions / merge-rate) and P3
-(zero-shot test generation) are out of scope here and live only as future
+rationale and collects the mandatory 👍/👎. P2 (commit suggestions / merge-rate)
+and P3 (zero-shot test generation) are out of scope and live only as future
 direction in the playbook.

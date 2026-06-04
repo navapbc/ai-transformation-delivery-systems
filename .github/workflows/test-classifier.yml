@@ -52,10 +52,13 @@ on:
       OPENAI_API_KEY:
         required: false
 
-# Least-privilege: read the consumer's code; write the PR comment.
+# Least-privilege: read the consumer's code; write the PR comment; mint the
+# OIDC token used to impersonate the metrics service account so the classifier
+# can append its post-time metrics row to the shared sheet.
 permissions:
   contents: read
   pull-requests: write
+  id-token: write
 
 jobs:
   classify:
@@ -123,10 +126,34 @@ jobs:
         if: inputs.tool == 'copilot'
         run: npm install -g @github/copilot
 
+      # Optional: authenticate to Google so the dispatcher can append its
+      # post-time metrics row to the shared sheet. This is best-effort and
+      # SKIPPED unless the consumer's repo defines the metrics variables
+      # (vars.WIF_PROVIDER / vars.METRICS_SA_EMAIL / vars.METRICS_SHEET_ID) AND
+      # that repo is trusted by the WIF provider's attribute condition. Repos not
+      # wired for metrics simply skip this and classify as normal; an auth
+      # failure here never fails the classification (continue-on-error).
+      - name: Authenticate to Google Cloud for metrics (optional, keyless)
+        id: metrics_auth
+        if: vars.WIF_PROVIDER != '' && vars.METRICS_SA_EMAIL != '' && vars.METRICS_SHEET_ID != ''
+        continue-on-error: true
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.WIF_PROVIDER }}
+          service_account: ${{ vars.METRICS_SA_EMAIL }}
+          token_format: access_token
+          access_token_scopes: https://www.googleapis.com/auth/spreadsheets
+
       - name: Run AI test classifier
         env:
           AI_REVIEW_TOOL: ${{ inputs.tool }}
           CI: 'true'
+          # Metrics sink (optional). Populated only when the metrics auth step
+          # above ran and succeeded; otherwise blank, and the dispatcher silently
+          # skips the post-time row append. SHEET_ID comes from a repo variable.
+          GOOGLE_SHEETS_TOKEN: ${{ steps.metrics_auth.outputs.access_token }}
+          SHEET_ID: ${{ vars.METRICS_SHEET_ID }}
+          SHEET_RANGE: "'Testing Events'!A1"
           # Grant the agent execution so it locates, installs, and RUNS the
           # repo's suite for OBSERVED verdicts. Safe here (ephemeral runner);
           # the dispatcher keeps the local default read-only when this is unset.

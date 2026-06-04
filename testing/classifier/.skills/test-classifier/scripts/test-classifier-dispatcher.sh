@@ -359,10 +359,64 @@ print("\n".join(lines))
 '
 }
 
-# Post ONE issue comment to the PR. Args: PR number, comment body.
+# Summarize the classifier JSON block to ONE representative verdict/category/
+# confidence for the metrics row — same most-actionable priority the nightly
+# harvester uses (APPLICATION_BUG > TEST_BUG > FLAKY_FAILURE > ENVIRONMENT_ISSUE),
+# else the first classification. Prints "verdict<TAB>category<TAB>confidence".
+summarize_classifier_json() {
+  local json_block="$1"
+  printf '%s' "${json_block}" | jq -r '
+    (.classifications // []) as $cs
+    | ( ["APPLICATION_BUG","TEST_BUG","FLAKY_FAILURE","ENVIRONMENT_ISSUE"]
+        | map(. as $v | ($cs[] | select((.verdict // "") == $v))) | .[0] ) as $pick
+    | ( $pick // ($cs[0] // {}) )
+    | [ (.verdict // ""), (.category // ""), (.confidence // "") ] | @tsv
+  ' 2>/dev/null || printf '\t\t'
+}
+
+# Append the metrics row for a just-posted classifier comment to the Google
+# Sheet "Testing Events" tab, if the sink is configured. This is the POST-TIME
+# writer: it fills the 7 fields known at post time
+# (repo, pr, comment_id, comment_created_at, verdict, category, confidence) and
+# leaves thumbs_up/thumbs_down blank — the nightly sweep backfills those from
+# the comment's reactions later. Silent no-op unless BOTH GOOGLE_SHEETS_TOKEN
+# and SHEET_ID are set; failure is logged but never fails the classifier run
+# (the comment is already posted; metrics are best-effort).
+append_metrics_row() {
+  local repo="$1" pr="$2" comment_id="$3" created_at="$4" json_block="$5"
+  [[ -n "${GOOGLE_SHEETS_TOKEN:-}" && -n "${SHEET_ID:-}" ]] || return 0
+
+  local range="${SHEET_RANGE:-'Testing Events'!A1}"
+  local verdict category confidence vcc
+  vcc="$(summarize_classifier_json "${json_block}")"
+  IFS=$'\t' read -r verdict category confidence <<<"${vcc}"
+
+  local payload
+  payload="$(jq -c -n \
+    --arg repo "$repo" --arg pr "$pr" --arg cid "$comment_id" --arg ts "$created_at" \
+    --arg v "$verdict" --arg cat "$category" --arg conf "$confidence" \
+    '{ values: [[ $repo, $pr, $cid, $ts, $v, $cat, $conf, "", "" ]] }')"
+
+  # Encode spaces/quotes in the range but NOT '!' (Sheets needs a literal
+  # tab!cell separator; %21 makes the call fail).
+  local enc="${range//\'/%27}"; enc="${enc// /%20}"
+  if ! curl -sS -f -X POST \
+        "https://sheets.googleapis.com/v4/spreadsheets/${SHEET_ID}/values/${enc}:append?valueInputOption=RAW&insertDataOption=INSERT_ROWS" \
+        -H "Authorization: Bearer ${GOOGLE_SHEETS_TOKEN}" \
+        -H "Content-Type: application/json" \
+        -d "${payload}" >/dev/null 2>&1; then
+    echo "[test-classifier] WARNING: metrics row append to the sheet failed (comment posted OK; nightly sweep will not have a row to backfill until this succeeds)." >&2
+  else
+    echo "[test-classifier] Metrics row appended to the sheet (reactions backfilled nightly)."
+  fi
+}
+
+# Post ONE issue comment to the PR. Args: PR number, comment body, JSON block.
+# On success, append the post-time metrics row (7 fields) to the sheet.
 post_comment_to_github() {
   local pr_number="$1"
   local body="$2"
+  local json_block="$3"
 
   require_gh_cli "--post-comment was specified"
 
@@ -375,17 +429,28 @@ post_comment_to_github() {
   echo "[test-classifier] Posting ONE classification comment to ${repo_slug} PR #${pr_number} via gh api..."
   # Pass the body via --field so gh handles JSON escaping for us; the issue
   # comments endpoint posts a single top-level PR conversation comment that
-  # developers can react to with 👍/👎.
-  if ! gh api \
+  # developers can react to with 👍/👎. Capture the response so we can read the
+  # new comment's id + created_at for the metrics row.
+  local resp
+  if ! resp="$(gh api \
         "repos/${repo_slug}/issues/${pr_number}/comments" \
         --method POST \
-        --field body="${body}" >/dev/null; then
+        --field body="${body}")"; then
     echo "ERROR: 'gh api' call failed." >&2
     echo "       Check your gh auth status and that your token has 'issues: write'" >&2
     echo "       (or 'pull-requests: write')." >&2
     exit 1
   fi
   echo "[test-classifier] Comment posted. Awaiting the developer's mandatory 👍/👎 reaction."
+
+  # Post-time metrics writer (best-effort). The comment_id + created_at exist
+  # only now, in the POST response.
+  local comment_id created_at
+  comment_id="$(printf '%s' "${resp}" | jq -r '.id // ""' 2>/dev/null)"
+  created_at="$(printf '%s' "${resp}" | jq -r '.created_at // ""' 2>/dev/null)"
+  if [[ -n "${comment_id}" ]]; then
+    append_metrics_row "${repo_slug}" "${pr_number}" "${comment_id}" "${created_at}" "${json_block}"
+  fi
 }
 
 # ── Custom run loop (mirrors the security PR dispatcher) ────────────────────
@@ -479,7 +544,7 @@ test_classifier::run() {
       fi
       local comment_body
       comment_body="$(render_pr_comment_body "${json_block}")"
-      post_comment_to_github "${AI_REVIEW_PR_NUMBER}" "${comment_body}"
+      post_comment_to_github "${AI_REVIEW_PR_NUMBER}" "${comment_body}" "${json_block}"
     fi
   fi
 
