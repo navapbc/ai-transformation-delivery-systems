@@ -1,0 +1,103 @@
+# .github/workflows/classifier-metrics-sweep.yml
+#
+# SCHEDULED metrics sweep for the AI test classifier.
+#
+# Why scheduled, not event-driven: the signal we record is the human 👍/👎
+# reaction on each classifier comment, and GitHub emits NO webhook/Actions event
+# when a reaction is added (long-standing platform gap — see
+# https://github.com/orgs/community/discussions/20824). So reactions must be
+# *pulled*. We pull them cheaply: the harvester uses the Search API's
+# `in:comments` qualifier to fetch only the PRs that actually carry a
+# `test-classifier:` comment — no crawl over every PR in the repo.
+#
+# Auth: keyless via Workload Identity Federation. GitHub's OIDC token is
+# exchanged for a short-lived token that impersonates the metrics-sheets-writer
+# service account, which has Editor access to the metrics spreadsheet ONLY (no
+# project-level IAM). No service-account key is stored anywhere.
+#
+# The run is non-destructive to the source of truth: it APPENDS rows to the
+# "Testing Events" tab. (Dedup/rollup of those rows is a separate concern.)
+
+name: Classifier metrics sweep
+
+on:
+  # Weekly cron is DISABLED until one manual workflow_dispatch run confirms the
+  # WIF auth chain (GitHub OIDC → service account → Sheets) works end-to-end.
+  # Once a dispatch run succeeds, uncomment to turn on the weekly sweep.
+  # schedule:
+  #   # Mondays 13:00 UTC — once per week is the cadence of the pilot metrics sheet.
+  #   - cron: "0 13 * * 1"
+  workflow_dispatch:
+    # Manual trigger, with an optional override of the harvest window so a
+    # backfill or a one-off can be run on demand from the Actions tab.
+    inputs:
+      start_date:
+        description: "Harvest window start (YYYY-MM-DD, UTC). Blank = script default."
+        required: false
+        type: string
+      end_date:
+        description: "Harvest window end (YYYY-MM-DD, UTC). Blank = script default."
+        required: false
+        type: string
+
+# WIF needs the OIDC token; the sweep only reads public PR data + writes the
+# Sheet (via the SA), so the GITHUB_TOKEN itself needs no write scopes.
+permissions:
+  contents: read
+  id-token: write
+
+# Never let two sweeps append concurrently to the same tab.
+concurrency:
+  group: classifier-metrics-sweep
+  cancel-in-progress: false
+
+jobs:
+  sweep:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the bundle
+        uses: actions/checkout@v4
+
+      - name: Authenticate to Google Cloud (keyless, WIF)
+        id: auth
+        uses: google-github-actions/auth@v2
+        with:
+          # The provider resource path and the SA to impersonate. These are
+          # non-secret identifiers; the trust is enforced by the provider's
+          # attribute condition (repository == this repo) set at creation time.
+          workload_identity_provider: projects/279889631214/locations/global/workloadIdentityPools/github-actions/providers/github
+          service_account: metrics-sheets-writer@nava-labs.iam.gserviceaccount.com
+          # The harvester writes to Sheets, so mint the access token with the
+          # Sheets scope (the default cloud-platform scope cannot call the
+          # Sheets API). `token_format: access_token` yields the ya29.* bearer
+          # the script expects in GOOGLE_SHEETS_TOKEN.
+          token_format: access_token
+          access_token_scopes: https://www.googleapis.com/auth/spreadsheets
+
+      - name: Run the metrics sweep
+        env:
+          # gh CLI reads GH_TOKEN. The default job token (github.token) is scoped
+          # to THIS repo only — it can read PUBLIC pilot repos' PR comments and
+          # run searches, but CANNOT read PRIVATE pilot repos. For private repos,
+          # a maintainer stores a fine-grained PAT (Contents+PR+Metadata: read,
+          # scoped to the pilot repos) as the PILOT_REPOS_READ_TOKEN secret; we
+          # prefer it when present and fall back to the default token otherwise.
+          # See testing/classifier/docs/SETUP.md "Metrics read access (private
+          # pilot repos)" for how a consumer mints and hands off the PAT.
+          GH_TOKEN: ${{ secrets.PILOT_REPOS_READ_TOKEN || github.token }}
+          # WIF-minted bearer token + the static spreadsheet id turn the sink on.
+          GOOGLE_SHEETS_TOKEN: ${{ steps.auth.outputs.access_token }}
+          SHEET_ID: 18UdYlRlt0iCBRi-UzuvO35J6xi8gC9n3SqU7Z78sIwM
+          # Default tab is "Testing Events" (set in the script); override here if
+          # the tab is ever renamed, without touching the script.
+          SHEET_RANGE: "'Testing Events'!A1"
+          # Optional window overrides from workflow_dispatch inputs; empty inputs
+          # fall through to the script's own defaults.
+          START_DATE: ${{ github.event.inputs.start_date }}
+          END_DATE: ${{ github.event.inputs.end_date }}
+        run: |
+          # Empty env vars from skipped inputs would override the script's
+          # defaults with "", so unset them when blank.
+          [ -z "${START_DATE}" ] && unset START_DATE || true
+          [ -z "${END_DATE}" ] && unset END_DATE || true
+          bash testing/metrics/test_classifier_comments.sh

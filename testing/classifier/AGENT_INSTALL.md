@@ -41,9 +41,9 @@ Do not run a YAML linter. If you want a sanity check, `cat` the file and confirm
 the first line is `name: AI test classifier` and the `uses:` line is a single
 unbroken line with one `@`. Then move on.
 
-## Step 2 — tell the human these two manual steps (you cannot do them)
+## Step 2 — tell the human this manual step (you cannot do it)
 
-Print this to the user verbatim — these are out-of-band and block the run:
+Print this to the user verbatim — it is out-of-band and blocks the run:
 
 1. **Add the API key secret** (consumer repo): run, then paste the key from
    <https://console.anthropic.com/settings/keys> when prompted:
@@ -52,8 +52,10 @@ Print this to the user verbatim — these are out-of-band and block the run:
    ```
    (Replace `<owner>/<consumer-repo>` with this repo's slug from `gh repo view`.)
 
-That is the only manual step. (The source repo is public, so no org-access
-setting is needed.)
+That is the only manual step. **Do nothing for metrics** — the pilot's central
+sweep reads this repo's classifier comments from the maintainer's side; no token
+or secret is set up here. (The source repo is public, so no org-access setting is
+needed for the classifier workflow itself.)
 
 ## Step 3 — set expectations, then stop
 

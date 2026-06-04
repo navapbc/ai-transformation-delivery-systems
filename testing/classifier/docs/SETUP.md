@@ -410,6 +410,32 @@ gh auth status
 
 ---
 
+## Metrics read access (maintainer task — not a consumer step)
+
+A **central** weekly sweep in the bundle repo
+(`navapbc/ai-transformation-delivery-systems`,
+`.github/workflows/classifier-metrics-sweep.yml`) reads each pilot repo's
+classifier comments + reactions via the GitHub API and appends them to the
+metrics sheet. (It's a scheduled pull because GitHub fires no event on a
+reaction; it uses the Search API to touch only PRs with a `test-classifier:`
+comment, not every PR.) **Consumers do nothing for this** — read access is set
+up once, centrally, by the pilot maintainer.
+
+- **Public pilot repos** — nothing to do; the sweep's default token reads them.
+- **Private pilot repos** — the maintainer mints **one** fine-grained PAT
+  (resource owner `navapbc`, all pilot repos selected, permissions **Contents +
+  Pull requests + Metadata = Read-only**, 90-day expiry) and stores it in the
+  bundle repo as the `PILOT_REPOS_READ_TOKEN` secret. One PAT covers every pilot
+  repo in the org, so there is no per-team token and no handoff. The sweep
+  prefers this secret when present and falls back to the default token (which
+  suffices for public repos) otherwise.
+
+> **Phase 2 (planned):** replace the single PAT with a GitHub App consumers
+> *install* — survives org/repo changes, clean per-repo revocation, no PAT to
+> rotate.
+
+---
+
 ## Metrics sink configuration
 
 The metrics harvester lives at

@@ -36,8 +36,16 @@ set -euo pipefail
 #      reaction is the tuning signal: 👍 = "classifier called it right",
 #      👎 = "classifier called it wrong".
 #
+# How we find them (efficiently): the GitHub Search API's `in:comments`
+# qualifier matches comment bodies server-side, so we ask only for the PRs whose
+# comments mention the classifier label rather than listing every PR in the repo
+# and fetching each one's comments. We then re-verify author + label prefix per
+# comment, so a loose search match is never miscounted. Date windowing
+# (START_DATE/END_DATE) is still applied per-comment in the jq pass below.
+#
 # For each classifier comment we record:
-#   repo, pr, comment_id, verdict, category, confidence, thumbs_up, thumbs_down
+#   repo, pr, comment_id, comment_created_at, verdict, category, confidence,
+#   thumbs_up, thumbs_down
 #
 # Those rows are the *classifier-precision inputs*: pairing each verdict with
 # its 👍/👎 lets us compute the 👍-rate per verdict bucket over time.
@@ -111,7 +119,12 @@ END_TS="${END_DATE}T23:59:59Z"
 # Google Sheets sink (optional). Static SHEET_ID; short-lived bearer token.
 GOOGLE_SHEETS_TOKEN="${GOOGLE_SHEETS_TOKEN:-}"
 SHEET_ID="${SHEET_ID:-}"
-SHEET_RANGE="${SHEET_RANGE:-Sheet1!A1}"
+# Default tab is the repo-keyed "Testing Events" source-of-truth tab in the
+# "Weekly Pilot Team Metrics Gathering" sheet (one row per classifier comment;
+# header repo|pr|comment_id|verdict|category|confidence|thumbs_up|thumbs_down).
+# The space in the tab name MUST be quoted in the A1 range — values:append
+# tolerates an unquoted single-cell anchor, but quote it to be safe.
+SHEET_RANGE="${SHEET_RANGE:-'Testing Events'!A1}"
 
 # --- Diagnostics go to stderr so stdout stays a clean TSV stream. ---
 log() { echo "$@" >&2; }
@@ -154,15 +167,15 @@ fetch_api() {
 # Builds a Sheets values:append payload (a single-row 2D array) and POSTs it.
 # Failures are logged but never abort the run — the TSV is the source of truth.
 sheets_append_row() {
-    local repo="$1" pr="$2" cid="$3" verdict="$4" category="$5" conf="$6" up="$7" down="$8"
+    local repo="$1" pr="$2" cid="$3" created_at="$4" verdict="$5" category="$6" conf="$7" up="$8" down="$9"
     [ -n "$GOOGLE_SHEETS_TOKEN" ] && [ -n "$SHEET_ID" ] || return 0
 
     local payload
     payload=$(jq -c -n \
-        --arg repo "$repo" --arg pr "$pr" --arg cid "$cid" \
+        --arg repo "$repo" --arg pr "$pr" --arg cid "$cid" --arg created_at "$created_at" \
         --arg verdict "$verdict" --arg category "$category" --arg conf "$conf" \
         --arg up "$up" --arg down "$down" '
-        { values: [[ $repo, $pr, $cid, $verdict, $category, $conf, $up, $down ]] }
+        { values: [[ $repo, $pr, $cid, $created_at, $verdict, $category, $conf, $up, $down ]] }
     ')
 
     local url="https://sheets.googleapis.com/v4/spreadsheets/${SHEET_ID}/values/${SHEET_RANGE}:append?valueInputOption=RAW&insertDataOption=INSERT_ROWS"
@@ -175,17 +188,42 @@ sheets_append_row() {
 }
 
 # --- TSV header (stdout). ---
-printf 'repo\tpr\tcomment_id\tverdict\tcategory\tconfidence\tthumbs_up\tthumbs_down\n'
+printf 'repo\tpr\tcomment_id\tcomment_created_at\tverdict\tcategory\tconfidence\tthumbs_up\tthumbs_down\n'
 
 TOTAL_ROWS=0
 
 for REPO in "${REPOSITORIES[@]}"; do
     log "Processing repository: $REPO..."
 
-    PR_LIST=$(gh pr list -R "$REPO" --state all --limit 1000 --json number 2>/dev/null) || {
-        log "WARNING: Skipping $REPO: Failed to fetch PR list."
+    # Find ONLY the PRs whose comments mention the classifier label, server-side,
+    # via the Search API's `in:comments` qualifier — instead of listing every PR
+    # and fetching each one's comments client-side. GitHub indexes comment bodies
+    # (object_type "IssueComment"), so this collapses "all N PRs in the repo" down
+    # to "the handful that actually carry a classifier comment". The downstream
+    # per-PR loop is unchanged; only its input list is pre-filtered.
+    #
+    # Caveats handled by design: the Search API has a lower rate limit (~30/min)
+    # and a short indexing lag (a just-posted comment may not be searchable for a
+    # few seconds) — both irrelevant for a weekly metrics run. We still re-verify
+    # each comment's author + `test-classifier:` prefix below, so a loose search
+    # match never produces a false row.
+    #
+    # search/issues returns an OBJECT ({total_count, items:[...]}), not an array,
+    # so we extract `.items[].number` directly rather than through fetch_api
+    # (which slurps array pages). `--paginate` walks all result pages.
+    SEARCH_Q="repo:${REPO} is:pr in:comments ${CLASSIFIER_LABEL}"
+    PR_NUMS=$(gh api --paginate -X GET "search/issues" \
+                --field q="$SEARCH_Q" --jq '.items[].number' 2>/dev/null \
+              | sort -un) || {
+        log "WARNING: Skipping $REPO: comment search failed."
         continue
     }
+
+    if [ -z "$PR_NUMS" ]; then
+        log "  No PRs with '${CLASSIFIER_LABEL}' comments found in $REPO."
+        continue
+    fi
+    log "  Matched $(printf '%s\n' "$PR_NUMS" | grep -c .) PR(s) with classifier comments."
 
     while read -r PR_NUM; do
         [ -n "$PR_NUM" ] || continue
@@ -233,6 +271,10 @@ for REPO in "${REPOSITORIES[@]}"; do
             | (summarize(extract_verdict(.body // ""))) as $v
             | {
                 comment_id: (.id | tostring),
+                # The event time: when the classifier posted the comment. This is
+                # the authoritative key for weekly windowing/rollups, and is
+                # stable across re-runs (unlike a harvest time).
+                created_at: (.created_at // ""),
                 verdict:    ($v.verdict    // ""),
                 category:   ($v.category   // ""),
                 confidence: (if ($v.confidence == null) then "" else ($v.confidence | tostring) end),
@@ -257,18 +299,19 @@ for REPO in "${REPOSITORIES[@]}"; do
             [ -n "$REC" ] || continue
 
             CID=$(echo "$REC" | jq -r '.comment_id')
+            CREATED_AT=$(echo "$REC" | jq -r '.created_at')
             VERDICT=$(echo "$REC" | jq -r '.verdict')
             CATEGORY=$(echo "$REC" | jq -r '.category')
             CONFIDENCE=$(echo "$REC" | jq -r '.confidence')
             UP=$(echo "$REC" | jq -r '.up')
             DOWN=$(echo "$REC" | jq -r '.down')
 
-            printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
-                "$REPO" "$PR_NUM" "$CID" "$VERDICT" "$CATEGORY" "$CONFIDENCE" "$UP" "$DOWN"
+            printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+                "$REPO" "$PR_NUM" "$CID" "$CREATED_AT" "$VERDICT" "$CATEGORY" "$CONFIDENCE" "$UP" "$DOWN"
 
-            sheets_append_row "$REPO" "$PR_NUM" "$CID" "$VERDICT" "$CATEGORY" "$CONFIDENCE" "$UP" "$DOWN"
+            sheets_append_row "$REPO" "$PR_NUM" "$CID" "$CREATED_AT" "$VERDICT" "$CATEGORY" "$CONFIDENCE" "$UP" "$DOWN"
         done
-    done < <(echo "$PR_LIST" | jq -r '.[].number')
+    done < <(printf '%s\n' "$PR_NUMS")
 done
 
 log ""
