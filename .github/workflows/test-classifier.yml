@@ -46,6 +46,40 @@ on:
           the ref you pinned the uses: line to.
         type: string
         default: ''
+      provider:
+        description: >
+          Where inference runs: 'anthropic' (default, direct API via
+          ANTHROPIC_API_KEY / OPENAI_API_KEY) or 'bedrock' (Amazon Bedrock in the
+          caller's own AWS account, authenticated via GitHub OIDC). 'bedrock'
+          works with tool=claude (Claude models) or tool=codex (OpenAI GPT-5.x
+          models); it is NOT supported with tool=copilot. Note Codex on Bedrock
+          runs OpenAI models, not Claude (Bedrock Claude needs the Messages API,
+          which Codex doesn't use). See testing/classifier/docs/BEDROCK.md.
+        type: string
+        default: 'anthropic'
+      aws-region:
+        description: >
+          AWS region for Bedrock (required when provider=bedrock). Must be a
+          region where the caller's account has Anthropic model access enabled,
+          e.g. us-east-1. Ignored when provider=anthropic.
+        type: string
+        default: ''
+      aws-role-to-assume:
+        description: >
+          ARN of the IAM role to assume via GitHub OIDC when provider=bedrock,
+          e.g. arn:aws:iam::123456789012:role/ai-test-classifier. The role's
+          trust policy must allow this repo's OIDC subject; its permissions
+          policy must allow bedrock:InvokeModel*. Ignored when provider=anthropic.
+        type: string
+        default: ''
+      bedrock-model:
+        description: >
+          Bedrock model ID (used when provider=bedrock). Leave empty to use the
+          per-tool default: claude → us.anthropic.claude-sonnet-4-6 (a
+          cross-region inference profile ID); codex → openai.gpt-5.5. Override to
+          pin a different model; for claude it must be an inference profile ID.
+        type: string
+        default: ''
     secrets:
       ANTHROPIC_API_KEY:
         required: false
@@ -53,9 +87,14 @@ on:
         required: false
 
 # Least-privilege: read the consumer's code; write the PR comment.
+# `id-token: write` is required ONLY for provider=bedrock — it lets
+# aws-actions/configure-aws-credentials mint a per-run OIDC token to exchange for
+# short-lived STS credentials (no long-lived AWS keys in the repo). It is unused
+# and harmless on the default provider=anthropic path.
 permissions:
   contents: read
   pull-requests: write
+  id-token: write
 
 jobs:
   classify:
@@ -70,10 +109,35 @@ jobs:
       - name: Validate inputs
         env:
           TOOL: ${{ inputs.tool }}
+          PROVIDER: ${{ inputs.provider }}
+          AWS_REGION_IN: ${{ inputs.aws-region }}
+          AWS_ROLE_IN: ${{ inputs.aws-role-to-assume }}
         run: |
           case "${TOOL}" in claude|codex|copilot) ;; *)
             echo "::error::inputs.tool='${TOOL}' invalid. Must be claude | codex | copilot"; exit 1 ;;
           esac
+          case "${PROVIDER}" in anthropic|bedrock) ;; *)
+            echo "::error::inputs.provider='${PROVIDER}' invalid. Must be anthropic | bedrock"; exit 1 ;;
+          esac
+          if [[ "${PROVIDER}" == "bedrock" ]]; then
+            # Bedrock is supported for claude (Claude models via the Claude Code
+            # CLI) and codex (OpenAI GPT-5.x via Codex's built-in bedrock
+            # provider). Copilot has no Bedrock path, so reject it.
+            case "${TOOL}" in
+              claude|codex) ;;
+              *)
+                echo "::error::provider=bedrock requires tool=claude or tool=codex (got tool='${TOOL}')."
+                echo "::error::Copilot has no Bedrock provider. Note: codex on Bedrock runs OpenAI models, not Claude."
+                exit 1
+                ;;
+            esac
+            if [[ -z "${AWS_REGION_IN}" ]]; then
+              echo "::error::provider=bedrock requires inputs.aws-region (e.g. us-east-1)."; exit 1
+            fi
+            if [[ -z "${AWS_ROLE_IN}" ]]; then
+              echo "::error::provider=bedrock requires inputs.aws-role-to-assume (the IAM role ARN to assume via OIDC)."; exit 1
+            fi
+          fi
 
       # 1. The CONSUMER's repo — this is what the dispatcher diffs and classifies.
       - name: Check out the caller's repo (the change under test)
@@ -113,6 +177,20 @@ jobs:
           AI_REVIEW_TOOL: ${{ inputs.tool }}
         run: scripts/sync-skills.sh
 
+      # ── Bedrock auth (provider=bedrock only) ────────────────────────────────
+      # Exchange this run's GitHub OIDC token for short-lived STS credentials by
+      # assuming the caller-owned IAM role. The action exports AWS_ACCESS_KEY_ID/
+      # _SECRET_ACCESS_KEY/_SESSION_TOKEN into the job env, which the Claude Code
+      # CLI then picks up via the default AWS SDK credential chain. No long-lived
+      # AWS keys are stored in the repo. Skipped entirely on provider=anthropic.
+      - name: Configure AWS credentials (Bedrock via OIDC)
+        if: inputs.provider == 'bedrock'
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ inputs.aws-role-to-assume }}
+          aws-region: ${{ inputs.aws-region }}
+          role-session-name: ai-test-classifier-${{ github.run_id }}
+
       - name: Install AI CLI — Claude Code
         if: inputs.tool == 'claude'
         run: npm install -g @anthropic-ai/claude-code
@@ -135,6 +213,12 @@ jobs:
           OTEL_EXPORTER:               ${{ vars.OTEL_EXPORTER }}
           OTEL_EXPORTER_OTLP_ENDPOINT: ${{ vars.OTEL_EXPORTER_OTLP_ENDPOINT }}
           OTEL_EXPORTER_OTLP_HEADERS:  ${{ secrets.OTEL_EXPORTER_OTLP_HEADERS }}
+          # Bedrock routing for Codex: when set, we append a model_provider stanza
+          # to config.toml so `codex exec` runs an OpenAI model in the caller's AWS
+          # account. Empty on the default (direct OpenAI API) path.
+          CODEX_PROVIDER: ${{ inputs.provider }}
+          CODEX_BEDROCK_REGION: ${{ inputs.aws-region }}
+          CODEX_BEDROCK_MODEL: ${{ inputs.bedrock-model != '' && inputs.bedrock-model || 'openai.gpt-5.5' }}
         run: |
           set -euo pipefail
           mkdir -p /tmp/codex-otel
@@ -187,6 +271,24 @@ jobs:
             'exporter = { otlp-http = { endpoint = "http://localhost:4318", protocol = "binary" } }' \
             > /tmp/codex-home/config.toml
 
+          # On provider=bedrock, point Codex at its built-in amazon-bedrock
+          # provider so inference runs an OpenAI model inside the caller's AWS
+          # account. Codex uses the AWS SDK credential chain, so the creds the
+          # OIDC step exported are picked up with no extra config. The model is an
+          # OpenAI model ID (e.g. openai.gpt-5.5) — NOT Claude: Bedrock Claude
+          # speaks the Messages API, which Codex does not use.
+          if [[ "${CODEX_PROVIDER:-}" == "bedrock" ]]; then
+            echo "[test-classifier] Codex → Bedrock: model=${CODEX_BEDROCK_MODEL} region=${CODEX_BEDROCK_REGION}"
+            printf '%s\n' \
+              "model = \"${CODEX_BEDROCK_MODEL}\"" \
+              'model_provider = "amazon-bedrock"' \
+              '[model_providers.amazon-bedrock]' \
+              'name = "Amazon Bedrock"' \
+              "[model_providers.amazon-bedrock.aws]" \
+              "region = \"${CODEX_BEDROCK_REGION}\"" \
+              >> /tmp/codex-home/config.toml
+          fi
+
       - name: Run AI test classifier
         env:
           AI_REVIEW_TOOL: ${{ inputs.tool }}
@@ -195,8 +297,26 @@ jobs:
           # repo's suite for OBSERVED verdicts. Safe here (ephemeral runner);
           # the dispatcher keeps the local default read-only when this is unset.
           AI_RUN_SUITE: '1'
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-          OPENAI_API_KEY:    ${{ secrets.OPENAI_API_KEY }}
+          # On provider=bedrock, ANTHROPIC_API_KEY MUST be blank: a non-empty key
+          # makes the Claude Code CLI call the direct Anthropic API and ignore
+          # Bedrock. The AWS creds from the OIDC step + CLAUDE_CODE_USE_BEDROCK
+          # below route inference through Bedrock instead.
+          ANTHROPIC_API_KEY: ${{ inputs.provider == 'bedrock' && '' || secrets.ANTHROPIC_API_KEY }}
+          # On bedrock, blank OPENAI_API_KEY too so the codex path routes through
+          # the config.toml amazon-bedrock provider unambiguously (no direct-API
+          # fallback). Unused on the claude path either way.
+          OPENAI_API_KEY:    ${{ inputs.provider == 'bedrock' && '' || secrets.OPENAI_API_KEY }}
+          # ── Bedrock routing (claude+bedrock only; blank otherwise) ──────────
+          # CLAUDE_CODE_USE_BEDROCK flips the Claude Code CLI to the Bedrock
+          # Invoke API; it then uses the AWS creds the OIDC step put in the env.
+          # AWS_REGION is required and is NOT read from ~/.aws. ANTHROPIC_MODEL
+          # must be a cross-region inference profile ID (us. prefix) or Bedrock
+          # rejects it; empty bedrock-model falls back to the Sonnet profile.
+          # (The codex+bedrock path is configured via config.toml in the OTel
+          # bootstrap step, not these Claude-specific vars.)
+          CLAUDE_CODE_USE_BEDROCK: ${{ (inputs.provider == 'bedrock' && inputs.tool == 'claude') && '1' || '' }}
+          AWS_REGION:       ${{ inputs.provider == 'bedrock' && inputs.aws-region || '' }}
+          ANTHROPIC_MODEL:  ${{ (inputs.provider == 'bedrock' && inputs.tool == 'claude') && (inputs.bedrock-model != '' && inputs.bedrock-model || 'us.anthropic.claude-sonnet-4-6') || '' }}
           GITHUB_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           BASE_REF:  ${{ github.event.pull_request.base.ref }}

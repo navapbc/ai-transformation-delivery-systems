@@ -2,6 +2,16 @@ name: AI test classifier
 on:
   pull_request:
     types: [opened, synchronize, reopened]
+
+# For provider: bedrock, OIDC needs id-token: write here in the CALLER too —
+# the permission can't be granted by the reusable workflow alone. Harmless to
+# include on the default (anthropic) path. contents/pull-requests mirror the
+# reusable workflow's needs.
+permissions:
+  contents: read
+  pull-requests: write
+  id-token: write
+
 jobs:
   classify:
     uses: navapbc/ai-transformation-delivery-systems/.github/workflows/test-classifier.yml@pilot
@@ -9,8 +19,21 @@ jobs:
       # Which AI CLI runs the classifier: claude | codex.
       # Set the matching API-key secret below for whichever you pick.
       tool: claude
+
+      # ── Provider: where inference runs (default: anthropic) ────────────────
+      # provider: anthropic  → direct API via ANTHROPIC_API_KEY / OPENAI_API_KEY.
+      # provider: bedrock    → Amazon Bedrock in YOUR AWS account via GitHub OIDC.
+      #   No code leaves your AWS boundary; this is the CMS-internal path. Works
+      #   with tool: claude (Claude models) or tool: codex (OpenAI GPT-5.x) — not
+      #   copilot. Codex on Bedrock runs OpenAI models, not Claude. Needs the
+      #   bedrock inputs below + id-token: write above. Full setup (use-case form,
+      #   IAM role, OIDC trust): testing/classifier/docs/BEDROCK.md
+      # provider: bedrock
+      # aws-region: us-east-1
+      # aws-role-to-assume: arn:aws:iam::123456789012:role/ai-test-classifier
+      # bedrock-model: us.anthropic.claude-sonnet-4-6   # claude default; codex → openai.gpt-5.5
     secrets:
-      # Needed when tool: claude
+      # Needed when provider: anthropic and tool: claude. Leave unset for bedrock.
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
       # Needed when tool: codex
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
