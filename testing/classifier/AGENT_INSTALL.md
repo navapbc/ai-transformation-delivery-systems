@@ -32,25 +32,50 @@ jobs:
   classify:
     uses: navapbc/ai-transformation-delivery-systems/.github/workflows/test-classifier.yml@pilot
     with:
-      tool: claude
+      tool: claude          # claude | codex — see "Choose your AI tool" below
     secrets:
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
 ```
 
 Do not run a YAML linter. If you want a sanity check, `cat` the file and confirm
 the first line is `name: AI test classifier` and the `uses:` line is a single
 unbroken line with one `@`. Then move on.
 
+### Choose your AI tool (claude | codex)
+
+The classifier can run on either AI CLI. Both produce the same PR comment and the
+same uploaded trace artifact — pick by which API key the team already has.
+
+| `tool:` | API key secret to set (Step 2) | Trace artifact captured |
+|---------|--------------------------------|--------------------------|
+| `claude` (default) | `ANTHROPIC_API_KEY` | full raw request/response bodies (`agent-bodies/`) |
+| `codex`  | `OPENAI_API_KEY` | OTel traces + logs JSONL (`codex-otel/`) |
+
+To use Codex instead of Claude, change the one line `tool: claude` to
+`tool: codex` and set `OPENAI_API_KEY` instead of `ANTHROPIC_API_KEY` in Step 2.
+You only need the secret matching your choice — leaving the other unset is fine
+(it resolves to empty and is ignored). Everything else is identical.
+
 ## Step 2 — tell the human these two manual steps (you cannot do them)
 
 Print this to the user verbatim — these are out-of-band and block the run:
 
-1. **Add the API key secret** (consumer repo): run, then paste the key from
-   <https://console.anthropic.com/settings/keys> when prompted:
-   ```
-   gh secret set ANTHROPIC_API_KEY -R <owner>/<consumer-repo>
-   ```
-   (Replace `<owner>/<consumer-repo>` with this repo's slug from `gh repo view`.)
+1. **Add the API key secret** (consumer repo) for the `tool:` you chose:
+
+   - **claude** (default) — paste the key from
+     <https://console.anthropic.com/settings/keys> when prompted:
+     ```
+     gh secret set ANTHROPIC_API_KEY -R <owner>/<consumer-repo>
+     ```
+   - **codex** — paste the key from
+     <https://platform.openai.com/api-keys> when prompted:
+     ```
+     gh secret set OPENAI_API_KEY -R <owner>/<consumer-repo>
+     ```
+
+   (Replace `<owner>/<consumer-repo>` with this repo's slug from `gh repo view`.
+   Set only the one matching your `tool:` choice.)
 
 That is the only manual step. (The source repo is public, so no org-access
 setting is needed.)
