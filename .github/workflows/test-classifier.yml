@@ -123,6 +123,70 @@ jobs:
         if: inputs.tool == 'copilot'
         run: npm install -g @github/copilot
 
+      # ── Codex observability bootstrap (parity with the Claude path) ─────────
+      # Codex has no file-body capture; its only sinks are OTLP over the network.
+      # So for codex we run an in-job OpenTelemetry Collector that receives Codex's
+      # OTLP and writes a JSONL artifact (always), and additionally forwards to a
+      # real backend when vars.OTEL_EXPORTER=otlp is set — mirroring Claude's
+      # "default file artifact + optional OTLP passthrough" behavior.
+      - name: Start OTel collector for Codex
+        if: inputs.tool == 'codex'
+        env:
+          OTEL_EXPORTER:               ${{ vars.OTEL_EXPORTER }}
+          OTEL_EXPORTER_OTLP_ENDPOINT: ${{ vars.OTEL_EXPORTER_OTLP_ENDPOINT }}
+          OTEL_EXPORTER_OTLP_HEADERS:  ${{ secrets.OTEL_EXPORTER_OTLP_HEADERS }}
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/codex-otel
+          CFG=testing/classifier/ci/otel-collector-codex.yaml
+
+          # When a real backend is configured, add the otlphttp exporter to both
+          # pipelines and feed it the endpoint/headers; otherwise leave the file-
+          # only pipelines as-is. We use sed on the two `exporters: [file]` lines.
+          if [[ "${OTEL_EXPORTER:-}" == "otlp" && -n "${OTEL_EXPORTER_OTLP_ENDPOINT:-}" ]]; then
+            echo "[test-classifier] Codex OTel: file artifact + forwarding to ${OTEL_EXPORTER_OTLP_ENDPOINT}"
+            export OTLP_FORWARD_ENDPOINT="${OTEL_EXPORTER_OTLP_ENDPOINT}"
+            export OTLP_FORWARD_AUTH="${OTEL_EXPORTER_OTLP_HEADERS:-}"
+            sed -i 's/exporters: \[file\]/exporters: [file, otlphttp]/' "${CFG}"
+          else
+            echo "[test-classifier] Codex OTel: file artifact only (no OTEL_EXPORTER=otlp backend set)"
+            # otlphttp env must still expand to something; collector validates all
+            # exporters even when unused. Point it at a dummy that's never wired in.
+            export OTLP_FORWARD_ENDPOINT="http://localhost:4318"
+            export OTLP_FORWARD_AUTH=""
+          fi
+
+          # Run the collector in the background, listening on localhost:4318/4317.
+          docker run -d --name codex-otel \
+            --network host \
+            -e OTLP_FORWARD_ENDPOINT -e OTLP_FORWARD_AUTH \
+            -v "$PWD/${CFG}:/etc/otelcol/config.yaml:ro" \
+            -v /tmp/codex-otel:/tmp/codex-otel \
+            otel/opentelemetry-collector:latest \
+            --config /etc/otelcol/config.yaml
+
+          # Wait for the OTLP HTTP port to accept connections before Codex runs.
+          for i in $(seq 1 30); do
+            if curl -fsS -o /dev/null "http://localhost:4318/" 2>/dev/null \
+               || nc -z localhost 4318 2>/dev/null; then
+              echo "[test-classifier] collector up on :4318"; break
+            fi
+            sleep 1
+          done
+
+          # Generate the Codex config.toml under a CI-local CODEX_HOME. log_user_prompt
+          # = true so the captured logs include the full prompt/response (untruncated),
+          # matching Claude's raw-bodies capture. Codex emits traces + logs only.
+          # printf (not a heredoc) so the indented YAML block can't leak leading
+          # whitespace into the .toml.
+          mkdir -p /tmp/codex-home
+          printf '%s\n' \
+            '[otel]' \
+            'environment = "ci"' \
+            'log_user_prompt = true' \
+            'exporter = { otlp-http = { endpoint = "http://localhost:4318", protocol = "binary" } }' \
+            > /tmp/codex-home/config.toml
+
       - name: Run AI test classifier
         env:
           AI_REVIEW_TOOL: ${{ inputs.tool }}
@@ -137,7 +201,19 @@ jobs:
           PR_NUMBER: ${{ github.event.pull_request.number }}
           BASE_REF:  ${{ github.event.pull_request.base.ref }}
 
+          # Point Codex at the OTel config.toml the bootstrap step generated, so
+          # `codex exec` exports traces+logs to the in-job collector. Harmless for
+          # the claude/copilot paths (Codex CLI isn't invoked there).
+          CODEX_HOME: /tmp/codex-home
+
           # ── Observability (Claude Code native OpenTelemetry) ───────────────
+          # NOTE: every var in this block is gated on tool == 'claude' and blanks
+          # to '' otherwise. Codex configures OTel via its own config.toml (see the
+          # bootstrap step) pointed at the in-job collector; leaving the standard
+          # OTEL_EXPORTER_OTLP_* env set during a codex run risks Codex's SDK
+          # picking them up and bypassing the local collector (→ no file artifact).
+          # Keeping them claude-only is the safe, explicit boundary.
+          #
           # Telemetry is enabled, but the span/metric EXPORTER defaults to `none`.
           # Why: Claude's `console` exporter writes to STDOUT, which collides with
           # the dispatcher's parsed result (it dumped ~875KB of metric JSON into
@@ -152,10 +228,12 @@ jobs:
           # OTEL_EXPORTER=otlp + OTEL_EXPORTER_OTLP_ENDPOINT (+ _PROTOCOL / the
           # _HEADERS secret). OTLP is a NETWORK exporter, so it never touches
           # stdout — safe to turn on without corrupting the result. No code change.
-          CLAUDE_CODE_ENABLE_TELEMETRY: '1'
-          OTEL_METRICS_EXPORTER: ${{ vars.OTEL_EXPORTER || 'none' }}
-          OTEL_LOGS_EXPORTER:    ${{ vars.OTEL_EXPORTER || 'none' }}
-          OTEL_TRACES_EXPORTER:  ${{ vars.OTEL_EXPORTER || 'none' }}
+          # (The same OTEL_EXPORTER var also turns on backend forwarding for the
+          # codex collector — see the "Start OTel collector for Codex" step.)
+          CLAUDE_CODE_ENABLE_TELEMETRY: ${{ inputs.tool == 'claude' && '1' || '' }}
+          OTEL_METRICS_EXPORTER: ${{ inputs.tool == 'claude' && (vars.OTEL_EXPORTER || 'none') || '' }}
+          OTEL_LOGS_EXPORTER:    ${{ inputs.tool == 'claude' && (vars.OTEL_EXPORTER || 'none') || '' }}
+          OTEL_TRACES_EXPORTER:  ${{ inputs.tool == 'claude' && (vars.OTEL_EXPORTER || 'none') || '' }}
           # Short-lived run: shrink export intervals and raise the shutdown
           # flush timeout so telemetry isn't lost when OTLP export IS enabled.
           OTEL_METRIC_EXPORT_INTERVAL: '2000'
@@ -164,12 +242,13 @@ jobs:
           # Full conversation bodies to a dir (untruncated, written synchronously
           # by Claude — no flush race, no stdout collision). Contains repo code +
           # full reasoning; lives only in the run's artifact on the ephemeral runner.
-          OTEL_LOG_RAW_API_BODIES: 'file:classifier-out/agent-bodies'
-          OTEL_LOG_TOOL_DETAILS: '1'
-          # OTLP passthrough (only used when OTEL_EXPORTER=otlp is set):
-          OTEL_EXPORTER_OTLP_ENDPOINT: ${{ vars.OTEL_EXPORTER_OTLP_ENDPOINT }}
-          OTEL_EXPORTER_OTLP_PROTOCOL: ${{ vars.OTEL_EXPORTER_OTLP_PROTOCOL }}
-          OTEL_EXPORTER_OTLP_HEADERS:  ${{ secrets.OTEL_EXPORTER_OTLP_HEADERS }}
+          OTEL_LOG_RAW_API_BODIES: ${{ inputs.tool == 'claude' && 'file:classifier-out/agent-bodies' || '' }}
+          OTEL_LOG_TOOL_DETAILS: ${{ inputs.tool == 'claude' && '1' || '' }}
+          # OTLP passthrough (only used when OTEL_EXPORTER=otlp is set), claude-only;
+          # the codex path consumes these same vars in its collector bootstrap step.
+          OTEL_EXPORTER_OTLP_ENDPOINT: ${{ inputs.tool == 'claude' && vars.OTEL_EXPORTER_OTLP_ENDPOINT || '' }}
+          OTEL_EXPORTER_OTLP_PROTOCOL: ${{ inputs.tool == 'claude' && vars.OTEL_EXPORTER_OTLP_PROTOCOL || '' }}
+          OTEL_EXPORTER_OTLP_HEADERS:  ${{ inputs.tool == 'claude' && secrets.OTEL_EXPORTER_OTLP_HEADERS || '' }}
           OTEL_RESOURCE_ATTRIBUTES: service.name=ai-test-classifier,pr=${{ github.event.pull_request.number }},repo=${{ github.repository }}
         run: |
           set -euo pipefail
@@ -194,6 +273,22 @@ jobs:
           # stderr → normal diagnostics, echoed to the CI log.
           "${DISPATCHER}" --pr "${PR_NUMBER}" --post-comment \
             | tee classifier-out/classification.txt
+
+      # Flush the Codex collector and fold its JSONL into the artifact dir, so a
+      # codex run's traces ride along in the same `ai-test-classification`
+      # artifact as Claude's agent-bodies/ — one capture location per provider.
+      - name: Collect Codex OTel traces
+        if: always() && inputs.tool == 'codex'
+        run: |
+          set -uo pipefail
+          # Give the collector a moment to flush its final batch, then stop it.
+          sleep 2
+          docker stop codex-otel >/dev/null 2>&1 || true
+          docker logs codex-otel >/tmp/codex-otel/collector.log 2>&1 || true
+          mkdir -p classifier-out/codex-otel
+          cp -f /tmp/codex-otel/codex-traces.jsonl classifier-out/codex-otel/ 2>/dev/null \
+            || echo "[test-classifier] no Codex trace file produced"
+          cp -f /tmp/codex-otel/collector.log classifier-out/codex-otel/ 2>/dev/null || true
 
       - name: Upload classification record
         if: always()
