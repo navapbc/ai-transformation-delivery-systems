@@ -31,22 +31,41 @@ same one that design will build on later.
 
 ---
 
-## How auth works (no long-lived keys)
+## Two auth modes — pick one
 
-The workflow authenticates to AWS with **GitHub OIDC**, not stored AWS keys:
+Set `aws-auth` (or the `AWS_AUTH` repo variable for the vendored path):
+
+| `aws-auth` | What you store | Setup | Posture |
+|---|---|---|---|
+| **`oidc`** (default) | nothing — short-lived STS creds per run | ~5 steps (IAM role + OIDC trust) | strongest; recommended for CMS-internal repos |
+| **`static`** | one `AWS_BEARER_TOKEN_BEDROCK` secret | ~2 steps (mint a Bedrock API key) | simpler quick-start; a long-lived credential lives in the repo |
+
+`static` mirrors how most SDKs onboard Bedrock (e.g. Vercel AI SDK's
+`AWS_BEARER_TOKEN_BEDROCK`). Use it to get going fast or on a low-sensitivity
+repo; prefer `oidc` where a stored AWS credential would fail review. Both keep
+inference inside your AWS account — the difference is only *how the runner
+authenticates*, not where the model runs.
+
+### How `oidc` works (no long-lived keys)
 
 1. The job requests a short-lived OIDC token from GitHub (needs
-   `id-token: write` permission — already set in the workflows).
+   `id-token: write` — already set in the workflows).
 2. [`aws-actions/configure-aws-credentials`](https://github.com/aws-actions/configure-aws-credentials)
-   exchanges that token for **temporary STS credentials** by assuming an IAM
-   role **you** create in **your** AWS account.
-3. The Claude Code CLI picks those credentials up automatically via the default
-   AWS SDK credential chain and, with `CLAUDE_CODE_USE_BEDROCK=1`, routes all
-   inference through the Bedrock Invoke API in your region.
+   exchanges it for **temporary STS credentials** by assuming an IAM role **you**
+   create in **your** AWS account.
+3. The CLI picks those creds up via the default AWS SDK credential chain and
+   routes inference through Bedrock in your region.
 
-Nothing long-lived is stored in the repo. The role's trust policy restricts
-*which repo and branch* may assume it; its permissions policy restricts *what
-Bedrock actions* it may take.
+The role's trust policy restricts *which repo/branch* may assume it; its
+permissions policy restricts *what Bedrock actions* it may take.
+
+### How `static` works
+
+You mint a **Bedrock API key** in the AWS console (Bedrock → API keys) and store
+it as the `AWS_BEARER_TOKEN_BEDROCK` GitHub secret. The workflow passes it
+through; both the Claude Code CLI and Codex honor it (it takes precedence over
+SigV4). No IAM role or OIDC provider needed. You still do step 1 below (enable
+model access); you skip steps 2–3.
 
 ---
 
@@ -69,7 +88,12 @@ Pick a region where the model is available (e.g. `us-east-1`); you'll use it as
 (the `us.` prefix), so the model must be enabled for cross-region inference in
 that region.
 
-### 2. Create the GitHub OIDC identity provider
+> **Using `aws-auth: static`?** Stop here — also mint a Bedrock API key
+> (Bedrock console → API keys) and store it as the `AWS_BEARER_TOKEN_BEDROCK`
+> secret. Skip steps 2–3 (no OIDC provider or IAM role). Jump to
+> [Wire it into the classifier](#wire-it-into-the-classifier).
+
+### 2. Create the GitHub OIDC identity provider _(oidc only)_
 
 If your account doesn't already have GitHub's OIDC provider, add it once:
 
@@ -79,7 +103,7 @@ If your account doesn't already have GitHub's OIDC provider, add it once:
 (Console: IAM → Identity providers → Add provider → OpenID Connect. Or see
 [GitHub's guide](https://docs.github.com/actions/security-for-github-actions/security-hardening-your-deployments/configuring-openid-connect-in-amazon-web-services).)
 
-### 3. Create the IAM role the workflow assumes
+### 3. Create the IAM role the workflow assumes _(oidc only)_
 
 Create a role (e.g. `ai-test-classifier`) with **two** policies.
 
@@ -179,8 +203,20 @@ jobs:
       aws-role-to-assume: arn:aws:iam::123456789012:role/ai-test-classifier
       # bedrock-model: us.anthropic.claude-sonnet-4-6   # optional; per-tool default below
     secrets:
-      # No API key needed on the bedrock path — leave them out.
+      # No API key needed on the oidc bedrock path — leave them out.
       {}
+```
+
+**Quick-start variant — `aws-auth: static`** (skips the IAM role; ~2 steps):
+
+```yaml
+    with:
+      tool: claude
+      provider: bedrock
+      aws-auth: static
+      aws-region: us-east-1
+    secrets:
+      AWS_BEARER_TOKEN_BEDROCK: ${{ secrets.AWS_BEARER_TOKEN_BEDROCK }}
 ```
 
 That's the whole change. Drop `provider`/`aws-*` (and restore the API key) to
@@ -208,12 +244,15 @@ Secrets and variables → Actions → Variables) instead of inputs:
 |---|---|---|
 | `AI_REVIEW_TOOL` | `claude` or `codex` | `copilot` is not supported on Bedrock |
 | `AI_PROVIDER` | `bedrock` | Unset/`anthropic` keeps the direct API path |
+| `AWS_AUTH` | `oidc` (default) or `static` | `static` uses the bearer-token secret instead of a role |
 | `AWS_REGION` | e.g. `us-east-1` | Region with the model enabled |
-| `AWS_ROLE_TO_ASSUME` | the role ARN | From step 3 |
+| `AWS_ROLE_TO_ASSUME` | the role ARN | **oidc only** — from step 3 |
 | `AWS_BEDROCK_MODEL` | *(optional)* | Default: claude → `us.anthropic.claude-sonnet-4-6`, codex → `openai.gpt-5.5` |
 
-No API-key secret is needed; the vendored workflow forces `ANTHROPIC_API_KEY`
-and `OPENAI_API_KEY` blank when `AI_PROVIDER=bedrock`.
+For `AWS_AUTH=static`, add the `AWS_BEARER_TOKEN_BEDROCK` **secret** instead of
+`AWS_ROLE_TO_ASSUME`. No API-key secret is needed otherwise; the vendored
+workflow forces `ANTHROPIC_API_KEY` and `OPENAI_API_KEY` blank when
+`AI_PROVIDER=bedrock`.
 
 ---
 

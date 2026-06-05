@@ -30,10 +30,13 @@ jobs:
       #   IAM role, OIDC trust): testing/classifier/docs/BEDROCK.md
       # provider: bedrock
       # aws-region: us-east-1
-      # aws-role-to-assume: arn:aws:iam::123456789012:role/ai-test-classifier
+      # aws-auth: oidc        # oidc (default, role ARN below) | static (bearer-token secret)
+      # aws-role-to-assume: arn:aws:iam::123456789012:role/ai-test-classifier   # oidc only
       # bedrock-model: us.anthropic.claude-sonnet-4-6   # claude default; codex → openai.gpt-5.5
     secrets:
       # Needed when provider: anthropic and tool: claude. Leave unset for bedrock.
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
       # Needed when tool: codex
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      # Needed only for provider: bedrock + aws-auth: static
+      AWS_BEARER_TOKEN_BEDROCK: ${{ secrets.AWS_BEARER_TOKEN_BEDROCK }}

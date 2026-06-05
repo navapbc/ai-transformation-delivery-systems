@@ -57,8 +57,11 @@ jobs:
           AI_REVIEW_TOOL: ${{ vars.AI_REVIEW_TOOL }}
           # AI_PROVIDER is optional; empty means the default 'anthropic'.
           AI_PROVIDER:    ${{ vars.AI_PROVIDER }}
+          # AWS_AUTH is optional; empty means the default 'oidc'.
+          AWS_AUTH:       ${{ vars.AWS_AUTH }}
           AWS_REGION_IN:  ${{ vars.AWS_REGION }}
           AWS_ROLE_IN:    ${{ vars.AWS_ROLE_TO_ASSUME }}
+          AWS_BEARER_IN:  ${{ secrets.AWS_BEARER_TOKEN_BEDROCK }}
         run: |
           if [[ -z "${AI_REVIEW_TOOL}" ]]; then
             echo "::error::Repository variable AI_REVIEW_TOOL is not set."
@@ -91,7 +94,11 @@ jobs:
                 ;;
             esac
             [[ -z "${AWS_REGION_IN}" ]]  && { echo "::error::AI_PROVIDER=bedrock requires repo variable AWS_REGION (e.g. us-east-1)."; exit 1; }
-            [[ -z "${AWS_ROLE_IN}" ]]    && { echo "::error::AI_PROVIDER=bedrock requires repo variable AWS_ROLE_TO_ASSUME (IAM role ARN for OIDC)."; exit 1; }
+            case "${AWS_AUTH:-oidc}" in
+              oidc)   [[ -z "${AWS_ROLE_IN}" ]]   && { echo "::error::AI_PROVIDER=bedrock + AWS_AUTH=oidc requires repo variable AWS_ROLE_TO_ASSUME (IAM role ARN)."; exit 1; } ;;
+              static) [[ -z "${AWS_BEARER_IN}" ]] && { echo "::error::AI_PROVIDER=bedrock + AWS_AUTH=static requires the AWS_BEARER_TOKEN_BEDROCK secret."; exit 1; } ;;
+              *)      echo "::error::AWS_AUTH='${AWS_AUTH}' invalid. Must be oidc | static"; exit 1 ;;
+            esac
           fi
           true
 
@@ -120,7 +127,7 @@ jobs:
       # the caller-owned IAM role. Claude Code picks them up via the AWS SDK
       # credential chain. No long-lived AWS keys in the repo.
       - name: Configure AWS credentials (Bedrock via OIDC)
-        if: vars.AI_PROVIDER == 'bedrock'
+        if: vars.AI_PROVIDER == 'bedrock' && vars.AWS_AUTH != 'static'
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ vars.AWS_ROLE_TO_ASSUME }}
@@ -186,6 +193,9 @@ jobs:
           # step, not these Claude-specific vars.
           CLAUDE_CODE_USE_BEDROCK: ${{ (vars.AI_PROVIDER == 'bedrock' && vars.AI_REVIEW_TOOL == 'claude') && '1' || '' }}
           AWS_REGION:       ${{ vars.AI_PROVIDER == 'bedrock' && vars.AWS_REGION || '' }}
+          # Static auth: long-lived Bedrock API key (claude + codex both honor it,
+          # it takes precedence over SigV4). Blank on the OIDC path.
+          AWS_BEARER_TOKEN_BEDROCK: ${{ (vars.AI_PROVIDER == 'bedrock' && vars.AWS_AUTH == 'static') && secrets.AWS_BEARER_TOKEN_BEDROCK || '' }}
           ANTHROPIC_MODEL:  ${{ (vars.AI_PROVIDER == 'bedrock' && vars.AI_REVIEW_TOOL == 'claude') && (vars.AWS_BEDROCK_MODEL || 'us.anthropic.claude-sonnet-4-6') || '' }}
           # Point Codex at the CI-local config.toml when the Bedrock step wrote one
           # (codex+bedrock). Harmless on other paths — Codex isn't invoked there,

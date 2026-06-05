@@ -64,12 +64,22 @@ on:
           e.g. us-east-1. Ignored when provider=anthropic.
         type: string
         default: ''
+      aws-auth:
+        description: >
+          How the Bedrock path authenticates to AWS (when provider=bedrock):
+          'oidc' (default, recommended) assumes aws-role-to-assume via GitHub
+          OIDC — no stored AWS credentials. 'static' skips OIDC and uses a
+          long-lived AWS_BEARER_TOKEN_BEDROCK secret instead (simpler 2-step
+          quick-start, weaker posture — a credential lives in the repo). Ignored
+          when provider=anthropic.
+        type: string
+        default: 'oidc'
       aws-role-to-assume:
         description: >
-          ARN of the IAM role to assume via GitHub OIDC when provider=bedrock,
-          e.g. arn:aws:iam::123456789012:role/ai-test-classifier. The role's
-          trust policy must allow this repo's OIDC subject; its permissions
-          policy must allow bedrock:InvokeModel*. Ignored when provider=anthropic.
+          ARN of the IAM role to assume via GitHub OIDC. Required when
+          provider=bedrock AND aws-auth=oidc; ignored for aws-auth=static. The
+          role's trust policy must allow this repo's OIDC subject; its
+          permissions policy must allow bedrock:InvokeModel*.
         type: string
         default: ''
       bedrock-model:
@@ -84,6 +94,10 @@ on:
       ANTHROPIC_API_KEY:
         required: false
       OPENAI_API_KEY:
+        required: false
+      AWS_BEARER_TOKEN_BEDROCK:
+        # Long-lived Bedrock API key. Required only for provider=bedrock with
+        # aws-auth=static; unused on the OIDC and direct-API paths.
         required: false
 
 # Least-privilege: read the consumer's code; write the PR comment.
@@ -110,8 +124,10 @@ jobs:
         env:
           TOOL: ${{ inputs.tool }}
           PROVIDER: ${{ inputs.provider }}
+          AWS_AUTH: ${{ inputs.aws-auth }}
           AWS_REGION_IN: ${{ inputs.aws-region }}
           AWS_ROLE_IN: ${{ inputs.aws-role-to-assume }}
+          AWS_BEARER_IN: ${{ secrets.AWS_BEARER_TOKEN_BEDROCK }}
         run: |
           case "${TOOL}" in claude|codex|copilot) ;; *)
             echo "::error::inputs.tool='${TOOL}' invalid. Must be claude | codex | copilot"; exit 1 ;;
@@ -134,9 +150,20 @@ jobs:
             if [[ -z "${AWS_REGION_IN}" ]]; then
               echo "::error::provider=bedrock requires inputs.aws-region (e.g. us-east-1)."; exit 1
             fi
-            if [[ -z "${AWS_ROLE_IN}" ]]; then
-              echo "::error::provider=bedrock requires inputs.aws-role-to-assume (the IAM role ARN to assume via OIDC)."; exit 1
-            fi
+            case "${AWS_AUTH:-oidc}" in
+              oidc)
+                if [[ -z "${AWS_ROLE_IN}" ]]; then
+                  echo "::error::provider=bedrock + aws-auth=oidc requires inputs.aws-role-to-assume (the IAM role ARN)."; exit 1
+                fi
+                ;;
+              static)
+                if [[ -z "${AWS_BEARER_IN}" ]]; then
+                  echo "::error::provider=bedrock + aws-auth=static requires the AWS_BEARER_TOKEN_BEDROCK secret."; exit 1
+                fi
+                ;;
+              *)
+                echo "::error::inputs.aws-auth='${AWS_AUTH}' invalid. Must be oidc | static"; exit 1 ;;
+            esac
           fi
 
       # 1. The CONSUMER's repo — this is what the dispatcher diffs and classifies.
@@ -184,7 +211,7 @@ jobs:
       # CLI then picks up via the default AWS SDK credential chain. No long-lived
       # AWS keys are stored in the repo. Skipped entirely on provider=anthropic.
       - name: Configure AWS credentials (Bedrock via OIDC)
-        if: inputs.provider == 'bedrock'
+        if: inputs.provider == 'bedrock' && inputs.aws-auth != 'static'
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ inputs.aws-role-to-assume }}
@@ -316,6 +343,10 @@ jobs:
           # bootstrap step, not these Claude-specific vars.)
           CLAUDE_CODE_USE_BEDROCK: ${{ (inputs.provider == 'bedrock' && inputs.tool == 'claude') && '1' || '' }}
           AWS_REGION:       ${{ inputs.provider == 'bedrock' && inputs.aws-region || '' }}
+          # Static auth: a long-lived Bedrock API key. Both the Claude Code CLI
+          # and Codex's bedrock provider honor it (it takes precedence over SigV4).
+          # On the OIDC path this is blank and the assumed-role creds are used.
+          AWS_BEARER_TOKEN_BEDROCK: ${{ (inputs.provider == 'bedrock' && inputs.aws-auth == 'static') && secrets.AWS_BEARER_TOKEN_BEDROCK || '' }}
           ANTHROPIC_MODEL:  ${{ (inputs.provider == 'bedrock' && inputs.tool == 'claude') && (inputs.bedrock-model != '' && inputs.bedrock-model || 'us.anthropic.claude-sonnet-4-6') || '' }}
           GITHUB_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
