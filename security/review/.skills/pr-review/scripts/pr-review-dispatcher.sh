@@ -323,9 +323,20 @@ post_review_to_github() {
     exit 1
   fi
 
+  # Idempotency: fetch the AI reviewer's existing inline comments so the payload
+  # builder can drop any finding that already carries a live comment on an
+  # unchanged line. Streamed as NDJSON via gh's built-in jq (one object/line
+  # across all pages — avoids the concatenated-array invalid-JSON problem). A
+  # fetch failure degrades safely to empty (no de-dup), never blocking the post.
+  local existing_comments
+  existing_comments="$(gh api --paginate \
+    "repos/${repo_slug}/pulls/${pr_number}/comments" \
+    --jq '.[] | {path: .path, line: .line, body: .body}' 2>/dev/null || true)"
+  export AI_REVIEW_EXISTING_COMMENTS="${existing_comments}"
+
   local api_payload
   api_payload="$(echo "${review_json}" | python3 -c '
-import json, sys, html
+import json, sys, html, os, re
 
 try:
     data = json.load(sys.stdin)
@@ -336,6 +347,40 @@ except Exception as e:
 action = data.get("review_action", "COMMENT")
 summary = data.get("summary", "AI-assisted PR review (security + compliance).")
 comments_in = data.get("comments", [])
+
+# ── Idempotency: build the set of lines that already carry a live AI comment ──
+# An existing comment is a de-dup anchor only if (a) it is one of ours (carries
+# the attribution marker) and (b) GitHub still positions it on the current diff
+# (line is not null). When a line or its hunk changes, GitHub outdates the
+# comment (line -> null), so it stops anchoring and we re-comment automatically.
+# Key is (path, line, perspective): perspective is stable across runs, so a
+# security and a compliance finding on the same line both survive, while a
+# repeat within one perspective is suppressed. Titles are intentionally NOT in
+# the key — runs are non-deterministic and reword titles for the same issue.
+ATTRIBUTION_MARKER = "Reviewed by AI"
+
+def perspective_of(body):
+    lines = (body or "").strip().splitlines()
+    first = lines[0] if lines else ""
+    m = re.match(r"\s*(security|compliance)\s*\(", first, re.I)
+    return m.group(1).lower() if m else None
+
+anchored = set()
+for raw in os.environ.get("AI_REVIEW_EXISTING_COMMENTS", "").splitlines():
+    raw = raw.strip()
+    if not raw:
+        continue
+    try:
+        ec = json.loads(raw)
+    except Exception:
+        continue
+    body = ec.get("body") or ""
+    if ATTRIBUTION_MARKER not in body:   # not one of ours
+        continue
+    ln = ec.get("line")
+    if ln is None:                       # outdated → line changed → re-comment
+        continue
+    anchored.add((ec.get("path"), ln, perspective_of(body)))
 
 AI_ATTRIBUTION = (
     "_Reviewed by AI, was this helpful? Please react with "
@@ -368,9 +413,14 @@ def render_body(c):
     )
 
 comments_out = []
+suppressed = 0
 for c in comments_in:
     if not all(k in c for k in ("path", "line", "perspective", "severity", "title", "description")):
         print(f"WARN: skipping malformed comment: {c}", file=sys.stderr)
+        continue
+    key = (c["path"], c["line"], (c.get("perspective") or "security").lower())
+    if key in anchored:
+        suppressed += 1
         continue
     comments_out.append({
         "path": c["path"],
@@ -379,6 +429,20 @@ for c in comments_in:
         "body": render_body(c),
     })
 
+if suppressed:
+    print(f"[pr-review] Suppressed {suppressed} finding(s) already posted on "
+          f"unchanged lines.", file=sys.stderr)
+
+# If every finding was already commented on an unchanged line, posting a fresh
+# COMMENT review (even an empty one) is itself redundant noise — skip it. The
+# bash caller treats this sentinel as a clean no-op. APPROVE is left alone: it
+# carries no inline comments and re-approving is harmless.
+if action == "COMMENT" and not comments_out:
+    print("__AI_REVIEW_SKIP_POST__")
+    print("[pr-review] All findings already posted on unchanged lines; "
+          "nothing new to comment.", file=sys.stderr)
+    sys.exit(0)
+
 payload = {
     "event": action if action in ("APPROVE", "COMMENT", "REQUEST_CHANGES") else "COMMENT",
     "body": summary,
@@ -386,6 +450,11 @@ payload = {
 }
 print(json.dumps(payload))
 ')"
+
+  if [[ "${api_payload}" == "__AI_REVIEW_SKIP_POST__" ]]; then
+    echo "[pr-review] No new findings to post (all already commented on unchanged lines)."
+    return 0
+  fi
 
   if [[ -z "${api_payload}" ]]; then
     echo "ERROR: failed to construct GitHub API payload." >&2
