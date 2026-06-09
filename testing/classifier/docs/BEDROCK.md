@@ -37,14 +37,16 @@ Set `aws-auth` (or the `AWS_AUTH` repo variable for the vendored path):
 
 | `aws-auth` | What you store | Setup | Posture |
 |---|---|---|---|
-| **`oidc`** (default) | nothing — short-lived STS creds per run | ~5 steps (IAM role + OIDC trust) | strongest; recommended for CMS-internal repos |
-| **`static`** | one `AWS_BEARER_TOKEN_BEDROCK` secret | ~2 steps (mint a Bedrock API key) | simpler quick-start; a long-lived credential lives in the repo |
+| **`static`** (recommended) | one `AWS_BEARER_TOKEN_BEDROCK` secret | ~2 steps (mint a Bedrock API key) | a long-lived credential lives in the repo secrets; the simplest onboarding |
+| **`oidc`** | nothing — short-lived STS creds per run | ~5 steps (IAM role + OIDC trust) | strongest; no stored credential — choose this where a stored key would fail review |
 
-`static` mirrors how most SDKs onboard Bedrock (e.g. Vercel AI SDK's
-`AWS_BEARER_TOKEN_BEDROCK`). Use it to get going fast or on a low-sensitivity
-repo; prefer `oidc` where a stored AWS credential would fail review. Both keep
-inference inside your AWS account — the difference is only *how the runner
-authenticates*, not where the model runs.
+**Start with `static`** — it's the recommended pilot onboarding: mint one Bedrock
+API key, store it as a secret, done. It mirrors how most SDKs onboard Bedrock
+(e.g. Vercel AI SDK's `AWS_BEARER_TOKEN_BEDROCK`). Move to `oidc` when you want no
+stored AWS credential (short-lived STS creds per run) — e.g. a repo where a
+long-lived key in secrets wouldn't pass review. Both keep inference inside your
+AWS account — the difference is only *how the runner authenticates*, not where the
+model runs.
 
 ### How `oidc` works (no long-lived keys)
 
@@ -179,8 +181,8 @@ Two ways, matching the two consumption paths in
 ### Path A — Reusable workflow (recommended)
 
 In your caller workflow (`.github/workflows/ai-test-classifier.yml`), set the
-provider inputs and **grant `id-token: write` in the caller** (the reusable
-workflow can't grant it for you):
+provider inputs. The recommended path is **`aws-auth: static`** — one Bedrock API
+key, no IAM role:
 
 ```yaml
 name: AI test classifier
@@ -191,7 +193,7 @@ on:
 permissions:
   contents: read
   pull-requests: write
-  id-token: write            # required for Bedrock OIDC
+  id-token: write            # harmless here; required only if you switch to aws-auth: oidc
 
 jobs:
   classify:
@@ -199,28 +201,30 @@ jobs:
     with:
       tool: claude            # claude → Claude on Bedrock | codex → GPT-5.x on Bedrock
       provider: bedrock
+      aws-auth: static        # recommended: one bearer-token secret, no IAM role
       aws-region: us-east-1
-      aws-role-to-assume: arn:aws:iam::123456789012:role/ai-test-classifier
       # bedrock-model: us.anthropic.claude-sonnet-4-6   # optional; per-tool default below
-    secrets:
-      # No API key needed on the oidc bedrock path — leave them out.
-      {}
-```
-
-**Quick-start variant — `aws-auth: static`** (skips the IAM role; ~2 steps):
-
-```yaml
-    with:
-      tool: claude
-      provider: bedrock
-      aws-auth: static
-      aws-region: us-east-1
     secrets:
       AWS_BEARER_TOKEN_BEDROCK: ${{ secrets.AWS_BEARER_TOKEN_BEDROCK }}
 ```
 
 That's the whole change. Drop `provider`/`aws-*` (and restore the API key) to
 fall back to the direct API path.
+
+**Hardened variant — `aws-auth: oidc`** (no stored credential; assumes an IAM
+role via OIDC — needs the role from steps 2–3 below):
+
+```yaml
+    with:
+      tool: claude
+      provider: bedrock
+      aws-auth: oidc
+      aws-region: us-east-1
+      aws-role-to-assume: arn:aws:iam::123456789012:role/ai-test-classifier
+    secrets:
+      # No API key needed on the oidc bedrock path — leave them out.
+      {}
+```
 
 **`bedrock-model` defaults by tool** (override only to pin a different one):
 
