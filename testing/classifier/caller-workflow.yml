@@ -22,17 +22,24 @@ jobs:
 
       # ── Provider: where inference runs (default: anthropic) ────────────────
       # provider: anthropic  → direct API via ANTHROPIC_API_KEY / OPENAI_API_KEY.
-      # provider: bedrock    → Amazon Bedrock in YOUR AWS account via GitHub OIDC.
-      #   No code leaves your AWS boundary; this is the CMS-internal path. Works
-      #   with tool: claude (Claude models) or tool: codex (OpenAI GPT-5.x) — not
-      #   copilot. Codex on Bedrock runs OpenAI models, not Claude. Needs the
-      #   bedrock inputs below + id-token: write above. Full setup (use-case form,
-      #   IAM role, OIDC trust): testing/classifier/docs/BEDROCK.md
+      # provider: bedrock    → Amazon Bedrock in YOUR AWS account. No code leaves
+      #   your AWS boundary; this is the CMS-internal path. Works with tool: claude
+      #   (Claude models) or tool: codex (OpenAI GPT-5.x) — not copilot. Codex on
+      #   Bedrock runs OpenAI models, not Claude. Needs the bedrock inputs below.
+      #   Full setup (use-case form, API key, optional IAM role/OIDC):
+      #   testing/classifier/docs/BEDROCK.md
+      #
+      # To use Bedrock, uncomment the lines below. The default auth is `static`
+      # (one Bedrock API key — simplest, recommended for the pilot); also
+      # uncomment the AWS_BEARER_TOKEN_BEDROCK secret at the bottom.
       # provider: bedrock
       # aws-region: us-east-1
-      # aws-auth: oidc        # oidc (default, role ARN below) | static (bearer-token secret)
-      # aws-role-to-assume: arn:aws:iam::123456789012:role/ai-test-classifier   # oidc only
+      # aws-auth: static     # static (default): one bearer-token secret, no role | oidc: assume a role, no stored key
       # bedrock-model: us.anthropic.claude-sonnet-4-6   # claude default; codex → openai.gpt-5.5
+      #
+      # Hardened OIDC variant instead: set `aws-auth: oidc`, leave the
+      # AWS_BEARER_TOKEN_BEDROCK secret unset, and add (id-token: write already set above):
+      # aws-role-to-assume: arn:aws:iam::123456789012:role/ai-test-classifier
     secrets:
       # Needed when provider: anthropic and tool: claude. Leave unset for bedrock.
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
