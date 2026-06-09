@@ -28,6 +28,15 @@ name: AI test classifier
 on:
   pull_request:
     types: [opened, synchronize, reopened]
+# REQUIRED. A reusable workflow cannot grant itself more than the caller has, so
+# these must be set HERE or the run fails: pull-requests: write (post the PR
+# comment — without it the run 403s on setup), contents: read (check out the
+# code), id-token: write (only used by provider: bedrock + aws-auth: oidc, but
+# harmless to leave on the default path).
+permissions:
+  contents: read
+  pull-requests: write
+  id-token: write
 jobs:
   classify:
     uses: navapbc/ai-transformation-delivery-systems/.github/workflows/test-classifier.yml@pilot
@@ -39,8 +48,9 @@ jobs:
 ```
 
 Do not run a YAML linter. If you want a sanity check, `cat` the file and confirm
-the first line is `name: AI test classifier` and the `uses:` line is a single
-unbroken line with one `@`. Then move on.
+the first line is `name: AI test classifier`, the `uses:` line is a single
+unbroken line with one `@`, and the `permissions:` block is present (the run
+fails without `pull-requests: write`). Then move on.
 
 ### Choose your AI tool (claude | codex)
 
