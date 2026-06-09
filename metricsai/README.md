@@ -28,7 +28,7 @@ they come from one scan of the AI reviewer's [Conventional
 Comments](https://conventionalcomments.org/), split by label (`security` vs `compliance`),
 plus one AWS Security Hub findings count. The `security_compliance_*` columns are:
 `security_compliance_total_comments`, `security_compliance_thumbs_ups`,
-`security_compliance_thumbs_down`, `security_compliance_critical`,
+`security_compliance_thumbs_downs`, `security_compliance_critical`,
 `security_compliance_high`, `security_compliance_medium`, `security_compliance_low`.
 
 ## Prerequisites

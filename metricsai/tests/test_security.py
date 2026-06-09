@@ -22,7 +22,7 @@ EXPECTED_KEYS = {
     "security_low",
     "security_compliance_total_comments",
     "security_compliance_thumbs_ups",
-    "security_compliance_thumbs_down",
+    "security_compliance_thumbs_downs",
     "security_compliance_critical",
     "security_compliance_high",
     "security_compliance_medium",
