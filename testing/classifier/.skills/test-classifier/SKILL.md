@@ -460,12 +460,16 @@ test-classifier: AI triage of failing tests
 
 </details>
 
-**React 👍 if right / 👎 if wrong** — your reaction tunes the classifier (a 👎 + one-line reason is gold). Advisory, non-blocking.
+**React 👍 if right / 👎 if wrong**, and on a 👎 please **reply to this comment with a one-line reason** — that reply is the most useful tuning signal we get. Advisory, non-blocking.
 ```
 
 The reaction ask is not optional decoration; it is the core of the feedback
 loop. The dispatcher will state it explicitly, and the metrics layer
-(`testing/metrics/`) harvests the 👍/👎 counts off this exact comment.
+(`testing/metrics/`) harvests the 👍/👎 counts off this exact comment. Because
+the dispatcher posts this as a pull-request *review* comment (not a plain issue
+comment), it has a native Reply thread — so a 👎 can carry a one-line reason,
+and the harvester reads that reply back alongside the reaction. The reaction is
+still the primary signal; the reply reason is the optional bonus.
 
 ---
 

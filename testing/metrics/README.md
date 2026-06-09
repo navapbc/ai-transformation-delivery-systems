@@ -6,7 +6,13 @@ the classifier asks for and turns it into rows you can track over time.
 
 ## What `test_classifier_comments.sh` measures
 
-The classifier posts **one issue comment per CI run** that has findings.
+The classifier posts **one comment per CI run** that has findings. It posts as a
+file-level pull-request **review comment** (so the comment has a native Reply
+thread — a 👎 can be followed by a one-line reason), falling back to a plain
+issue comment when the PR has no diff to anchor to. This harvester reads **both**
+surfaces (`/issues/{pr}/comments` and `/pulls/{pr}/comments`) so the record is
+complete across that transition and for older issue-comment runs.
+
 Each comment leads with the Conventional-Comment label `test-classifier:` and
 embeds a machine-readable verdict between the classifier's markers (defined in
 `testing/classifier/.skills/test-classifier/SKILL.md` section 6B):
@@ -31,11 +37,16 @@ reaction is the tuning signal:
 - 👍 (`+1`) — the classifier called it right.
 - 👎 (`-1`) — the classifier called it wrong.
 
-The script pairs **each verdict with its reaction counts**, producing one row
-per classifier comment:
+The script pairs **each verdict with its reaction counts**, and — when the
+developer left a 👎 reason as a reply in the review thread — captures that
+reply's first line as `reason`, producing one row per classifier comment:
 
-| repo | pr | comment_id | verdict | category | confidence | thumbs_up | thumbs_down |
-|------|----|------------|---------|----------|------------|-----------|-------------|
+| repo | pr | comment_id | verdict | category | confidence | thumbs_up | thumbs_down | reason |
+|------|----|------------|---------|----------|------------|-----------|-------------|--------|
+
+The `reason` column is the first reply on the comment's thread (matched by
+`in_reply_to_id`), flattened to one line; it is empty for issue comments (no
+thread) and for comments with no reply.
 
 These are the two things the pilot needs:
 
@@ -48,9 +59,9 @@ These are the two things the pilot needs:
 
 A classifier comment is identified by **two** signals, both required: the
 author matches `TARGET_USER` (the CI bot, default `github-actions[bot]`) **and**
-the body starts with `test-classifier:`. Reaction counts come from the
-reactions API (`GET /repos/{owner}/{repo}/issues/comments/{id}/reactions`),
-falling back to the inlined `.reactions` summary.
+the body starts with `test-classifier:`. Reaction counts are read from the
+inlined `.reactions` summary that both the issue-comments and pull-comments list
+endpoints return on each comment — no extra per-comment reactions API call.
 
 ## Running it (TSV fallback — the default)
 

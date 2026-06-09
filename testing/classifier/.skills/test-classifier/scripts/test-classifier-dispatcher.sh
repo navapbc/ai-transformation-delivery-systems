@@ -13,7 +13,10 @@
 #      git index. Auto-discovery uses `gh pr view`; manual override via --pr.
 #   2. It parses a JSON intermediate format from the AI's response. With
 #      --post-comment it uses the GitHub REST API (via `gh api`) to post ONE
-#      issue comment on the PR with the classification table and the 👍/👎 ask.
+#      file-level review comment on the PR with the classification table and the
+#      👍/👎 ask. A review comment (not an issue comment) so it has a Reply
+#      thread: a 👎 can carry a one-line reason that the metrics harvester reads
+#      back. Falls back to an issue comment if the PR has no diff to anchor to.
 #   3. The classifier is advisory: by default the dispatcher exits 0 even when
 #      tests were classified. The --gate flag flips this to exit 1 when the
 #      result is CLASSIFIED (CI-blocking mode for teams that want it).
@@ -351,15 +354,49 @@ if classifications:
     lines.append("</details>")
     lines.append("")
 
-# One-line tuning ask (👍/👎 is the signal the metrics loop measures).
-lines.append("**React 👍 if right / 👎 if wrong** — your reaction tunes the classifier "
-             "(a 👎 + one-line reason is gold). Advisory, non-blocking.")
+# Tuning ask. The 👍/👎 reaction is the primary signal the metrics loop
+# measures; because this is posted as a PR *review* comment it has a native
+# Reply box, so a 👎 can now carry a one-line reason that the harvester picks
+# up off the reply thread.
+lines.append("**React 👍 if right / 👎 if wrong**, and on a 👎 please **reply to this "
+             "comment with a one-line reason** — that reply is the most useful tuning "
+             "signal we get. Advisory, non-blocking.")
 
 print("\n".join(lines))
 '
 }
 
-# Post ONE issue comment to the PR. Args: PR number, comment body.
+# Fallback: post ONE top-level issue comment to the PR. Args: repo slug, PR
+# number, comment body. Used when the PR has no diff files to anchor a review
+# comment to, or when the review-comment POST fails. Issue comments carry 👍/👎
+# reactions but have no Reply thread (so a 👎 reason has nowhere to land) — hence
+# this is the downgrade path, not the default.
+post_issue_comment_to_github() {
+  local repo_slug="$1"
+  local pr_number="$2"
+  local body="$3"
+
+  # Pass the body via --field so gh handles JSON escaping for us.
+  if ! gh api \
+        "repos/${repo_slug}/issues/${pr_number}/comments" \
+        --method POST \
+        --field body="${body}" >/dev/null; then
+    echo "ERROR: 'gh api' issue-comment call failed." >&2
+    echo "       Check your gh auth status and that your token has 'pull-requests: write'" >&2
+    echo "       (or 'issues: write')." >&2
+    return 1
+  fi
+}
+
+# Post ONE classification comment to the PR. Args: PR number, comment body.
+#
+# Posts as a file-level pull-request REVIEW comment (subject_type=file) so the
+# comment gets a native Reply box — a 👎 can be followed by a one-line reason in
+# the thread, which the metrics harvester reads back. Review comments must anchor
+# to a path that is part of the PR diff, so we anchor to a changed file (the test
+# verdicts are PR-level, so any changed file is a fine anchor). If there is no
+# changed file or the review POST fails, we fall back to a plain issue comment so
+# the classification is never silently dropped.
 post_comment_to_github() {
   local pr_number="$1"
   local body="$2"
@@ -372,20 +409,52 @@ post_comment_to_github() {
     exit 1
   fi
 
+  # Anchor path: a file in the PR diff. Prefer a changed test file if one is
+  # present, since the comment is about test failures, but any changed file
+  # works. We track the first file and the first test file as we stream the
+  # diff, so we never index into the array (portable, and safe under set -u).
+  local anchor_path="" first_file="" first_test=""
+  local f
+  while IFS= read -r f; do
+    [[ -n "$f" ]] || continue
+    [[ -z "$first_file" ]] && first_file="$f"
+    if [[ -z "$first_test" && "$f" =~ (test|spec|__tests__) ]]; then first_test="$f"; fi
+  done < <(ai_review::changed_files)
+  if [[ -n "$first_test" ]]; then
+    anchor_path="$first_test"
+  elif [[ -n "$first_file" ]]; then
+    anchor_path="$first_file"
+  fi
+
+  # Head SHA the review comment pins to. gh resolves the PR's head; fall back to
+  # the local checkout's HEAD when the API lookup is unavailable.
+  local commit_id=""
+  commit_id="$(gh api "repos/${repo_slug}/pulls/${pr_number}" --jq '.head.sha' 2>/dev/null || true)"
+  [[ -z "$commit_id" ]] && commit_id="$(git rev-parse HEAD 2>/dev/null || true)"
+
+  if [[ -n "$anchor_path" && -n "$commit_id" ]]; then
+    echo "[test-classifier] Posting classification as a review comment on ${repo_slug} PR #${pr_number} (anchored to ${anchor_path})..."
+    if gh api \
+          "repos/${repo_slug}/pulls/${pr_number}/comments" \
+          --method POST \
+          --field body="${body}" \
+          --field commit_id="${commit_id}" \
+          --field path="${anchor_path}" \
+          --field subject_type=file >/dev/null 2>&1; then
+      echo "[test-classifier] Review comment posted. Awaiting the developer's 👍/👎 reaction (and a reply reason on a 👎)."
+      return 0
+    fi
+    echo "[test-classifier] Review-comment POST failed; falling back to a plain issue comment." >&2
+  else
+    echo "[test-classifier] No changed file to anchor a review comment to; posting a plain issue comment." >&2
+  fi
+
+  # Fallback: plain issue comment (reaction-only, no reply thread).
   echo "[test-classifier] Posting ONE classification comment to ${repo_slug} PR #${pr_number} via gh api..."
-  # Pass the body via --field so gh handles JSON escaping for us; the issue
-  # comments endpoint posts a single top-level PR conversation comment that
-  # developers can react to with 👍/👎.
-  if ! gh api \
-        "repos/${repo_slug}/issues/${pr_number}/comments" \
-        --method POST \
-        --field body="${body}" >/dev/null; then
-    echo "ERROR: 'gh api' call failed." >&2
-    echo "       Check your gh auth status and that your token has 'issues: write'" >&2
-    echo "       (or 'pull-requests: write')." >&2
+  if ! post_issue_comment_to_github "${repo_slug}" "${pr_number}" "${body}"; then
     exit 1
   fi
-  echo "[test-classifier] Comment posted. Awaiting the developer's mandatory 👍/👎 reaction."
+  echo "[test-classifier] Comment posted (issue comment). Awaiting the developer's 👍/👎 reaction."
 }
 
 # ── Custom run loop (mirrors the security PR dispatcher) ────────────────────

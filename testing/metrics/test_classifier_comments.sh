@@ -154,15 +154,15 @@ fetch_api() {
 # Builds a Sheets values:append payload (a single-row 2D array) and POSTs it.
 # Failures are logged but never abort the run — the TSV is the source of truth.
 sheets_append_row() {
-    local repo="$1" pr="$2" cid="$3" verdict="$4" category="$5" conf="$6" up="$7" down="$8"
+    local repo="$1" pr="$2" cid="$3" verdict="$4" category="$5" conf="$6" up="$7" down="$8" reason="${9:-}"
     [ -n "$GOOGLE_SHEETS_TOKEN" ] && [ -n "$SHEET_ID" ] || return 0
 
     local payload
     payload=$(jq -c -n \
         --arg repo "$repo" --arg pr "$pr" --arg cid "$cid" \
         --arg verdict "$verdict" --arg category "$category" --arg conf "$conf" \
-        --arg up "$up" --arg down "$down" '
-        { values: [[ $repo, $pr, $cid, $verdict, $category, $conf, $up, $down ]] }
+        --arg up "$up" --arg down "$down" --arg reason "$reason" '
+        { values: [[ $repo, $pr, $cid, $verdict, $category, $conf, $up, $down, $reason ]] }
     ')
 
     local url="https://sheets.googleapis.com/v4/spreadsheets/${SHEET_ID}/values/${SHEET_RANGE}:append?valueInputOption=RAW&insertDataOption=INSERT_ROWS"
@@ -175,7 +175,7 @@ sheets_append_row() {
 }
 
 # --- TSV header (stdout). ---
-printf 'repo\tpr\tcomment_id\tverdict\tcategory\tconfidence\tthumbs_up\tthumbs_down\n'
+printf 'repo\tpr\tcomment_id\tverdict\tcategory\tconfidence\tthumbs_up\tthumbs_down\treason\n'
 
 TOTAL_ROWS=0
 
@@ -190,19 +190,40 @@ for REPO in "${REPOSITORIES[@]}"; do
     while read -r PR_NUM; do
         [ -n "$PR_NUM" ] || continue
 
-        # Classifier comments are top-level PR (issue) comments posted by CI.
+        # The classifier now posts its comment as a file-level pull-request
+        # REVIEW comment (so it has a Reply thread for the 👎 reason). Older
+        # comments were plain issue comments. Harvest BOTH surfaces so the
+        # record is complete across the transition:
+        #   - /issues/{pr}/comments  → legacy top-level classifier comments
+        #   - /pulls/{pr}/comments   → review comments AND their replies
+        # The two ID spaces are disjoint, so a simple concat is dedup-safe.
         ISSUE_JSON=$(fetch_api "/repos/$REPO/issues/$PR_NUM/comments")
+        REVIEW_JSON=$(fetch_api "/repos/$REPO/pulls/$PR_NUM/comments")
 
         # Filter to classifier comments and parse the embedded verdict in one
         # jq pass. Each emitted object is a flat record ready for reaction
         # lookup; verdict/category/confidence fall back to "" when the JSON
-        # block is absent or unparseable. We emit comment_id so the reactions
-        # API can be queried per comment below.
-        MATCHED=$(echo "$ISSUE_JSON" | jq -c \
+        # block is absent or unparseable. The 👎 reason (if any) is read off the
+        # first reply in the review thread (a reply carries in_reply_to_id ==
+        # the classifier comment's id); issue comments have no thread, so reason
+        # stays "" for them.
+        MATCHED=$(jq -c -n \
+            --argjson issue "$ISSUE_JSON" \
+            --argjson review "$REVIEW_JSON" \
             --arg target "$TARGET_USER" \
             --arg from "$START_TS" \
             --arg to "$END_TS" \
             --arg label "$CLASSIFIER_LABEL" '
+            # Look up the 👎 reason: the first reply in the review thread whose
+            # in_reply_to_id points at this classifier comment. Replies are
+            # themselves review comments in the same /pulls/{pr}/comments payload
+            # ($review). Issue comments have no thread, so this yields "".
+            def reason_for($id):
+              ( [ $review[]
+                  | select((.in_reply_to_id // null) | tostring == $id)
+                  | (.body // "") ]
+                | .[0] // "" );
+
             # Extract the JSON object between the AI_CLASSIFIER_JSON markers,
             # if any. The classifier emits a top-level object with a
             # "classifications" array (one entry per failing test), each with
@@ -223,7 +244,11 @@ for REPO in "${REPOSITORIES[@]}"; do
                   | .[0] ) as $pick
               | ( $pick // ($cs[0] // {}) );
 
-            .[]
+            # Candidate classifier comments come from both surfaces. A thread
+            # reply has a non-null in_reply_to_id and never carries the
+            # "test-classifier:" label, so the label test below excludes it.
+            ( ($issue | map(.)) + ($review | map(.)) )
+            | .[]
             | select(
                 (.body // "") != ""
                 and ($target == "ANY" or (.user.login // "") == $target)
@@ -240,14 +265,18 @@ for REPO in "${REPOSITORIES[@]}"; do
                 # in its `.reactions` summary (same source the security metrics
                 # script uses) — read them here, no extra per-comment API call.
                 up:   (.reactions["+1"] // 0),
-                down: (.reactions["-1"] // 0)
+                down: (.reactions["-1"] // 0),
+                # One-line 👎 reason from the review thread, flattened to a single
+                # line so it stays in one TSV field.
+                reason: ( reason_for(.id | tostring) | gsub("[\r\n\t]+"; " ") | .[0:300] )
               }
         ' 2>/dev/null || echo "")
 
         if [ "${DEBUG:-0}" = "1" ]; then
             IC=$(echo "$ISSUE_JSON" | jq 'length' 2>/dev/null || echo "?")
+            RC=$(echo "$REVIEW_JSON" | jq 'length' 2>/dev/null || echo "?")
             MC=$(printf '%s\n' "$MATCHED" | grep -c . || true)
-            log "  PR #$PR_NUM: issue_comments=$IC  classifier_matched=$MC"
+            log "  PR #$PR_NUM: issue_comments=$IC  review_comments=$RC  classifier_matched=$MC"
         fi
 
         [ -n "$MATCHED" ] || continue
@@ -262,11 +291,12 @@ for REPO in "${REPOSITORIES[@]}"; do
             CONFIDENCE=$(echo "$REC" | jq -r '.confidence')
             UP=$(echo "$REC" | jq -r '.up')
             DOWN=$(echo "$REC" | jq -r '.down')
+            REASON=$(echo "$REC" | jq -r '.reason')
 
-            printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
-                "$REPO" "$PR_NUM" "$CID" "$VERDICT" "$CATEGORY" "$CONFIDENCE" "$UP" "$DOWN"
+            printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+                "$REPO" "$PR_NUM" "$CID" "$VERDICT" "$CATEGORY" "$CONFIDENCE" "$UP" "$DOWN" "$REASON"
 
-            sheets_append_row "$REPO" "$PR_NUM" "$CID" "$VERDICT" "$CATEGORY" "$CONFIDENCE" "$UP" "$DOWN"
+            sheets_append_row "$REPO" "$PR_NUM" "$CID" "$VERDICT" "$CATEGORY" "$CONFIDENCE" "$UP" "$DOWN" "$REASON"
         done
     done < <(echo "$PR_LIST" | jq -r '.[].number')
 done
