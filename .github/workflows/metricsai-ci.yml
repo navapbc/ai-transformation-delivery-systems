@@ -1,0 +1,65 @@
+# .github/workflows/metricsai-ci.yml
+#
+# CI for the metricsai package (lives in the metricsai/ subdirectory of this
+# repo). Scoped via paths so it only runs when metricsai/ or this workflow
+# changes — unrelated work in security/, testing/, or repo-root docs does not
+# trigger it.
+#
+# Mirrors the local dev loop documented in metricsai/CLAUDE.md:
+#   uv run ruff format --check .   # formatting
+#   uv run ruff check .            # lint
+#   uv run pytest                  # full suite (mock-based, fast)
+#
+# Everything runs through uv; the working directory is pinned to metricsai/ so
+# pyproject.toml / uv.lock resolve from the package root.
+
+name: metricsai CI
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'metricsai/**'
+      - '.github/workflows/metricsai-ci.yml'
+  pull_request:
+    paths:
+      - 'metricsai/**'
+      - '.github/workflows/metricsai-ci.yml'
+
+# Read-only: this job only checks out code and runs tests.
+permissions:
+  contents: read
+
+# Don't pile up runs on a fast-moving PR; the latest push wins.
+concurrency:
+  group: metricsai-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    working-directory: metricsai
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: metricsai/uv.lock
+
+      - name: Sync (runtime + dev groups)
+        run: uv sync --frozen
+
+      - name: Format check
+        run: uv run ruff format --check .
+
+      - name: Lint
+        run: uv run ruff check .
+
+      - name: Tests
+        run: uv run pytest
