@@ -72,6 +72,13 @@ name: AI test classifier
 on:
   pull_request:
     types: [opened, synchronize, reopened]
+# Required in the CALLER — a reusable workflow can't grant more than the caller
+# holds. Without pull-requests: write the run 403s when it posts the comment.
+# (See Step 4.)
+permissions:
+  contents: read
+  pull-requests: write
+  id-token: write          # only used by provider: bedrock + aws-auth: oidc; harmless otherwise
 jobs:
   classify:
     uses: navapbc/ai-transformation-delivery-systems/.github/workflows/test-classifier.yml@<commit-sha>
