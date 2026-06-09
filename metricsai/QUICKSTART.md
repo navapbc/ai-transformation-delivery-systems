@@ -18,6 +18,11 @@ uv run metricsai --set-webhook-key   # webhook API key (to post)
 
 Or via env: `METRICSAI_GITHUB_TOKEN`, `METRICSAI_WEBHOOK_KEY`.
 
+**GitHub least privilege:** use a **fine-grained** PAT, not a classic token. Scope it to
+*Only select repositories* (just the repos you scan) with three *Read-only* permissions —
+**Metadata**, **Pull requests**, **Issues** — and nothing else. Full setup in the
+[README](./README.md#github-access-token).
+
 ## Run
 
 ```bash
