@@ -133,6 +133,77 @@ profiles, SSO, or a role) — set `AWS_PROFILE` / `AWS_REGION` as usual. Tempora
 credentials work automatically: if `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, and
 `AWS_SESSION_TOKEN` are already set in the environment, boto3 uses them.
 
+### AWS access (least privilege)
+
+The `security` module makes a **single** AWS call — `securityhub:GetFindings` — so grant
+exactly that, not a broad managed policy like `SecurityAudit` or `ReadOnlyAccess`. Create a
+customer-managed policy with just that action, scoped to the region you query:
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "MetricsaiReadSecurityHubFindings",
+      "Effect": "Allow",
+      "Action": "securityhub:GetFindings",
+      "Resource": "*",
+      "Condition": { "StringEquals": { "aws:RequestedRegion": "us-east-1" } }
+    }
+  ]
+}
+```
+
+`GetFindings` doesn't support resource-level ARNs, so `Resource` must be `*`; the
+`aws:RequestedRegion` condition narrows it to the one region metricsai queries — set it to
+your `METRICSAI_AWS_REGION`.
+
+Provision (via your IaC — e.g. Terraform) a dedicated role your identity is allowed to
+assume, with that policy attached and a trust policy naming your principal:
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Principal": { "AWS": "arn:aws:iam::<ACCOUNT_ID>:user/<your-user>" },
+      "Action": "sts:AssumeRole"
+    }
+  ]
+}
+```
+
+**Assume the role, then run metricsai.** boto3 reads temporary credentials straight from the
+environment, so export what `sts assume-role` returns:
+
+```bash
+creds=$(aws sts assume-role \
+  --role-arn arn:aws:iam::<ACCOUNT_ID>:role/metricsai-sechub-reader \
+  --role-session-name metricsai --query Credentials --output json)
+export AWS_ACCESS_KEY_ID=$(echo "$creds" | jq -r .AccessKeyId)
+export AWS_SECRET_ACCESS_KEY=$(echo "$creds" | jq -r .SecretAccessKey)
+export AWS_SESSION_TOKEN=$(echo "$creds" | jq -r .SessionToken)
+
+uv run metricsai --module security --repo owner/repo
+```
+
+These credentials are temporary (default one hour; raise with `--duration-seconds`). For
+unattended runs, prefer a named profile that assumes the role automatically — boto3 refreshes
+it for you — instead of exporting tokens by hand:
+
+```ini
+# ~/.aws/config
+[profile metricsai]
+role_arn = arn:aws:iam::<ACCOUNT_ID>:role/metricsai-sechub-reader
+source_profile = default
+region = us-east-1
+```
+
+```bash
+AWS_PROFILE=metricsai uv run metricsai --module security --repo owner/repo
+```
+
 ### GitHub access token
 
 The `security` module needs to read PR comments and reactions on the target repos. Create a

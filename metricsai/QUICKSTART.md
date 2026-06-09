@@ -49,6 +49,22 @@ All modules run by default; `--module` (repeatable) narrows. Row key = `week_end
 AWS creds: boto3 default chain (`AWS_PROFILE` / `AWS_REGION` / `~/.aws`, or env
 `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` / `AWS_SESSION_TOKEN`).
 
+**AWS least privilege:** the module needs one action — `securityhub:GetFindings`. Put it in a
+customer-managed policy (`Resource: "*"`, optional `aws:RequestedRegion` condition), attach to
+a role you can assume, then assume it and export the temp creds:
+
+```bash
+creds=$(aws sts assume-role \
+  --role-arn arn:aws:iam::<ACCOUNT_ID>:role/metricsai-sechub-reader \
+  --role-session-name metricsai --query Credentials --output json)
+export AWS_ACCESS_KEY_ID=$(echo "$creds" | jq -r .AccessKeyId)
+export AWS_SECRET_ACCESS_KEY=$(echo "$creds" | jq -r .SecretAccessKey)
+export AWS_SESSION_TOKEN=$(echo "$creds" | jq -r .SessionToken)
+```
+
+Or a self-refreshing profile: `role_arn` + `source_profile` in `~/.aws/config`, then
+`AWS_PROFILE=metricsai`. Full policy/role/trust setup in the [README](./README.md#aws-access-least-privilege).
+
 ## Dev
 
 ```bash
