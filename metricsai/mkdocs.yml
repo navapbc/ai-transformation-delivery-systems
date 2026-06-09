@@ -1,6 +1,6 @@
 site_name: metricsai
 site_description: Pluggable collector for AI-in-SDLC metrics.
-repo_url: https://github.com/navapbc/metricsai
+repo_url: https://github.com/navapbc/ai-transformation-delivery-systems
 
 theme:
   name: material
