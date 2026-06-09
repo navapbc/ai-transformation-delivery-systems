@@ -46,8 +46,8 @@ plus one AWS Security Hub findings count. The `security_compliance_*` columns ar
 ## Install
 
 ```bash
-git clone https://github.com/navapbc/metricsai.git
-cd metricsai
+git clone https://github.com/navapbc/ai-transformation-delivery-systems.git
+cd ai-transformation-delivery-systems/metricsai
 uv sync
 ```
 

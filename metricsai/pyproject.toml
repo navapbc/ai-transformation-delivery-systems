@@ -20,7 +20,7 @@ dependencies = [
 metricsai = "metricsai.cli:main"
 
 [project.urls]
-Repository = "https://github.com/navapbc/metricsai"
+Repository = "https://github.com/navapbc/ai-transformation-delivery-systems"
 
 [dependency-groups]
 dev = [

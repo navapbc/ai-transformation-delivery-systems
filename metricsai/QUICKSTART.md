@@ -5,7 +5,7 @@ macOS · Python ≥3.12 · [uv](https://docs.astral.sh/uv/) (`brew install uv`)
 ## Install
 
 ```bash
-git clone https://github.com/navapbc/metricsai.git && cd metricsai
+git clone https://github.com/navapbc/ai-transformation-delivery-systems.git && cd ai-transformation-delivery-systems/metricsai
 uv sync
 ```
 
