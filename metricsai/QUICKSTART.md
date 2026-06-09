@@ -58,4 +58,4 @@ uv run ruff format .     # format
 uv run mkdocs serve      # docs (uv sync --group docs first)
 ```
 
-Full docs: [`README.md`](./README.md) · webhook setup: [`apps_script/README.md`](./apps_script/README.md)
+Full docs: [`README.md`](./README.md)

@@ -101,14 +101,12 @@ not needed for `--dry-run`.)
 
 ## Destination webhook
 
-The bundled Google Apps Script in [`apps_script/`](./apps_script/) is a ready-to-deploy
-endpoint that appends each posted row to a tab in a Google Sheet, authenticated by a static
-API key (sent in the request body) and with per-request tab selection. It ships with the
-least-privilege `spreadsheets.currentonly` OAuth scope, so it can access **only the sheet
-it's bound to** — not all your spreadsheets. See [`apps_script/README.md`](./apps_script/README.md)
-for setup (including keeping that scope), a `curl` example, and how to feed different tabs of
-one sheet. Once deployed, set `METRICSAI_WEBHOOK_URL` to its `/exec` URL and store the key
-with `uv run metricsai --set-webhook-key` (or `METRICSAI_WEBHOOK_KEY`).
+The destination is a Google Apps Script web app (not yet built) that appends each posted row
+to a tab in a Google Sheet, authenticated by a static API key sent in the request body and
+with per-request tab selection. The intended design uses the least-privilege
+`spreadsheets.currentonly` OAuth scope, so it can access **only the sheet it's bound to** —
+not all your spreadsheets. Once it's deployed, set `METRICSAI_WEBHOOK_URL` to its `/exec` URL
+and store the key with `uv run metricsai --set-webhook-key` (or `METRICSAI_WEBHOOK_KEY`).
 
 ## Configuration
 
