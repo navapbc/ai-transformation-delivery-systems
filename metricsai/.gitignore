@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+*.egg-info/
+build/
+dist/
+
+# Environments / tooling
+.venv/
+
+# Docs build
+site/
+
+# Local scratch / example inputs (not part of the package)
+tmp/
+
+# OS
+.DS_Store

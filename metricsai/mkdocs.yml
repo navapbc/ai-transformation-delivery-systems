@@ -1,0 +1,26 @@
+site_name: metricsai
+site_description: Pluggable collector for AI-in-SDLC metrics.
+repo_url: https://github.com/navapbc/ai-transformation-delivery-systems
+
+theme:
+  name: material
+  features:
+    - navigation.sections
+    - content.code.copy
+
+nav:
+  - Overview: index.md
+  - Usage: usage.md
+  - Modules: modules.md
+
+plugins:
+  - search
+  - mkdocstrings:
+      handlers:
+        python:
+          paths: [src]
+
+markdown_extensions:
+  - admonition
+  - pymdownx.highlight
+  - pymdownx.superfences

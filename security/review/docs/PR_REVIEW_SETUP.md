@@ -87,6 +87,18 @@ The review action is always `COMMENT` (advisory) unless there are zero
 findings, in which case it is `APPROVE`. Use `--gate` to make the
 dispatcher exit non-zero on any non-`APPROVE` result (useful in CI).
 
+### Re-running a review is idempotent
+
+You can safely run the review on the same PR as many times as you like — it
+won't spam the PR with duplicate comments. Before posting, the dispatcher
+fetches its own existing inline comments and drops any finding that already has
+a *live* comment on the same `(path, line, perspective)`. A line counts as
+"already commented" only while GitHub still anchors the prior comment to the
+current diff; the moment that line (or its surrounding hunk) changes, GitHub
+marks the old comment **outdated** and the finding is posted again on the new
+code. If every finding is already present on an unchanged line, the dispatcher
+posts nothing and logs `No new findings to post`.
+
 ### Flags reference (PR-review specific)
 
 | Flag | Effect |

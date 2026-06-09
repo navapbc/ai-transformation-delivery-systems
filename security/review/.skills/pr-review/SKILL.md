@@ -385,6 +385,14 @@ the dispatcher to log an error and exit non-zero.
   five lines (e.g., five resources missing the same tag), emit one comment
   per resource — not one comment per line within each resource. Reviewers
   shouldn't see twenty comments for one root cause.
+- **Re-running is idempotent (handled by the dispatcher).** Always emit your
+  full finding set in the JSON — do not try to remember prior runs. Before
+  posting, the dispatcher fetches the AI reviewer's existing inline comments
+  and drops any finding whose `(path, line, perspective)` already carries a
+  *live* comment (a comment GitHub still anchors to the current diff). When a
+  commented line or its hunk changes, GitHub marks the old comment outdated, so
+  the finding is posted again automatically. If every finding is already
+  present on an unchanged line, no new review is posted at all.
 - **Severity is your responsibility.** Apply the project's severity rubric
   consistently. When in doubt between two severities, choose the lower one
   and note the uncertainty in the description.
