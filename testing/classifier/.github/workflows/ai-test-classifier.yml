@@ -35,9 +35,12 @@ on:
 # Least-privilege permissions for the default GITHUB_TOKEN.
 # `contents: read` is needed to check out the repo and run `git diff`.
 # `pull-requests: write` is needed to post the one PR comment.
+# `id-token: write` is needed ONLY when AI_PROVIDER=bedrock, so OIDC can mint a
+# token to assume the AWS role (short-lived creds; no long-lived keys in repo).
 permissions:
   contents: read
   pull-requests: write
+  id-token: write
 
 jobs:
   test-classifier:
@@ -52,6 +55,13 @@ jobs:
       - name: Validate workflow configuration
         env:
           AI_REVIEW_TOOL: ${{ vars.AI_REVIEW_TOOL }}
+          # AI_PROVIDER is optional; empty means the default 'anthropic'.
+          AI_PROVIDER:    ${{ vars.AI_PROVIDER }}
+          # AWS_AUTH is optional; empty means the default 'oidc'.
+          AWS_AUTH:       ${{ vars.AWS_AUTH }}
+          AWS_REGION_IN:  ${{ vars.AWS_REGION }}
+          AWS_ROLE_IN:    ${{ vars.AWS_ROLE_TO_ASSUME }}
+          AWS_BEARER_IN:  ${{ secrets.AWS_BEARER_TOKEN_BEDROCK }}
         run: |
           if [[ -z "${AI_REVIEW_TOOL}" ]]; then
             echo "::error::Repository variable AI_REVIEW_TOOL is not set."
@@ -67,6 +77,30 @@ jobs:
               exit 1
               ;;
           esac
+          # Provider axis (orthogonal to tool). Default 'anthropic' when unset.
+          PROVIDER="${AI_PROVIDER:-anthropic}"
+          case "${PROVIDER}" in anthropic|bedrock) ;; *)
+            echo "::error::AI_PROVIDER='${PROVIDER}' is invalid. Must be anthropic | bedrock"; exit 1 ;;
+          esac
+          if [[ "${PROVIDER}" == "bedrock" ]]; then
+            # bedrock works for claude (Claude models) and codex (OpenAI GPT-5.x
+            # via Codex's built-in bedrock provider). Copilot has no Bedrock path.
+            case "${AI_REVIEW_TOOL}" in
+              claude|codex) ;;
+              *)
+                echo "::error::AI_PROVIDER=bedrock requires AI_REVIEW_TOOL=claude or codex (got '${AI_REVIEW_TOOL}')."
+                echo "::error::Copilot has no Bedrock provider. Note: codex on Bedrock runs OpenAI models, not Claude."
+                exit 1
+                ;;
+            esac
+            [[ -z "${AWS_REGION_IN}" ]]  && { echo "::error::AI_PROVIDER=bedrock requires repo variable AWS_REGION (e.g. us-east-1)."; exit 1; }
+            case "${AWS_AUTH:-oidc}" in
+              oidc)   [[ -z "${AWS_ROLE_IN}" ]]   && { echo "::error::AI_PROVIDER=bedrock + AWS_AUTH=oidc requires repo variable AWS_ROLE_TO_ASSUME (IAM role ARN)."; exit 1; } ;;
+              static) [[ -z "${AWS_BEARER_IN}" ]] && { echo "::error::AI_PROVIDER=bedrock + AWS_AUTH=static requires the AWS_BEARER_TOKEN_BEDROCK secret."; exit 1; } ;;
+              *)      echo "::error::AWS_AUTH='${AWS_AUTH}' invalid. Must be oidc | static"; exit 1 ;;
+            esac
+          fi
+          true
 
       - name: Check out PR head (full history for diff)
         uses: actions/checkout@v4
@@ -89,6 +123,17 @@ jobs:
           AI_REVIEW_TOOL: ${{ vars.AI_REVIEW_TOOL }}
         run: scripts/sync-skills.sh
 
+      # Bedrock auth (AI_PROVIDER=bedrock only): OIDC → short-lived STS creds for
+      # the caller-owned IAM role. Claude Code picks them up via the AWS SDK
+      # credential chain. No long-lived AWS keys in the repo.
+      - name: Configure AWS credentials (Bedrock via OIDC)
+        if: vars.AI_PROVIDER == 'bedrock' && vars.AWS_AUTH != 'static'
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_TO_ASSUME }}
+          aws-region: ${{ vars.AWS_REGION }}
+          role-session-name: ai-test-classifier-${{ github.run_id }}
+
       - name: Install AI CLI — Claude Code
         if: vars.AI_REVIEW_TOOL == 'claude'
         run: npm install -g @anthropic-ai/claude-code
@@ -101,6 +146,30 @@ jobs:
         if: vars.AI_REVIEW_TOOL == 'copilot'
         run: npm install -g @github/copilot
 
+      # Codex + Bedrock: write a CI-local config.toml pointing Codex at its
+      # built-in amazon-bedrock provider, so inference runs an OpenAI model
+      # (GPT-5.x) in the caller's AWS account. Codex uses the AWS credential
+      # chain, so the creds the OIDC step exported are picked up automatically.
+      # The model is an OpenAI model ID — NOT Claude (Bedrock Claude uses the
+      # Messages API, which Codex does not).
+      - name: Configure Codex for Bedrock
+        if: vars.AI_REVIEW_TOOL == 'codex' && vars.AI_PROVIDER == 'bedrock'
+        env:
+          CODEX_BEDROCK_REGION: ${{ vars.AWS_REGION }}
+          CODEX_BEDROCK_MODEL:  ${{ vars.AWS_BEDROCK_MODEL || 'openai.gpt-5.5' }}
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/codex-home
+          echo "[test-classifier] Codex → Bedrock: model=${CODEX_BEDROCK_MODEL} region=${CODEX_BEDROCK_REGION}"
+          printf '%s\n' \
+            "model = \"${CODEX_BEDROCK_MODEL}\"" \
+            'model_provider = "amazon-bedrock"' \
+            '[model_providers.amazon-bedrock]' \
+            'name = "Amazon Bedrock"' \
+            '[model_providers.amazon-bedrock.aws]' \
+            "region = \"${CODEX_BEDROCK_REGION}\"" \
+            > /tmp/codex-home/config.toml
+
       - name: Run AI test classifier
         working-directory: testing/classifier
         env:
@@ -111,8 +180,27 @@ jobs:
           AI_RUN_SUITE: '1'
           # Pass through whichever API key matches the chosen tool. Each secret
           # is set only if the team uses that tool — unused ones stay blank.
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-          OPENAI_API_KEY:    ${{ secrets.OPENAI_API_KEY }}
+          # On AI_PROVIDER=bedrock, ANTHROPIC_API_KEY is forced blank so the CLI
+          # routes through Bedrock (a non-empty key would override Bedrock).
+          ANTHROPIC_API_KEY: ${{ vars.AI_PROVIDER == 'bedrock' && '' || secrets.ANTHROPIC_API_KEY }}
+          # On bedrock, blank OPENAI_API_KEY too so codex routes through the
+          # config.toml amazon-bedrock provider unambiguously.
+          OPENAI_API_KEY:    ${{ vars.AI_PROVIDER == 'bedrock' && '' || secrets.OPENAI_API_KEY }}
+          # Claude+Bedrock routing (gated on tool=claude; blank otherwise). Model
+          # must be a cross-region inference profile (us. prefix); defaults to
+          # Sonnet 4.6 when AWS_BEDROCK_MODEL var is unset. The codex+bedrock path
+          # is configured via config.toml in the "Configure Codex for Bedrock"
+          # step, not these Claude-specific vars.
+          CLAUDE_CODE_USE_BEDROCK: ${{ (vars.AI_PROVIDER == 'bedrock' && vars.AI_REVIEW_TOOL == 'claude') && '1' || '' }}
+          AWS_REGION:       ${{ vars.AI_PROVIDER == 'bedrock' && vars.AWS_REGION || '' }}
+          # Static auth: long-lived Bedrock API key (claude + codex both honor it,
+          # it takes precedence over SigV4). Blank on the OIDC path.
+          AWS_BEARER_TOKEN_BEDROCK: ${{ (vars.AI_PROVIDER == 'bedrock' && vars.AWS_AUTH == 'static') && secrets.AWS_BEARER_TOKEN_BEDROCK || '' }}
+          ANTHROPIC_MODEL:  ${{ (vars.AI_PROVIDER == 'bedrock' && vars.AI_REVIEW_TOOL == 'claude') && (vars.AWS_BEDROCK_MODEL || 'us.anthropic.claude-sonnet-4-6') || '' }}
+          # Point Codex at the CI-local config.toml when the Bedrock step wrote one
+          # (codex+bedrock). Harmless on other paths — Codex isn't invoked there,
+          # and an unset/missing CODEX_HOME just falls back to the default.
+          CODEX_HOME: ${{ (vars.AI_REVIEW_TOOL == 'codex' && vars.AI_PROVIDER == 'bedrock') && '/tmp/codex-home' || '' }}
           # gh CLI picks up GITHUB_TOKEN automatically.
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # PR number and base ref come from the workflow context.

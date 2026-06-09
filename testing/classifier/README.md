@@ -27,6 +27,10 @@ reuses its conventions exactly:
 
 - Tool selection via the `AI_REVIEW_TOOL` env var (`claude` | `codex` |
   `copilot`).
+- Provider selection (orthogonal to tool): direct API by default, or Amazon
+  Bedrock in the caller's own AWS account via GitHub OIDC — the CMS-internal
+  path. Works with `claude` (Claude models) or `codex` (OpenAI GPT-5.x); not
+  `copilot`. See [`docs/BEDROCK.md`](./docs/BEDROCK.md).
 - The result-marker contract: the AI ends with one `<<<AI_REVIEW_RESULT:...>>>`
   marker the dispatcher parses.
 - A canonical `SKILL.md` under `.skills/`, synced into tool-specific dirs by

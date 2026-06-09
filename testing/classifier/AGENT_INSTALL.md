@@ -57,6 +57,54 @@ To use Codex instead of Claude, change the one line `tool: claude` to
 You only need the secret matching your choice — leaving the other unset is fine
 (it resolves to empty and is ignored). Everything else is identical.
 
+### Choose your provider (anthropic | bedrock)
+
+By default the classifier calls the **direct Anthropic / OpenAI API** with the
+API key from Step 2 (`provider: anthropic`). If the team wants inference to run
+in **their own AWS account via Amazon Bedrock** instead — e.g. a CMS-internal
+repo where no code may leave the AWS boundary — use `provider: bedrock`.
+
+**If the user asks for Bedrock, default to `aws-auth: static`** (a Bedrock API
+key) — it is the simplest path and the recommended onboarding for the pilot. Only
+use `aws-auth: oidc` if the user explicitly asks for it (no stored credential /
+hardened posture); that path is in `testing/classifier/docs/BEDROCK.md`.
+
+The caller file you just wrote already contains the Bedrock block, **commented
+out**. To switch to Bedrock you UNCOMMENT and fill those lines (do not retype the
+file). For the default static path, edit `.github/workflows/ai-test-classifier.yml`
+so the `with:` block reads:
+
+```yaml
+    with:
+      tool: claude                 # claude (Claude models) | codex (OpenAI GPT-5.x). NOT copilot.
+      provider: bedrock
+      aws-region: us-east-1        # a region where your account has Anthropic model access
+      aws-auth: static             # static (default here): one Bedrock API key, no IAM role
+      # bedrock-model: us.anthropic.claude-sonnet-4-6   # optional; codex → openai.gpt-5.5
+```
+
+and uncomment the `AWS_BEARER_TOKEN_BEDROCK` secret line in the `secrets:` block.
+
+Key facts to get this right (do NOT skip):
+
+- **`static` needs the `AWS_BEARER_TOKEN_BEDROCK` secret** (Step 2) and no IAM
+  role — leave `aws-role-to-assume` out. One long-lived Bedrock API key lives in
+  the repo secrets; that is the accepted tradeoff for the quick-start path.
+- **On Bedrock, leave the API-key secret (`ANTHROPIC_API_KEY`) UNSET.** A
+  non-empty key makes the CLI call the direct API and silently ignore Bedrock.
+  (The reusable workflow blanks it on the bedrock path, but don't rely on that.)
+- **`bedrock` works with `tool: claude` or `tool: codex`, never `copilot`.** Note
+  Codex on Bedrock runs OpenAI models, not Claude.
+- **`id-token: write` is already in the caller's `permissions:` block** — leave it
+  even on the static path (it's harmless, and needed if you later switch to oidc).
+- **OIDC variant (only if asked):** set `aws-auth: oidc` + `aws-role-to-assume:
+  arn:aws:iam::<ACCOUNT_ID>:role/ai-test-classifier`, and do NOT set the bearer
+  secret. Setup is in `BEDROCK.md`.
+
+The one-time AWS-account setup (enable model access, then mint the Bedrock API
+key) is **out-of-band and you cannot do it** — it lives in
+`testing/classifier/docs/BEDROCK.md`. Tell the human to follow that doc; see Step 2.
+
 ## Step 2 — tell the human these two manual steps (you cannot do them)
 
 Print this to the user verbatim — these are out-of-band and block the run:
@@ -76,6 +124,24 @@ Print this to the user verbatim — these are out-of-band and block the run:
 
    (Replace `<owner>/<consumer-repo>` with this repo's slug from `gh repo view`.
    Set only the one matching your `tool:` choice.)
+
+   **If you set `provider: bedrock` instead:** do NOT set the API-key secret
+   above. The human's manual work is the one-time AWS setup in
+   `testing/classifier/docs/BEDROCK.md` — print this to them verbatim:
+
+   - **bedrock + `aws-auth: static`** (the default path): in the AWS account,
+     (1) enable Anthropic model access in the Bedrock console, (2) mint a Bedrock
+     API key (Bedrock console → API keys). No OIDC provider or IAM role needed.
+     Then set the key as a repo secret:
+     ```
+     gh secret set AWS_BEARER_TOKEN_BEDROCK -R <owner>/<consumer-repo>
+     ```
+   - **bedrock + `aws-auth: oidc`** (only if the user asked for it): enable model
+     access, then create a GitHub OIDC identity provider and the IAM role named in
+     `aws-role-to-assume` (trust policy pinned to `repo:<owner>/<consumer-repo>:*`,
+     permissions policy allowing `bedrock:InvokeModel*`). No repo secret needed.
+   Full copy-pasteable steps (and IAM policies for the oidc variant) are in
+   `testing/classifier/docs/BEDROCK.md` at the `@pilot` tag.
 
 That is the only manual step. (The source repo is public, so no org-access
 setting is needed.)
@@ -105,5 +171,7 @@ setting is needed.)
 ## If you need to read more
 
 Full guide (humans, or when the above fails): `testing/classifier/docs/SETUP.md`
-at the `@pilot` tag. Fetch repo files with (quote the URL — the `?` is a shell glob):
+at the `@pilot` tag. For the Amazon Bedrock path (one-time AWS account setup, IAM
+trust + permissions policies, OIDC vs static auth): `testing/classifier/docs/BEDROCK.md`.
+Fetch repo files with (quote the URL — the `?` is a shell glob):
 `curl -fsSL https://raw.githubusercontent.com/navapbc/ai-transformation-delivery-systems/pilot/<path>`

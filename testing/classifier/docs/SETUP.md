@@ -107,6 +107,13 @@ API-key secret** for the chosen tool, and pass it through the caller's
 
 Only set the secret matching your chosen `tool` input.
 
+> **Running on Amazon Bedrock instead?** For CMS-internal repos that can't send
+> code to a direct API, the classifier can run in your own AWS account via
+> Bedrock (GitHub OIDC, no stored keys) — Claude with `tool: claude`, or OpenAI
+> GPT-5.x with `tool: codex`. See [`BEDROCK.md`](./BEDROCK.md) — it adds a
+> `provider: bedrock` input and replaces the API-key secret with an assumed IAM
+> role.
+
 That is the whole setup for Path A. On the next PR the workflow runs, triages
 any failing tests, and posts one comment with the verdicts + a mandatory 👍/👎.
 The full report is also uploaded as a CI artifact, and the run is non-blocking.
