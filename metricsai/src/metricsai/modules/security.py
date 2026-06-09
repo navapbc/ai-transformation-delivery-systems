@@ -102,7 +102,7 @@ def _aggregate_comments(comments: list[Comment]) -> dict[str, MetricValue]:
         "security_low": sec["low"],
         "security_compliance_total_comments": comp["total"],
         "security_compliance_thumbs_ups": comp["up"],
-        "security_compliance_thumbs_down": comp["down"],
+        "security_compliance_thumbs_downs": comp["down"],
         "security_compliance_critical": comp["critical"],
         "security_compliance_high": comp["high"],
         "security_compliance_medium": comp["medium"],
