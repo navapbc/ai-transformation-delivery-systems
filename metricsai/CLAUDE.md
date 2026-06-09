@@ -64,12 +64,13 @@ backs `resolve_token` (GitHub, service `metricsai-github`) and `resolve_webhook_
 key, service `metricsai-webhook`). Non-interactive contexts never prompt — they fail fast
 with guidance. The webhook key is not needed for `--dry-run`.
 
-**Webhook + Apps Script (`client.py`, `apps_script/Code.gs`):** the client POSTs flat JSON
+**Webhook + Apps Script (`client.py`):** the client POSTs flat JSON
 `{week_ending_date, **metrics}` plus reserved body fields `_key` (API key) and `_tab` (tab),
 and follows redirects (Apps Script 302s a POST to a googleusercontent URL). The Apps Script
-aligns values to columns **by header name** (not order), appends missing columns
-automatically, and **always returns HTTP 200** with an `{ok: ...}` body — so a bad key isn't
-an HTTP error. Apps Script cannot read request headers, which is why the key is a body field.
+endpoint itself is **not built yet**; its intended contract: align values to columns **by
+header name** (not order), append missing columns automatically, and **always return HTTP
+200** with an `{ok: ...}` body — so a bad key isn't an HTTP error. Apps Script cannot read
+request headers, which is why the key is a body field.
 
 **Errors:** operational failures (GitHub/AWS/network) raised during gathering are wrapped in
 `GatherError` and reported as a clean one-line message with exit code 2 (`--debug` shows the
