@@ -128,11 +128,48 @@ suite yourself**, then classify the failures you actually observe:
    your OBSERVED signal.
 4. Set the result `mode` to `"OBSERVED"` in the JSON.
 
+> **Infrastructure-as-code tests need a teardown guarantee — never strand real
+> resources.** Some repos (Terraform/OpenTofu modules, Pulumi, CloudFormation)
+> have a "test suite" that **applies real cloud resources**. That is fine to run
+> *only* when teardown is guaranteed; the failure mode to avoid is an interrupted
+> run (timeout, turn cap) that leaves **orphaned resources** in the consumer's
+> cloud account (real cost + security exposure). Detect IaC first (`*.tf`,
+> `*.tftest.hcl`/`.tftest.json`, a `terraform`/`tofu`/Terratest step, `Pulumi.yaml`),
+> then work down this ladder and stop at the first rung you can do safely:
+>
+> 1. **No-provision checks (always safe, prefer these).** `terraform validate`,
+>    `terraform fmt -check`, and `terraform test` **when it cannot apply** — every
+>    `run` block is `command = plan`, or the tests use `mock_provider`/`override_*`
+>    (TF ≥1.7) so there are no real provider calls. A genuine OBSERVED signal with
+>    zero infrastructure. Terratest always applies, so it does **not** qualify here.
+> 2. **Apply *with* a guaranteed teardown.** Run a real apply-mode suite only if a
+>    teardown is **guaranteed regardless of how this run ends**, i.e. one of:
+>    - the repo has a **separate, PR-scoped cleanup** that destroys by environment
+>      key on PR close (e.g. a `cleanup-preview` workflow that runs
+>      `terraform destroy` for `preview-pr-<N>`) — teardown is decoupled from your
+>      run, so an interruption can't strand anything; **or**
+>    - you run the destroy yourself **in the same execution** immediately after the
+>      assertions, with the destroy guarded so it runs even on test failure (the
+>      native `terraform test` lifecycle does this; a raw `apply` does not unless
+>      you pair it with `terraform destroy`).
+>    Use an **isolated state prefix / ephemeral environment name** so a destroy
+>    can't touch anything real, and only proceed if the apply can finish well
+>    inside your time budget (leave room for the destroy). If you can't guarantee
+>    both, do not apply.
+> 3. **Otherwise fall back to INFERRED.** If the only way to exercise the tests is
+>    an unguarded real apply, do **not** run it — predict from the diff and say so
+>    in the summary (e.g. "Terraform tests provision real infra and no guaranteed
+>    teardown was available; ran validate + plan-mode, predicted the rest from the
+>    diff"). A safe prediction beats an orphaned VPC. Same rule for any test that
+>    stands up real external state (Pulumi, CloudFormation, live DB migrations).
+
 ### INFERRED — predict from the diff (fallback)
 
 If `AI_RUN_SUITE` is not set, **or** you cannot locate / install / run the suite
 (no test command found, missing toolchain, the suite needs services like a
-database, it times out, etc.), do **not** fabricate a run. Instead reason
+database, it times out, **or it would apply real infrastructure with no
+guaranteed teardown** — see the IaC ladder above), do **not** fabricate a run.
+Instead reason
 statically over the diff (Step 2) and PREDICT which tests the change would cause
 to fail and why. Then:
 
