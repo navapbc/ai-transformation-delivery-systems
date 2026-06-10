@@ -37,16 +37,33 @@ Set `aws-auth` (or the `AWS_AUTH` repo variable for the vendored path):
 
 | `aws-auth` | What you store | Setup | Posture |
 |---|---|---|---|
-| **`static`** (recommended) | one `AWS_BEARER_TOKEN_BEDROCK` secret | ~2 steps (mint a Bedrock API key) | a long-lived credential lives in the repo secrets; the simplest onboarding |
-| **`oidc`** | nothing — short-lived STS creds per run | ~5 steps (IAM role + OIDC trust) | strongest; no stored credential — choose this where a stored key would fail review |
+| **`static`** | one long-lived `AWS_BEARER_TOKEN_BEDROCK` secret | ~2 steps (mint a Bedrock API key) | fastest onboarding; a long-lived credential lives in the secrets store |
+| **`oidc`** | nothing — short-lived STS creds per run | more setup (IAM role + OIDC trust, via the team's IaC/Terraform) | no stored credential; ephemeral per-run creds — the posture FISMA/federal environments expect |
 
-**Start with `static`** — it's the recommended pilot onboarding: mint one Bedrock
-API key, store it as a secret, done. It mirrors how most SDKs onboard Bedrock
-(e.g. Vercel AI SDK's `AWS_BEARER_TOKEN_BEDROCK`). Move to `oidc` when you want no
-stored AWS credential (short-lived STS creds per run) — e.g. a repo where a
-long-lived key in secrets wouldn't pass review. Both keep inference inside your
-AWS account — the difference is only *how the runner authenticates*, not where the
-model runs.
+**This is a security decision the client owns — surface both tradeoffs and let
+them choose; do not default to `static` silently.** For a fast pilot start
+`static` is tempting (mint one key, store it, done — it mirrors how most SDKs
+onboard Bedrock, e.g. Vercel AI SDK's `AWS_BEARER_TOKEN_BEDROCK`). But:
+
+- **`static` carries a real leak risk.** The Bedrock key authenticates against a
+  **public** Bedrock API endpoint. If it ever escapes the secrets store, anyone
+  can use it until it's rotated — including a deliberate **"denial of wallet"**
+  (running up spend on purpose). A long-lived key in a FISMA system is the kind
+  of thing that should not exist; ephemeral, time-bound creds are the standard.
+  **If you use `static`, the cost guardrails below are mandatory, not optional.**
+- **`oidc` removes the stored credential** (short-lived STS creds per run) but
+  adds real setup the client carries in *their* infrastructure: an IAM role +
+  permissions policy, typically created and lifecycle-managed via **their
+  Terraform**. That's a few stanzas (an AI coding assistant can draft the
+  Terraform), plus a one-time OIDC-trust configuration — more friction than a
+  static key, but the right posture for federal/FISMA work.
+
+For pilots in a CMS/federal boundary, **expect the client's security review to
+require `oidc`** (no static keys dropped around) — and to need to sign off
+either way before any credential is provisioned. Treat the choice as a question
+to pose to the team, with the risks above stated, not a default you pick for
+them. Both modes keep inference inside your AWS account — the difference is only
+*how the runner authenticates*, not where the model runs.
 
 ### How `oidc` works (no long-lived keys)
 
@@ -92,8 +109,10 @@ that region.
 
 > **Using `aws-auth: static`?** Stop here — also mint a Bedrock API key
 > (Bedrock console → API keys) and store it as the `AWS_BEARER_TOKEN_BEDROCK`
-> secret. Skip steps 2–3 (no OIDC provider or IAM role). Jump to
-> [Wire it into the classifier](#wire-it-into-the-classifier).
+> secret. Skip steps 2–3 (no OIDC provider or IAM role), then do the
+> [Cost guardrails](#cost-guardrails-required-on-static-recommended-always)
+> (mandatory on static) before you
+> [wire it into the classifier](#wire-it-into-the-classifier).
 
 ### 2. Create the GitHub OIDC identity provider _(oidc only)_
 
@@ -173,6 +192,42 @@ Note the role ARN — it's `aws-role-to-assume` below.
 
 ---
 
+## Cost guardrails (required on `static`, recommended always)
+
+A pilot agent on Bedrock spends real money per run, and a leaked **static** key
+on a public endpoint can be abused for open-ended spend. Put a ceiling and an
+alarm in place **before** you hand a key to a pilot — on the static path this is
+mandatory, not optional.
+
+1. **AWS Budget + alert (do this first).** Create a monthly cost budget scoped to
+   Bedrock with email/SNS alerts at, say, 50% / 80% / 100% of the cap. This
+   doesn't stop spend by itself, but it's your early-warning tripwire.
+   - Console: **Billing → Budgets → Create budget → Cost budget**, filter
+     **Service = Amazon Bedrock**.
+   - A `budgets:CreateBudget` action or the `aws_budgets_budget` Terraform
+     resource does the same — fold it into the same IaC that creates the IAM
+     role (oidc path), so the guardrail ships with the credential.
+2. **Cap the blast radius, not just the alert.** A budget alert is reactive;
+   pair it with a hard limit so a runaway/abused key can't run unbounded:
+   - **Scope the credential tightly.** The IAM role (oidc) or the Bedrock API
+     key's policy should allow **only `bedrock:InvokeModel*` on the specific
+     inference-profile ARNs you approved** — nothing else. A key that can only
+     invoke one model is far less useful to an attacker.
+   - **Lower the per-account Bedrock request quotas** (Service Quotas → Amazon
+     Bedrock → the per-model requests/tokens-per-minute limits) to a ceiling
+     that comfortably fits CI but caps sustained abuse.
+   - **Prefer `oidc` to shrink the window entirely.** Short-lived STS creds can't
+     be abused after the run ends — the cleanest mitigation for denial-of-wallet.
+3. **Rotate the static key on any suspicion**, and keep it out of logs (the
+   workflow already passes it as a masked secret, never echoes it).
+
+> **Static key + no budget = the risk Brian flagged in the pilot sync.** If the
+> client won't allow `oidc` yet, do not skip step 1–2 — the budget + tight
+> policy + lowered quota are what make a long-lived key acceptable for a
+> time-boxed pilot.
+
+---
+
 ## Wire it into the classifier
 
 Two ways, matching the two consumption paths in
@@ -181,8 +236,10 @@ Two ways, matching the two consumption paths in
 ### Path A — Reusable workflow (recommended)
 
 In your caller workflow (`.github/workflows/ai-test-classifier.yml`), set the
-provider inputs. The recommended path is **`aws-auth: static`** — one Bedrock API
-key, no IAM role:
+provider inputs. The example below uses **`aws-auth: static`** — one Bedrock API
+key, no IAM role (the simplest wiring; remember the cost guardrails above are
+mandatory on this path). For `aws-auth: oidc`, set the role inputs instead (see
+"How `oidc` works" above) and omit the bearer-token secret:
 
 ```yaml
 name: AI test classifier
@@ -201,7 +258,7 @@ jobs:
     with:
       tool: claude            # claude → Claude on Bedrock | codex → GPT-5.x on Bedrock
       provider: bedrock
-      aws-auth: static        # recommended: one bearer-token secret, no IAM role
+      aws-auth: static        # static: one bearer-token secret (needs cost guardrails) | oidc: IAM role, no stored key
       aws-region: us-east-1
       # bedrock-model: us.anthropic.claude-sonnet-4-6   # optional; per-tool default below
     secrets:
@@ -327,4 +384,6 @@ region = "<your region>"
 - [Claude Code on Amazon Bedrock](https://code.claude.com/docs/en/amazon-bedrock) — env vars, IAM policy, model IDs
 - [`aws-actions/configure-aws-credentials`](https://github.com/aws-actions/configure-aws-credentials) — OIDC setup
 - [Configuring OIDC in AWS (GitHub Docs)](https://docs.github.com/actions/security-for-github-actions/security-hardening-your-deployments/configuring-openid-connect-in-amazon-web-services)
-- [`SETUP.md`](./SETUP.md) — the three consumption paths (A/B/C)
+- [AWS Budgets](https://docs.aws.amazon.com/cost-management/latest/userguide/budgets-create.html) — cost budget + alerts (the cost guardrail above)
+- [Service Quotas — Amazon Bedrock](https://docs.aws.amazon.com/bedrock/latest/userguide/quotas.html) — per-model request/token rate caps
+- [`SETUP.md`](./SETUP.md) — the consumption paths (A/B/C + Jenkins)

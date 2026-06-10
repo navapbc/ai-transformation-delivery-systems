@@ -111,22 +111,35 @@ API key from Step 2 (`provider: anthropic`). If the team wants inference to run
 in **their own AWS account via Amazon Bedrock** instead — e.g. a CMS-internal
 repo where no code may leave the AWS boundary — use `provider: bedrock`.
 
-**If the user asks for Bedrock, default to `aws-auth: static`** (a Bedrock API
-key) — it is the simplest path and the recommended onboarding for the pilot. Only
-use `aws-auth: oidc` if the user explicitly asks for it (no stored credential /
-hardened posture); that path is in `testing/classifier/docs/BEDROCK.md`.
+**If the user asks for Bedrock, the auth mode is a security decision they must
+make — do NOT silently default it.** Ask, presenting both:
+- `aws-auth: static` — one long-lived Bedrock API key in repo secrets. Fastest
+  onboarding, but the key hits a **public** Bedrock endpoint, so a leak means
+  open-ended spend ("denial of wallet"). **If they choose static, the cost
+  guardrails in `BEDROCK.md` are mandatory.**
+- `aws-auth: oidc` — no stored key; short-lived STS creds per run. The posture
+  FISMA/federal reviews expect. Costs more setup: an IAM role + policy the team
+  manages in *their* Terraform.
+
+For a CMS/federal repo, **expect the client to require `oidc`** and to need to
+sign off either way. If you can't reach them, stop and ask rather than guessing.
+Full setup for both (and the cost guardrails) is in
+`testing/classifier/docs/BEDROCK.md`. The examples below show the static `with:`
+block; for oidc, follow BEDROCK.md.
 
 The caller file you just wrote already contains the Bedrock block, **commented
 out**. To switch to Bedrock you UNCOMMENT and fill those lines (do not retype the
-file). For the default static path, edit `.github/workflows/ai-test-classifier.yml`
-so the `with:` block reads:
+file). Once the team has chosen the auth mode, edit
+`.github/workflows/ai-test-classifier.yml`. The `with:` block for the **static**
+path reads (for **oidc**, set `aws-auth: oidc` + `aws-role-to-assume:` and omit
+the bearer secret — see `BEDROCK.md`):
 
 ```yaml
     with:
       tool: claude                 # claude (Claude models) | codex (OpenAI GPT-5.x). NOT copilot.
       provider: bedrock
       aws-region: us-east-1        # a region where your account has Anthropic model access
-      aws-auth: static             # static (default here): one Bedrock API key, no IAM role
+      aws-auth: static             # static: one Bedrock API key (needs cost guardrails) | oidc: IAM role, no stored key
       # bedrock-model: us.anthropic.claude-sonnet-4-6   # optional; codex → openai.gpt-5.5
 ```
 

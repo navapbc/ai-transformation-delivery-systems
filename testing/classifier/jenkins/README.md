@@ -83,13 +83,20 @@ To route inference through Amazon Bedrock instead of the direct Anthropic API
    AWS_REGION              = 'us-east-1'
    ANTHROPIC_MODEL         = 'us.anthropic.claude-sonnet-4-6'  // a cross-region inference profile id
    ```
-3. Provide AWS credentials by one of:
-   - **Static** — a `AWS_BEARER_TOKEN_BEDROCK` secret-text credential (simplest).
-   - **Keyless (recommended)** — the [Jenkins OIDC Provider plugin](https://plugins.jenkins.io/oidc-provider/)
+3. Provide AWS credentials by one of (this is a **client security decision** —
+   see the "Two auth modes" + "Cost guardrails" sections of `../docs/BEDROCK.md`,
+   they apply identically here):
+   - **Static** — a `AWS_BEARER_TOKEN_BEDROCK` secret-text credential (simplest
+     wiring). The key hits a **public** Bedrock endpoint, so a leak means
+     open-ended spend; **the cost guardrails in `BEDROCK.md` (budget alert +
+     tight policy + lowered quota) are mandatory on this path.**
+   - **Keyless / ephemeral** — the [Jenkins OIDC Provider plugin](https://plugins.jenkins.io/oidc-provider/)
      issues a build JWT; configure an AWS IAM role with an
      `sts:AssumeRoleWithWebIdentity` trust policy and assume it in a stage,
      exporting `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` /
-     `AWS_SESSION_TOKEN`. This is the Jenkins analogue of the Actions OIDC step.
+     `AWS_SESSION_TOKEN`. This is the Jenkins analogue of the Actions OIDC step,
+     and the posture FISMA/federal reviews typically require — expect a CMS
+     client to ask for it.
 
 ## Non-multibranch jobs
 
