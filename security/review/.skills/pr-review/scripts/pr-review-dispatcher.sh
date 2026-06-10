@@ -251,13 +251,22 @@ source "${LIB_PATH}"
 # ── Helpers: JSON extraction and PR review posting ─────────────────────────
 
 # Pull the JSON block between AI_REVIEW_JSON_BEGIN/END markers out of stdin.
+#
+# We deliberately return only the LAST closed marker pair. Some CLIs (notably
+# `codex exec`, whose stdout we capture via 2>&1) echo the dispatcher's own
+# instructions back in their output — and those instructions contain a literal
+# example of the markers wrapping a placeholder line ("{ ...JSON object... }").
+# A naive "print every captured line" would concatenate that placeholder with
+# the real JSON, and the placeholder lands first, so the JSON parser dies on it.
+# The real JSON is always emitted last (after the human report), so the last
+# fully-closed block is the authoritative one.
 extract_review_json() {
   local input="$1"
-  # Use awk to extract everything strictly between the markers.
   echo "${input}" | awk '
-    /<!-- AI_REVIEW_JSON_BEGIN -->/ { capturing=1; next }
-    /<!-- AI_REVIEW_JSON_END -->/   { capturing=0; next }
-    capturing { print }
+    /<!-- AI_REVIEW_JSON_BEGIN -->/ { capturing=1; block=""; next }
+    /<!-- AI_REVIEW_JSON_END -->/   { if (capturing) { last=block; have=1 } capturing=0; next }
+    capturing                       { block = block $0 "\n" }
+    END                             { if (have) printf "%s", last }
   '
 }
 
