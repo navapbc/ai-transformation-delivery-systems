@@ -1,12 +1,49 @@
-# AI Test Classifier — Agent Install (Path A, reusable workflow)
+# AI Test Classifier — Agent Install
 
 > For AI coding agents. This is the whole task. Do not read SETUP.md (498 lines)
-> unless something below fails. Do not vendor or copy any files.
+> unless something below fails. **Default path: GitHub Actions** (reusable
+> workflow, no files vendored). Jenkins is a documented alternative — see
+> "Choose your CI platform" below. Do not vendor or copy files on the Actions path.
 
 ## What you are doing
 
 Add ONE workflow file to the **current (consumer) repo** that calls the
-classifier's reusable workflow by pinned SHA. No scripts are copied in.
+classifier's reusable workflow by pinned SHA. No scripts are copied in. (This is
+the **GitHub Actions** path — the default. If the repo runs Jenkins, see the CI
+choice immediately below.)
+
+## Choose your CI platform (GitHub Actions | Jenkins)
+
+The classifier core is CI-agnostic; only the wiring differs. **Default to
+GitHub Actions** — it's the simple reusable-workflow path in this doc. Switch to
+Jenkins only when the repo's CI is Jenkins (e.g. a client that can't use
+Actions). If you don't know which the repo uses, **ask the human** before
+writing any files — don't write a `.github/workflows/` file into a Jenkins repo.
+
+| CI | What gets added to the consumer repo | Full instructions |
+|----|--------------------------------------|-------------------|
+| **GitHub Actions** (default) | one caller workflow at `.github/workflows/ai-test-classifier.yml` (reusable workflow, `@pilot`) | Steps 1–3 below |
+| **Jenkins** (GitHub.com or GHES) | the `testing/classifier/` tree (vendored/checked out) + a `Jenkinsfile`; **no** reusable-workflow equivalent exists | `testing/classifier/jenkins/README.md` |
+
+**If the repo runs Jenkins, stop here and follow the Jenkins path:**
+
+1. The Jenkins integration needs this repo's `testing/` tree present in the
+   consumer's workspace (Jenkins has no reusable-workflow mechanism, so the
+   scripts must be vendored or checked out as a second source — the README
+   explains both). Fetch the two Jenkins files so the human can see them:
+   ```
+   curl -fsSL https://raw.githubusercontent.com/navapbc/ai-transformation-delivery-systems/pilot/testing/classifier/jenkins/Jenkinsfile
+   curl -fsSL https://raw.githubusercontent.com/navapbc/ai-transformation-delivery-systems/pilot/testing/classifier/jenkins/README.md
+   ```
+2. Then **follow `testing/classifier/jenkins/README.md`** — it is the Jenkins
+   equivalent of Steps 1–3 here: prerequisites (plugins, agent tools), the
+   credentials the human must create in the Jenkins store (you cannot do this —
+   relay it), GitHub.com vs GitHub Enterprise (`GH_HOST`) setup, and the Bedrock
+   option. The "Choose your AI tool" and "Choose your provider" decisions below
+   apply identically on Jenkins (they set the same env vars).
+3. Success signal is the same: a PR build that posts one triage comment.
+
+Everything from here down (Steps 1–3) is the **GitHub Actions** path.
 
 ## Step 1 — fetch the ready-made caller file and write its bytes
 
@@ -183,5 +220,7 @@ setting is needed.)
 Full guide (humans, or when the above fails): `testing/classifier/docs/SETUP.md`
 at the `@pilot` tag. For the Amazon Bedrock path (one-time AWS account setup, IAM
 trust + permissions policies, OIDC vs static auth): `testing/classifier/docs/BEDROCK.md`.
+For the **Jenkins** path (non-Actions CI, GitHub.com or GitHub Enterprise):
+`testing/classifier/jenkins/README.md`.
 Fetch repo files with (quote the URL — the `?` is a shell glob):
 `curl -fsSL https://raw.githubusercontent.com/navapbc/ai-transformation-delivery-systems/pilot/<path>`

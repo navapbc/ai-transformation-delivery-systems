@@ -11,11 +11,14 @@ independent paths**, and you can use any or all:
 | **A. Reusable workflow (recommended)** | Consumer repo adds a tiny caller workflow that references the bundle's reusable workflow with a pinned SHA — no files copied in. Runs on every PR; posts a triage comment with the verdicts + 👍/👎 | Repo admin enables once | Low (one-time) |
 | **B. Local dispatcher run** | Developer runs `test-classifier-dispatcher.sh` on their machine against a PR; classifications print to the terminal and (with `--post-comment`) post as a PR comment via `gh` CLI | Any developer | Low (per developer) |
 | **C. Vendored workflow** | Copy the bundle's workflow file into your repo's live workflows dir. Fallback for repos that can't use reusable workflows | Repo admin enables once | Medium (one-time) |
+| **D. Jenkins** | For teams whose CI is Jenkins, not GitHub Actions (GitHub.com or GitHub Enterprise). A reference `Jenkinsfile` + a thin adapter map Jenkins' PR env onto the same dispatcher contract. Full guide: [`../jenkins/README.md`](../jenkins/README.md) | Repo / Jenkins admin enables once | Medium (one-time) |
 
 Most pilots use **A + B**: the reusable workflow provides the consistent,
 recorded backstop that feeds the metrics loop, and developers can classify
 locally while iterating. Use **C** only when policy forbids referencing an
-external reusable workflow.
+external reusable workflow. Use **D** when the team's CI is Jenkins rather than
+GitHub Actions — the classifier core is CI-agnostic, so paths A and D run the
+same dispatcher and produce the same comment + metrics.
 
 This guide mirrors `security/review/docs/PR_REVIEW_SETUP.md` step for step;
 the difference is the classifier's metrics sink, which the security bundle does
@@ -28,9 +31,10 @@ not have.
 1. [Path A — Reusable workflow (recommended)](#path-a--reusable-workflow-recommended)
 2. [Path B — Local dispatcher run](#path-b--local-dispatcher-run)
 3. [Path C — Vendored workflow](#path-c--vendored-workflow)
-4. [Fine-grained personal access token setup](#fine-grained-personal-access-token-setup)
-5. [Metrics sink configuration](#metrics-sink-configuration)
-6. [Troubleshooting](#troubleshooting)
+4. [Path D — Jenkins](../jenkins/README.md)
+5. [Fine-grained personal access token setup](#fine-grained-personal-access-token-setup)
+6. [Metrics sink configuration](#metrics-sink-configuration)
+7. [Troubleshooting](#troubleshooting)
 
 ---
 

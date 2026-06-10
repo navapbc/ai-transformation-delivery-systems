@@ -107,12 +107,18 @@ verdicts + 👍/👎. Vendoring the workflow file into your repo is the **fallba
 for repos that can't use reusable workflows — see `docs/SETUP.md` Path C. Full
 details for all three paths are in `docs/SETUP.md`.
 
+**Not on GitHub Actions?** The classifier core is CI-agnostic. For **Jenkins**
+(GitHub.com or GitHub Enterprise), see `jenkins/README.md` — a reference
+`Jenkinsfile` plus a thin adapter that maps Jenkins' PR env onto the same
+dispatcher contract.
+
 ## Start here
 
 1. Read **`docs/PLAYBOOK.md`** — the four-verdict taxonomy, the metrics loop,
    and the embedded security-considerations section.
 2. Follow **`docs/SETUP.md`** — Path A (reusable workflow, recommended), Path B
-   (run locally), Path C (vendored workflow fallback).
+   (run locally), Path C (vendored workflow fallback). On **Jenkins**, follow
+   **`jenkins/README.md`** instead (the non-Actions CI path).
 3. Use **`INSTALL.txt`** for the fast-path file-copy steps.
 
 ## Dispatcher interface

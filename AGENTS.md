@@ -25,6 +25,13 @@ the `pilot` tag), the manual step to relay to the human (set the
 Only fall back to `testing/classifier/docs/SETUP.md` (long-form, for humans) if
 the install doc doesn't cover your case.
 
+**First check which CI the consumer repo runs.** The default path above is for
+**GitHub Actions**. If the repo runs **Jenkins** instead (some teams' clients
+can't use Actions), the install is different — `AGENT_INSTALL.md` has a "Choose
+your CI platform" block at the top that routes you to the Jenkins path
+(`testing/classifier/jenkins/README.md`). Don't write a `.github/workflows/`
+file for a Jenkins-only repo. If you don't know, ask the human which CI they use.
+
 ## Fetching files from this repo
 
 This repo is **public**, so fetch raw files directly over HTTPS — no `gh`, no
