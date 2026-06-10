@@ -135,9 +135,17 @@ require_gh_cli() {
 }
 
 ai_review::discover_pr_context() {
-  # If --against was passed, it wins — no PR lookup needed.
+  # If --against was passed, it wins for the diff range — no base-ref lookup
+  # needed. But we still record --pr (when given) as the PR number so comment
+  # posting has a target. This is the CI fast path: a caller that already knows
+  # both the PR number and the base ref (e.g. the Jenkins adapter passing
+  # CHANGE_ID + CHANGE_TARGET) supplies both flags and we skip `gh pr view`
+  # entirely — gh is then needed only to post the comment.
   for arg in "${REMAINING_FOR_LIB[@]+"${REMAINING_FOR_LIB[@]}"}"; do
     if [[ "${arg}" == "--against" ]] || [[ "${arg}" == --against=* ]]; then
+      if [[ -n "${PR_NUMBER}" ]]; then
+        AI_REVIEW_PR_NUMBER="${PR_NUMBER}"
+      fi
       return 0
     fi
   done
