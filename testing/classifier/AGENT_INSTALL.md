@@ -1,12 +1,49 @@
-# AI Test Classifier — Agent Install (Path A, reusable workflow)
+# AI Test Classifier — Agent Install
 
 > For AI coding agents. This is the whole task. Do not read SETUP.md (498 lines)
-> unless something below fails. Do not vendor or copy any files.
+> unless something below fails. **Default path: GitHub Actions** (reusable
+> workflow, no files vendored). Jenkins is a documented alternative — see
+> "Choose your CI platform" below. Do not vendor or copy files on the Actions path.
 
 ## What you are doing
 
 Add ONE workflow file to the **current (consumer) repo** that calls the
-classifier's reusable workflow by pinned SHA. No scripts are copied in.
+classifier's reusable workflow by pinned SHA. No scripts are copied in. (This is
+the **GitHub Actions** path — the default. If the repo runs Jenkins, see the CI
+choice immediately below.)
+
+## Choose your CI platform (GitHub Actions | Jenkins)
+
+The classifier core is CI-agnostic; only the wiring differs. **Default to
+GitHub Actions** — it's the simple reusable-workflow path in this doc. Switch to
+Jenkins only when the repo's CI is Jenkins (e.g. a client that can't use
+Actions). If you don't know which the repo uses, **ask the human** before
+writing any files — don't write a `.github/workflows/` file into a Jenkins repo.
+
+| CI | What gets added to the consumer repo | Full instructions |
+|----|--------------------------------------|-------------------|
+| **GitHub Actions** (default) | one caller workflow at `.github/workflows/ai-test-classifier.yml` (reusable workflow, `@pilot`) | Steps 1–3 below |
+| **Jenkins** (GitHub.com or GHES) | the `testing/classifier/` tree (vendored/checked out) + a `Jenkinsfile`; **no** reusable-workflow equivalent exists | `testing/classifier/jenkins/README.md` |
+
+**If the repo runs Jenkins, stop here and follow the Jenkins path:**
+
+1. The Jenkins integration needs this repo's `testing/` tree present in the
+   consumer's workspace (Jenkins has no reusable-workflow mechanism, so the
+   scripts must be vendored or checked out as a second source — the README
+   explains both). Fetch the two Jenkins files so the human can see them:
+   ```
+   curl -fsSL https://raw.githubusercontent.com/navapbc/ai-transformation-delivery-systems/pilot/testing/classifier/jenkins/Jenkinsfile
+   curl -fsSL https://raw.githubusercontent.com/navapbc/ai-transformation-delivery-systems/pilot/testing/classifier/jenkins/README.md
+   ```
+2. Then **follow `testing/classifier/jenkins/README.md`** — it is the Jenkins
+   equivalent of Steps 1–3 here: prerequisites (plugins, agent tools), the
+   credentials the human must create in the Jenkins store (you cannot do this —
+   relay it), GitHub.com vs GitHub Enterprise (`GH_HOST`) setup, and the Bedrock
+   option. The "Choose your AI tool" and "Choose your provider" decisions below
+   apply identically on Jenkins (they set the same env vars).
+3. Success signal is the same: a PR build that posts one triage comment.
+
+Everything from here down (Steps 1–3) is the **GitHub Actions** path.
 
 ## Step 1 — fetch the ready-made caller file and write its bytes
 
@@ -74,22 +111,35 @@ API key from Step 2 (`provider: anthropic`). If the team wants inference to run
 in **their own AWS account via Amazon Bedrock** instead — e.g. a CMS-internal
 repo where no code may leave the AWS boundary — use `provider: bedrock`.
 
-**If the user asks for Bedrock, default to `aws-auth: static`** (a Bedrock API
-key) — it is the simplest path and the recommended onboarding for the pilot. Only
-use `aws-auth: oidc` if the user explicitly asks for it (no stored credential /
-hardened posture); that path is in `testing/classifier/docs/BEDROCK.md`.
+**If the user asks for Bedrock, the auth mode is a security decision they must
+make — do NOT silently default it.** Ask, presenting both:
+- `aws-auth: static` — one long-lived Bedrock API key in repo secrets. Fastest
+  onboarding, but the key hits a **public** Bedrock endpoint, so a leak means
+  open-ended spend ("denial of wallet"). **If they choose static, the cost
+  guardrails in `BEDROCK.md` are mandatory.**
+- `aws-auth: oidc` — no stored key; short-lived STS creds per run. The posture
+  FISMA/federal reviews expect. Costs more setup: an IAM role + policy the team
+  manages in *their* Terraform.
+
+For a CMS/federal repo, **expect the client to require `oidc`** and to need to
+sign off either way. If you can't reach them, stop and ask rather than guessing.
+Full setup for both (and the cost guardrails) is in
+`testing/classifier/docs/BEDROCK.md`. The examples below show the static `with:`
+block; for oidc, follow BEDROCK.md.
 
 The caller file you just wrote already contains the Bedrock block, **commented
 out**. To switch to Bedrock you UNCOMMENT and fill those lines (do not retype the
-file). For the default static path, edit `.github/workflows/ai-test-classifier.yml`
-so the `with:` block reads:
+file). Once the team has chosen the auth mode, edit
+`.github/workflows/ai-test-classifier.yml`. The `with:` block for the **static**
+path reads (for **oidc**, set `aws-auth: oidc` + `aws-role-to-assume:` and omit
+the bearer secret — see `BEDROCK.md`):
 
 ```yaml
     with:
       tool: claude                 # claude (Claude models) | codex (OpenAI GPT-5.x). NOT copilot.
       provider: bedrock
       aws-region: us-east-1        # a region where your account has Anthropic model access
-      aws-auth: static             # static (default here): one Bedrock API key, no IAM role
+      aws-auth: static             # static: one Bedrock API key (needs cost guardrails) | oidc: IAM role, no stored key
       # bedrock-model: us.anthropic.claude-sonnet-4-6   # optional; codex → openai.gpt-5.5
 ```
 
@@ -183,5 +233,7 @@ setting is needed.)
 Full guide (humans, or when the above fails): `testing/classifier/docs/SETUP.md`
 at the `@pilot` tag. For the Amazon Bedrock path (one-time AWS account setup, IAM
 trust + permissions policies, OIDC vs static auth): `testing/classifier/docs/BEDROCK.md`.
+For the **Jenkins** path (non-Actions CI, GitHub.com or GitHub Enterprise):
+`testing/classifier/jenkins/README.md`.
 Fetch repo files with (quote the URL — the `?` is a shell glob):
 `curl -fsSL https://raw.githubusercontent.com/navapbc/ai-transformation-delivery-systems/pilot/<path>`

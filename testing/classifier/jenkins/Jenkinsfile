@@ -1,0 +1,123 @@
+// testing/classifier/jenkins/Jenkinsfile
+//
+// Reference Jenkins pipeline for the AI test-classifier — the Jenkins-side
+// sibling of the GitHub Actions caller workflow
+// (.github/workflows/test-classifier.yml + testing/classifier/caller-workflow.yml).
+//
+// It does the same job the Actions workflow does, in Jenkins idiom:
+//   checkout the PR  →  install the agent CLI  →  bind secrets from the Jenkins
+//   credentials store  →  run the CI adapter  →  archive the run record.
+//
+// All the classification logic lives in the dispatcher; this pipeline only sets
+// up the environment the dispatcher's contract expects. The single piece of
+// Jenkins-specific glue is jenkins/ci-adapter.sh, which maps Jenkins' native PR
+// env (CHANGE_ID / CHANGE_TARGET) onto that contract.
+//
+// ── Prerequisites (one-time, see jenkins/README.md) ─────────────────────────
+//   • A multibranch pipeline (or org folder) using the GitHub Branch Source
+//     plugin, so PR builds get CHANGE_ID / CHANGE_TARGET / CHANGE_URL.
+//   • An agent with `git`, `node`/`npm`, `gh`, `jq`, and `python3` available.
+//   • Jenkins credentials (see the `environment` block below):
+//       - github-pat            : a PAT with pull-requests:write (string/secret-text)
+//       - anthropic-api-key     : Anthropic API key (omit on Bedrock; see README)
+//     Bedrock instead of the direct API? See the "Bedrock" note in README.md.
+//
+// This Jenkinsfile assumes repos on GitHub.com or GitHub Enterprise Server. For
+// GHES the adapter auto-detects the host from CHANGE_URL; you can also set
+// GH_HOST explicitly in the environment block.
+
+pipeline {
+  agent any
+
+  options {
+    timestamps()
+    // The agent run is bounded; cap the whole job generously above it.
+    timeout(time: 45, unit: 'MINUTES')
+  }
+
+  environment {
+    // Which agent runs the classifier: claude | codex | copilot.
+    AI_REVIEW_TOOL = 'claude'
+
+    // Let the agent locate, install, and RUN the suite for OBSERVED verdicts.
+    // The Jenkins agent should be ephemeral/disposable for this to be safe —
+    // same assumption the Actions runner makes. Set to '0' for read-only triage.
+    AI_RUN_SUITE = '1'
+
+    // Mirror the Actions env: suppress colors / prefer fail-fast.
+    CI = 'true'
+
+    // GitHub token for `gh` (posting the PR comment). The adapter copies this
+    // into GH_TOKEN. Use a secret-text credential id of your choosing.
+    GH_TOKEN = credentials('github-pat')
+
+    // Direct Anthropic API key. On Bedrock, REMOVE this line and add the Bedrock
+    // env instead (see README "Bedrock") — a non-empty key forces the direct API
+    // and bypasses Bedrock.
+    ANTHROPIC_API_KEY = credentials('anthropic-api-key')
+
+    // For GitHub Enterprise Server, uncomment and set your host (the adapter
+    // also auto-detects it from CHANGE_URL):
+    // GH_HOST = 'github.example.com'
+  }
+
+  stages {
+    stage('Not a PR build') {
+      // The classifier is PR-scoped. On a branch/tag build there is no PR to
+      // comment on; this stage just logs that. The real work stage below is
+      // gated on changeRequest(), so it's skipped on non-PR builds either way.
+      when { not { changeRequest() } }
+      steps {
+        echo 'Not a pull-request build — nothing to classify.'
+      }
+    }
+
+    stage('Classify failing tests') {
+      when { changeRequest() }
+      steps {
+        // The multibranch checkout already placed the PR's merge/head ref in the
+        // workspace. Make sure full history is present so the diff resolves; the
+        // adapter additionally fetches the base ref (CHANGE_TARGET).
+        sh 'git rev-parse HEAD'
+
+        // Install the selected agent CLI. Kept inline (not a shared tool) so this
+        // file is self-contained; swap for a pre-baked agent image to save time.
+        sh '''
+          set -euo pipefail
+          case "$AI_REVIEW_TOOL" in
+            claude)  npm install -g @anthropic-ai/claude-code ;;
+            codex)   npm install -g @openai/codex ;;
+            copilot) npm install -g @github/copilot ;;
+            *) echo "Unknown AI_REVIEW_TOOL=$AI_REVIEW_TOOL" >&2; exit 1 ;;
+          esac
+        '''
+
+        // Sync the canonical SKILL.md into the chosen tool's skills dir, exactly
+        // as the Actions workflow does before invoking the dispatcher.
+        dir('testing/classifier') {
+          sh 'chmod +x scripts/sync-skills.sh && scripts/sync-skills.sh'
+        }
+
+        // Ensure the scripts are executable (a fresh checkout may drop the bit),
+        // then hand off to the CI adapter — it normalizes CHANGE_ID/CHANGE_TARGET
+        // and execs the dispatcher with --pr / --against / --post-comment.
+        sh '''
+          set -euo pipefail
+          chmod +x testing/classifier/.skills/_lib/ai-classifier-dispatch.sh \
+                    testing/classifier/.skills/test-classifier/scripts/test-classifier-dispatcher.sh \
+                    testing/classifier/jenkins/ci-adapter.sh
+          mkdir -p classifier-out/agent-bodies
+          testing/classifier/jenkins/ci-adapter.sh | tee classifier-out/classification.txt
+        '''
+      }
+    }
+  }
+
+  post {
+    always {
+      // Keep the classification record (parsed result + report) as a build
+      // artifact — the Jenkins counterpart of actions/upload-artifact.
+      archiveArtifacts artifacts: 'classifier-out/**', allowEmptyArchive: true, fingerprint: false
+    }
+  }
+}
