@@ -51,16 +51,7 @@ fi
 # ── Skill identity ──────────────────────────────────────────────────────────
 SKILL_NAME="pr-review"
 SKILL_HUMAN_NAME="AI-Assisted PR Review (security + compliance)"
-# Skill text: prefer the copy vendored from agent-skills by fetch-skills.sh;
-# fall back to the in-repo .skills/ copy when the vendor dir is absent. The
-# code-security and iac-compliance perspectives are not migrated — they stay
-# in .skills/ and are read from there.
-BUNDLE_ROOT="$(cd "${SCRIPT_DIR}/../../.." && pwd)"   # scripts → pr-review → .skills → security/review
-if [[ -f "${BUNDLE_ROOT}/.skills-vendor/pr-review/SKILL.md" ]]; then
-  SKILL_PATH_CANONICAL=".skills-vendor/pr-review/SKILL.md"
-else
-  SKILL_PATH_CANONICAL=".skills/pr-review/SKILL.md"
-fi
+SKILL_PATH_CANONICAL=".skills/pr-review/SKILL.md"
 
 # ── PR-review-specific arg parsing ─────────────────────────────────────────
 # We extend the shared library's arg parser by intercepting our own flags
@@ -201,28 +192,27 @@ require_gh_cli() {
 # We instruct the AI to emit BOTH a human-readable report AND a fenced JSON
 # block. The dispatcher extracts the JSON block to post via the GitHub API.
 
-read -r -d '' SKILL_PROMPT <<PROMPT || true
+read -r -d '' SKILL_PROMPT <<'PROMPT' || true
 You have access to the pr-review skill. The skill's full instructions are in
 this repository at:
 
-  ${SKILL_PATH_CANONICAL}
+  .skills/pr-review/SKILL.md
 
-(The canonical pr-review text is published in navapbc/agent-skills and vendored
-here by scripts/fetch-skills.sh; when the vendored copy is absent the in-repo
-.skills/ copy is used. Either way, follow the file at the path above.)
+(Tool-specific copies may also exist at .claude/skills/pr-review/SKILL.md,
+.codex/skills/pr-review/SKILL.md, or .github/copilot/skills/pr-review/SKILL.md;
+all are byte-identical to the canonical file above.)
 
-This skill is a composed PR review. You will additionally need to read these two
-perspective skills, which live in this repository:
+This skill is a composed PR review. You will additionally need to read:
 
   .skills/code-security/SKILL.md      (security perspective)
   .skills/iac-compliance/SKILL.md     (compliance perspective)
 
 Run a full PR review on the diff between AI_REVIEW_AGAINST and HEAD:
 
-  git diff "\$AI_REVIEW_AGAINST" HEAD --unified=5
-  git diff "\$AI_REVIEW_AGAINST" HEAD --name-only
+  git diff "$AI_REVIEW_AGAINST" HEAD --unified=5
+  git diff "$AI_REVIEW_AGAINST" HEAD --name-only
 
-Follow the skill instructions exactly:
+Follow the skill instructions in pr-review/SKILL.md exactly:
 
   1. Collect the PR diff.
   2. Determine which perspectives apply (security always; compliance only if
@@ -234,18 +224,11 @@ Follow the skill instructions exactly:
      these exact markers on their own lines:
 
        <!-- AI_REVIEW_JSON_BEGIN -->
-       { ...JSON object per the schema below... }
+       { ...JSON object as specified in pr-review/SKILL.md... }
        <!-- AI_REVIEW_JSON_END -->
 
-     The JSON object has: "review_action" (APPROVE | COMMENT), "summary", and a
-     "comments" array. Each comment has: "path", "line", "side" ("RIGHT"),
-     "perspective" ("security" | "compliance"), "severity" (CRITICAL | HIGH |
-     MEDIUM | LOW), "title", "description" (cite the OWASP category for security
-     findings, and the NIST 800-53 Rev 5 + CMS ARS 5.1 control IDs for
-     compliance findings), "suggestion_kind" ("applicable" | "reference"),
-     "suggestion_body", and "suggestion_language" (only when kind is
-     "reference"). (This JSON contract is owned by the CI dispatcher, not the
-     skill file.)
+     The JSON object must have the schema documented in pr-review/SKILL.md
+     section "6B — Machine-Readable JSON Block".
 
 After the JSON block, end your response with EXACTLY ONE of the following
 markers, on its own line, with no surrounding text:

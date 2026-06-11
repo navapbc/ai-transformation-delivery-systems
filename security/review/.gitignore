@@ -14,9 +14,6 @@
 .codex/skills/
 .github/copilot/skills/
 
-# Skills vendored from agent-skills by scripts/fetch-skills.sh.
-.skills-vendor/
-
 # ── Codebase audit output ──────────────────────────────────────────────────
 # Audit reports are for human triage, not source-of-truth. Remove this line
 # if your team prefers to commit audit baselines for historical comparison.

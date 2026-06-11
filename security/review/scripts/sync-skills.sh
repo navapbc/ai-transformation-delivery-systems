@@ -42,10 +42,10 @@ REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
 cd "${REPO_ROOT}"
 
 # ── Skills to sync ─────────────────────────────────────────────────────────
-# pr-review is omitted: it's vendored from agent-skills by scripts/fetch-skills.sh.
 SKILLS=(
   "code-security"
   "iac-compliance"
+  "pr-review"
   "codebase-audit"
   "finding-adjudication"
 )
