@@ -38,8 +38,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 if REPO_ROOT="$(git -C "${SCRIPT_DIR}" rev-parse --show-toplevel 2>/dev/null)"; then
   :
 else
-  # SCRIPT_DIR = security/review/.skills/pr-review/scripts → 5 levels to repo root
-  REPO_ROOT="$(cd "${SCRIPT_DIR}/../../../../.." && pwd)"
+  REPO_ROOT="$(cd "${SCRIPT_DIR}/../../.." && pwd)"
 fi
 LIB_PATH="${REPO_ROOT}/.skills/_lib/ai-review-dispatch.sh"
 
@@ -52,12 +51,12 @@ fi
 # ── Skill identity ──────────────────────────────────────────────────────────
 SKILL_NAME="pr-review"
 SKILL_HUMAN_NAME="AI-Assisted PR Review (security + compliance)"
-# Canonical pr-review text now lives in navapbc/agent-skills, vendored by
-# scripts/fetch-skills.sh into .skills-vendor/. Prefer it; fall back to the
-# in-repo copy when absent (fetch skipped / pre-tag mock state). The two
-# perspective siblings (code-security, iac-compliance) are NOT migrated — they
-# stay in this repo's .skills/ tree and are referenced from there in the prompt.
-if [[ -f "${REPO_ROOT}/.skills-vendor/pr-review/SKILL.md" ]]; then
+# Skill text: prefer the copy vendored from agent-skills by fetch-skills.sh;
+# fall back to the in-repo .skills/ copy when the vendor dir is absent. The
+# code-security and iac-compliance perspectives are not migrated — they stay
+# in .skills/ and are read from there.
+BUNDLE_ROOT="$(cd "${SCRIPT_DIR}/../../.." && pwd)"   # scripts → pr-review → .skills → security/review
+if [[ -f "${BUNDLE_ROOT}/.skills-vendor/pr-review/SKILL.md" ]]; then
   SKILL_PATH_CANONICAL=".skills-vendor/pr-review/SKILL.md"
 else
   SKILL_PATH_CANONICAL=".skills/pr-review/SKILL.md"

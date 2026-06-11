@@ -42,12 +42,10 @@ REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
 cd "${REPO_ROOT}"
 
 # ── Skills to sync ─────────────────────────────────────────────────────────
+# pr-review is omitted: it's vendored from agent-skills by scripts/fetch-skills.sh.
 SKILLS=(
   "code-security"
   "iac-compliance"
-  # pr-review now lives canonically in navapbc/agent-skills and is vendored by
-  # scripts/fetch-skills.sh — no longer synced from a local copy. The two
-  # perspectives above remain in-repo because pr-review composes them.
   "codebase-audit"
   "finding-adjudication"
 )

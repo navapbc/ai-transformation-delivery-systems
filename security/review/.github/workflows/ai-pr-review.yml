@@ -76,11 +76,15 @@ jobs:
           chmod +x .skills/_lib/ai-review-dispatch.sh
           chmod +x .skills/pr-review/scripts/pr-review-dispatcher.sh
           chmod +x scripts/sync-skills.sh
+          chmod +x scripts/fetch-skills.sh
 
-      - name: Sync canonical SKILL.md into the chosen tool's directory
+      - name: Sync in-repo SKILL.md into the chosen tool's directory
         env:
           AI_REVIEW_TOOL: ${{ vars.AI_REVIEW_TOOL }}
         run: scripts/sync-skills.sh
+
+      - name: Vendor pr-review from agent-skills
+        run: scripts/fetch-skills.sh
 
       - name: Install AI CLI — Claude Code
         if: vars.AI_REVIEW_TOOL == 'claude'

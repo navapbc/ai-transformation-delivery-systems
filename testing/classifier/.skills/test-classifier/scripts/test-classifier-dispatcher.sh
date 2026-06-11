@@ -60,15 +60,10 @@ fi
 # ── Skill identity ──────────────────────────────────────────────────────────
 SKILL_NAME="test-classifier"
 SKILL_HUMAN_NAME="AI Test Classifier (application-bug / test-bug / flaky / environment)"
-# Canonical skill text now lives in navapbc/agent-skills and is vendored by
-# scripts/fetch-skills.sh into .skills-vendor/. Prefer the vendored copy; fall
-# back to the in-repo .skills/ copy when the vendor dir is absent (e.g. fetch
-# skipped, or pre-tag mock state). The dispatcher still owns the CI contract
-# (JSON markers, result envelope) regardless of where the capability text loads.
-if ! _REPO_ROOT="$(git -C "${SCRIPT_DIR}" rev-parse --show-toplevel 2>/dev/null)"; then
-  _REPO_ROOT="$(cd "${SKILLS_ROOT}/../.." && pwd)"   # .skills → classifier → testing → repo root
-fi
-if [[ -f "${_REPO_ROOT}/.skills-vendor/test-classifier/SKILL.md" ]]; then
+# Skill text: prefer the copy vendored from agent-skills by fetch-skills.sh;
+# fall back to the in-repo .skills/ copy when the vendor dir is absent.
+BUNDLE_ROOT="$(cd "${SKILLS_ROOT}/.." && pwd)"   # .skills → classifier (bundle root)
+if [[ -f "${BUNDLE_ROOT}/.skills-vendor/test-classifier/SKILL.md" ]]; then
   SKILL_PATH_CANONICAL=".skills-vendor/test-classifier/SKILL.md"
 else
   SKILL_PATH_CANONICAL=".skills/test-classifier/SKILL.md"

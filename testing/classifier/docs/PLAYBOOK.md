@@ -54,8 +54,8 @@ It mirrors the security workstream exactly in its plumbing:
   `set -euo pipefail`, and color helpers suppressed in CI.
 - The **result-marker contract**: the AI ends its output with exactly one
   `<<<AI_REVIEW_RESULT:...>>>` marker that the dispatcher parses.
-- A **canonical `SKILL.md`** under `.skills/`, synced into the tool-specific
-  directories by `scripts/sync-skills.sh`.
+- The **skill text** vendored from `navapbc/agent-skills` by
+  `scripts/fetch-skills.sh`, with the in-repo `.skills/` copy as a fallback.
 - A GitHub Actions workflow that ships **disabled** (`on: workflow_dispatch`
   only), is **non-blocking/advisory by default**, and flips to build-failing
   only behind an explicit `--gate` flag.

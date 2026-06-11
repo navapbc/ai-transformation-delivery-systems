@@ -92,10 +92,9 @@ pipeline {
           esac
         '''
 
-        // Sync the canonical SKILL.md into the chosen tool's skills dir, exactly
-        // as the Actions workflow does before invoking the dispatcher.
+        // Vendor the skill from agent-skills before invoking the dispatcher.
         dir('testing/classifier') {
-          sh 'chmod +x scripts/sync-skills.sh && scripts/sync-skills.sh'
+          sh 'chmod +x scripts/fetch-skills.sh && scripts/fetch-skills.sh'
         }
 
         // Ensure the scripts are executable (a fresh checkout may drop the bit),
