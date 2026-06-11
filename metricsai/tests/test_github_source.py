@@ -192,9 +192,7 @@ def test_classify_classifier_expands_verdicts_with_reactions() -> None:
         "https://github.com/o/r/pull/1",
         {"+1": 3, "-1": 1},
     )
-    out = github._classify_classifier(
-        obj, authors_lower={_CLASSIFIER}, start=_START, end=_END
-    )
+    out = github._classify_classifier(obj, authors_lower={_CLASSIFIER}, start=_START, end=_END)
     assert [c.verdict for c in out] == ["APPLICATION_BUG", "TEST_BUG"]
     assert all((c.thumbs_up, c.thumbs_down) == (3, 1) for c in out)
 
@@ -203,9 +201,7 @@ def test_classify_classifier_labelled_but_no_json_counts_once() -> None:
     obj = _classifier_obj(
         _CLASSIFIER, "test-classifier: triage", _IN_WINDOW, "https://github.com/o/r/pull/1"
     )
-    out = github._classify_classifier(
-        obj, authors_lower={_CLASSIFIER}, start=_START, end=_END
-    )
+    out = github._classify_classifier(obj, authors_lower={_CLASSIFIER}, start=_START, end=_END)
     assert len(out) == 1
     assert out[0].verdict == ""
 
