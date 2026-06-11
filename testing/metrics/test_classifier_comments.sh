@@ -182,13 +182,20 @@ TOTAL_ROWS=0
 for REPO in "${REPOSITORIES[@]}"; do
     log "Processing repository: $REPO..."
 
-    PR_LIST=$(gh pr list -R "$REPO" --state all --limit 1000 --json number 2>/dev/null) || {
+    PR_LIST=$(gh pr list -R "$REPO" --state all --limit 1000 --json number \
+        --search "updated:$START_DATE..$END_DATE" 2>/dev/null) || {
         log "WARNING: Skipping $REPO: Failed to fetch PR list."
         continue
     }
 
+    PR_TOTAL=$(echo "$PR_LIST" | jq 'length')
+    log "  Found $PR_TOTAL PRs updated in range $START_DATE..$END_DATE (making 2 API calls each)..."
+
+    PR_INDEX=0
     while read -r PR_NUM; do
         [ -n "$PR_NUM" ] || continue
+        PR_INDEX=$((PR_INDEX + 1))
+        log "  [$PR_INDEX/$PR_TOTAL] PR #$PR_NUM: fetching comments..."
 
         # The classifier now posts its comment as a file-level pull-request
         # REVIEW comment (so it has a Reply thread for the 👎 reason). Older
@@ -276,7 +283,12 @@ for REPO in "${REPOSITORIES[@]}"; do
             IC=$(echo "$ISSUE_JSON" | jq 'length' 2>/dev/null || echo "?")
             RC=$(echo "$REVIEW_JSON" | jq 'length' 2>/dev/null || echo "?")
             MC=$(printf '%s\n' "$MATCHED" | grep -c . || true)
-            log "  PR #$PR_NUM: issue_comments=$IC  review_comments=$RC  classifier_matched=$MC"
+            log "  [$PR_INDEX/$PR_TOTAL] PR #$PR_NUM: issue_comments=$IC  review_comments=$RC  classifier_matched=$MC"
+        fi
+
+        MC=$(printf '%s\n' "$MATCHED" | grep -c . 2>/dev/null || echo "0")
+        if [ "$MC" -gt 0 ] 2>/dev/null; then
+            log "  [$PR_INDEX/$PR_TOTAL] PR #$PR_NUM: *** $MC classifier comment(s) matched ***"
         fi
 
         [ -n "$MATCHED" ] || continue
