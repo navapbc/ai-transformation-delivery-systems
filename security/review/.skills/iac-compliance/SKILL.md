@@ -61,14 +61,24 @@ git diff --cached --unified=5      # full content of staged changes
 git diff --cached --name-only      # list of staged file paths
 ```
 
-If the dispatcher passed an `--against <ref>` argument, the changes to review
-are the diff between that ref and HEAD. The dispatcher communicates this via
-the `AI_REVIEW_AGAINST` environment variable:
+If the dispatcher passed a non-default diff range, it communicates this via the
+`AI_REVIEW_AGAINST` environment variable (the base ref). There are two forms,
+distinguished by `AI_REVIEW_INCLUDE_STAGED`:
+
+- **`--against <ref>`** (committed range): review `<ref>..HEAD`.
+- **`--unpushed`** (`AI_REVIEW_INCLUDE_STAGED=1`): review everything not yet
+  pushed — all committed *and* staged changes — i.e. base→index, via
+  `git diff --cached <ref>`.
 
 ```bash
 if [ -n "$AI_REVIEW_AGAINST" ]; then
-  git diff "$AI_REVIEW_AGAINST" HEAD --unified=5
-  git diff "$AI_REVIEW_AGAINST" HEAD --name-only
+  if [ "$AI_REVIEW_INCLUDE_STAGED" = "1" ]; then
+    git diff --cached "$AI_REVIEW_AGAINST" --unified=5   # committed + staged
+    git diff --cached "$AI_REVIEW_AGAINST" --name-only
+  else
+    git diff "$AI_REVIEW_AGAINST" HEAD --unified=5       # committed range
+    git diff "$AI_REVIEW_AGAINST" HEAD --name-only
+  fi
 fi
 ```
 
@@ -425,7 +435,7 @@ low warns without blocking.
 
 ```
 ## IaC Compliance Review Report
-**Scope:** <Staged changes (git diff --cached) | Diff against <ref>>
+**Scope:** <Staged changes (git diff --cached) | Diff against <ref> | Unpushed: committed + staged (git diff --cached <ref>)>
 **IaC tool(s) detected:** <Terraform / CloudFormation / Kubernetes / etc.>
 **Files reviewed:** <list IaC files>
 **Context files loaded:** <list, or "None">

@@ -1,12 +1,15 @@
 # AI-Assisted Pre-Commit Review — Setup & Operations Guide
 
-This repository ships two pre-commit hooks that run AI-assisted reviews on
-your uncommitted changes:
+This repository ships two **opt-in** pre-commit hooks that run AI-assisted
+reviews on your uncommitted changes. Both are configured `stages: [manual]`, so
+they **do not run on `git commit`** — developers run them on demand via shell
+functions (see [Local manual security review](docs/LOCAL_SECURITY_REVIEW.md))
+whenever a change has security implications that warrant a local review:
 
 | Skill | What it does | When it runs |
 |---|---|---|
-| **`code-security`** | Detects secrets, PII, PHI, OWASP Top 10 issues, and general security defects | On every commit |
-| **`iac-compliance`** | Reviews infrastructure-as-code against **CMS ARS 5.1** and **NIST SP 800-53 Rev 5** controls | Only when IaC files are staged |
+| **`code-security`** | Detects secrets, PII, PHI, OWASP Top 10 issues, and general security defects | Manual / opt-in — `code-security` |
+| **`iac-compliance`** | Reviews infrastructure-as-code against **CMS ARS 5.1** and **NIST SP 800-53 Rev 5** controls | Manual / opt-in — `iac-compliance` (matching IaC files) |
 
 Both hooks support **three AI coding assistants** — Claude Code, OpenAI Codex
 CLI, and GitHub Copilot CLI — and each developer chooses which one to use
@@ -14,8 +17,12 @@ locally. Skills are stored in a tool-neutral location and copied into the
 chosen tool's directory on demand, so a repo isn't branded with any
 particular AI vendor's directory name.
 
-Both hooks **block** commits on critical, high, or medium findings, and
-**warn without blocking** on low findings.
+When run, both hooks **exit non-zero (BLOCK)** on critical, high, or medium
+findings and **WARN without failing** on low findings. Because they are
+manual/opt-in (`stages: [manual]`), they never block a `git commit` on their
+own — the exit code surfaces the result of an on-demand review. To make a hook
+enforce at commit time, change its `stages: [manual]` to `stages: [pre-commit]`
+in `.pre-commit-config.yaml`.
 
 ---
 
@@ -148,12 +155,17 @@ This project ships **three layers** of AI-assisted review:
 
 | Layer | Where it runs | What it reviews | When it fires |
 |---|---|---|---|
-| **Pre-commit** | Developer's machine | The staged diff for one commit | `git commit`, before the commit is recorded |
+| **Pre-commit** | Developer's machine | The staged diff for one commit | Manual / opt-in (`stages: [manual]`) — on demand via `code-security` / `iac-compliance` |
 | **PR-level**   | Developer's machine *or* GitHub Actions *or* GitHub Copilot | The full diff between the PR's base ref and HEAD | On demand, on PR open/sync, or as part of Copilot auto-review |
 | **Codebase audit** | Developer's machine *or* CI | The full content of every reviewable file in the repo, batched by directory | On demand (e.g., quarterly baseline, pre-assessment review, new-repo onboarding) |
 
-The pre-commit layer is the primary gate — it blocks Critical/High/Medium
-findings before they enter the repository. The PR-level layer is a backstop
+The pre-commit layer is shipped **opt-in** (`stages: [manual]`): developers run
+it on demand via the `code-security` / `iac-compliance` functions when a
+change has security implications, getting the project's own security/compliance
+methodology — the skill check-lists and self-adjudication — before pushing. See
+[Local manual security review](docs/LOCAL_SECURITY_REVIEW.md) for setup and the
+functions. (To enforce at commit time instead, set a hook's `stages` to
+`[pre-commit]`.) The PR-level layer is a backstop
 that catches issues emerging only when changes are composed across commits
 or that arrive via the GitHub web UI. The codebase-audit layer is for one-
 time and periodic full reviews of the codebase at rest — useful when
@@ -385,6 +397,12 @@ You should see:
 pre-commit installed at .git/hooks/pre-commit
 ```
 
+> The `code-security` and `iac-compliance` hooks are **opt-in / manual**
+> (`stages: [manual]`) and will **not** run on commit — `pre-commit install`
+> only wires the commit-time `skills-in-sync` guard. Run the reviews on demand
+> via the `code-security` / `iac-compliance` functions; see
+> [Local manual security review](docs/LOCAL_SECURITY_REVIEW.md).
+
 ### Step 7 — Commit the configuration
 
 ```bash
@@ -392,7 +410,9 @@ git add .pre-commit-config.yaml .gitignore .skills/ scripts/ README.md
 git commit -m "chore: add AI-assisted code security & IaC compliance hooks"
 ```
 
-> The first commit runs the review on itself. That's expected.
+> The review hooks are opt-in/manual, so this commit will **not** trigger
+> code-security or iac-compliance. Run them on demand with the
+> `code-security` / `iac-compliance` functions.
 
 ### Step 8 — Team onboarding
 
@@ -402,6 +422,10 @@ Every developer who clones the repo must:
 2. Set `AI_REVIEW_TOOL` in their shell
 3. Run `scripts/sync-skills.sh` (creates their local derived directory)
 4. Run `pre-commit install`
+5. (Recommended) Add the `code-security` / `iac-compliance` functions to
+   `~/.zshrc` — the review hooks are opt-in/manual, so these functions are how
+   developers run them. See
+   [Local manual security review](docs/LOCAL_SECURITY_REVIEW.md).
 
 Add this to your project's `Makefile`:
 
@@ -623,14 +647,23 @@ Docs: <https://github.com/github/copilot-cli>
 
 ## Daily workflow
 
-Every `git commit` triggers the hooks automatically:
+The review hooks are opt-in/manual — they do **not** trigger on `git commit`.
+When a change has security implications, run a review on demand (from anywhere
+in the repo) with the function:
+
+```
+code-security
+```
+
+With no argument it reviews **everything you haven't pushed yet** — all locally
+committed *and* staged changes — and produces output like:
 
 ```
 [code-security] AI tool resolved: claude
-[code-security] Running Code Security Review on git diff --cached via claude...
+[code-security] Running Code Security Review on git diff --cached origin/main via claude...
 ────────────────────────────────────────────────────────────
 ## Security Review Report
-**Scope:** Staged changes (git diff --cached)
+**Scope:** Unpushed: committed + staged (git diff --cached origin/main)
 **Files reviewed:** src/api/auth.py, src/api/users.py
 **Context files loaded:** src/models/user.py
 
@@ -641,8 +674,12 @@ Every `git commit` triggers the hooks automatically:
 [code-security] ✅  Code Security Review passed. No findings detected.
 ```
 
-The `iac-compliance` hook runs only when at least one IaC file is staged. It
-short-circuits silently otherwise.
+Pass a ref to review a committed range instead (`code-security origin/main` →
+`origin/main..HEAD`). `iac-compliance` works the same way, reporting only on
+infrastructure files. The default scope **excludes unstaged working-tree edits**
+— commit or `git add` them to include. See
+[Local manual security review](docs/LOCAL_SECURITY_REVIEW.md) for the function
+definitions and details.
 
 ---
 
@@ -702,18 +739,28 @@ pre-commit.
 # Run the full review but never exit non-zero (for testing in CI)
 .skills/code-security/scripts/code-security-hook-dispatcher.sh --no-block
 
-# Review the diff between a ref and HEAD (ad-hoc, no staging required)
+# Review the committed range between a ref and HEAD (ad-hoc, no staging required)
 .skills/code-security/scripts/code-security-hook-dispatcher.sh --against HEAD~1
 .skills/code-security/scripts/code-security-hook-dispatcher.sh --against main
-.skills/iac-compliance/scripts/iac-compliance-hook-dispatcher.sh --against origin/main
+
+# Review everything not yet pushed — all committed + staged changes (base→index)
+.skills/code-security/scripts/code-security-hook-dispatcher.sh --unpushed
+.skills/iac-compliance/scripts/iac-compliance-hook-dispatcher.sh --unpushed
 ```
 
-You can also run hooks via the pre-commit runner:
+The `code-security` / `iac-compliance` shell functions
+([Local manual security review](docs/LOCAL_SECURITY_REVIEW.md)) wrap these: no
+argument → `--unpushed`, a ref → `--against <ref>`.
+
+You can also invoke the hooks through the pre-commit runner — useful for a
+**staged-only** check. Because they are `stages: [manual]`, you **must** pass
+`--hook-stage manual` (a plain `pre-commit run code-security` reports *"No hook
+with id … in stage pre-commit"*):
 
 ```bash
-pre-commit run code-security                  # against staged changes
-pre-commit run code-security --all-files      # against the whole repo
-pre-commit run iac-compliance                 # only runs if IaC files match
+pre-commit run --hook-stage manual code-security               # staged changes
+pre-commit run --hook-stage manual code-security --all-files   # whole repo
+pre-commit run --hook-stage manual iac-compliance              # staged IaC files
 ```
 
 ### Flags reference
@@ -725,7 +772,8 @@ pre-commit run iac-compliance                 # only runs if IaC files match
 | `--jobs <N>`          | Review up to N batches concurrently when the diff fans out (default 4; also `AI_REVIEW_JOBS`). `1` = serial. |
 | `--no-block`          | Run the full review but always exit 0, regardless of findings. |
 | `--no-adjudicate`     | Skip the second-opinion adjudication pass (same as `AI_ADJUDICATION=0`). |
-| `--against <ref>`     | Review the diff between `<ref>` and `HEAD` (instead of staged). |
+| `--against <ref>`     | Review the committed diff between `<ref>` and `HEAD` (instead of staged). |
+| `--unpushed`          | Review everything not yet pushed — committed + staged (`git diff --cached <base>`); base = upstream, else merge-base with the remote default branch. Errors if neither resolves. Excludes unstaged edits. |
 | `-h`, `--help`        | Show help. |
 
 See [Pre-commit performance](#pre-commit-performance-keeping-the-hook-fast) for
