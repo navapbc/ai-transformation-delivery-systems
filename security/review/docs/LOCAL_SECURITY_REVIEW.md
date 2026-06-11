@@ -6,8 +6,8 @@ they **do not run automatically on `git commit`**. Instead, developers run them
 on demand — whenever a change has security implications that warrant a local
 review before pushing.
 
-This guide sets up two shell aliases — `run-code-security` and
-`run-iac-compliance` — that make those manual runs a one-word command from
+This guide sets up two shell aliases — `code-security` and
+`iac-compliance` — that make those manual runs a one-word command from
 anywhere inside the repository.
 
 ---
@@ -56,7 +56,7 @@ Paste both blocks into `~/.zshrc`, then `source ~/.zshrc` (or open a new shell):
 ```zsh
 # AI-assisted local security review — manual, opt-in hooks.
 # Run from anywhere inside a repo that has the hooks installed.
-alias run-code-security='
+alias code-security='
 root="$(git rev-parse --show-toplevel 2>/dev/null)";
 if [ -z "$root" ]; then
   echo "✗ not inside a git repository";
@@ -67,7 +67,7 @@ else
   echo "✗ code-security hook not configured in $root/.pre-commit-config.yaml";
 fi'
 
-alias run-iac-compliance='
+alias iac-compliance='
 root="$(git rev-parse --show-toplevel 2>/dev/null)";
 if [ -z "$root" ]; then
   echo "✗ not inside a git repository";
@@ -97,8 +97,8 @@ What each alias does:
 ## Usage
 
 ```bash
-run-code-security        # review currently staged changes
-run-iac-compliance       # review staged IaC files (*.tf, *.yaml, etc.)
+code-security        # review currently staged changes
+iac-compliance       # review staged IaC files (*.tf, *.yaml, etc.)
 ```
 
 **Staged vs. whole repo.** By default these review the **staged** diff — the
@@ -128,7 +128,7 @@ implications, for example:
 - Touching authentication, authorization, sessions, or tokens.
 - Handling secrets, credentials, PII, or PHI.
 - New or changed data flows, deserialization, subprocess/shell calls, SQL.
-- Editing infrastructure-as-code (`run-iac-compliance`).
+- Editing infrastructure-as-code (`iac-compliance`).
 
 For routine, non-security changes there's no need to run them — that's the point
 of opt-in.

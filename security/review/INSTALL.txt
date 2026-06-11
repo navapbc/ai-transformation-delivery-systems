@@ -180,7 +180,7 @@ Steps:
     # (stages: [manual] in .pre-commit-config.yaml). They do NOT run on
     # `git commit`. Developers run them on demand — whenever a change has
     # security implications warranting a local review — via the
-    # run-code-security / run-iac-compliance aliases (see the section
+    # code-security / iac-compliance aliases (see the section
     # "Local manual security review (opt-in)" below, and
     # docs/LOCAL_SECURITY_REVIEW.md). `pre-commit install` here only wires
     # the commit-time skills-in-sync guard.
@@ -226,7 +226,7 @@ Local manual security review (opt-in) — shell aliases
     Full guide: docs/LOCAL_SECURITY_REVIEW.md
 
     # ── AI-assisted local security review — manual, opt-in hooks ──────────
-    alias run-code-security='
+    alias code-security='
     root="$(git rev-parse --show-toplevel 2>/dev/null)";
     if [ -z "$root" ]; then
       echo "✗ not inside a git repository";
@@ -237,7 +237,7 @@ Local manual security review (opt-in) — shell aliases
       echo "✗ code-security hook not configured in $root/.pre-commit-config.yaml";
     fi'
 
-    alias run-iac-compliance='
+    alias iac-compliance='
     root="$(git rev-parse --show-toplevel 2>/dev/null)";
     if [ -z "$root" ]; then
       echo "✗ not inside a git repository";
@@ -249,8 +249,8 @@ Local manual security review (opt-in) — shell aliases
     fi'
 
     Usage:
-      run-code-security      # review currently staged changes
-      run-iac-compliance     # review staged IaC files
+      code-security      # review currently staged changes
+      iac-compliance     # review staged IaC files
 
     Both default to the STAGED diff (fast). For a whole-repo sweep, run the
     underlying command with --all-files (slower, higher token cost):
@@ -265,7 +265,7 @@ Onboarding new team members
       b. Set AI_REVIEW_TOOL in their shell (.zshenv recommended on macOS)
       c. Run: scripts/sync-skills.sh *
       d. Run: pre-commit install *
-      e. (Recommended) Add the run-code-security / run-iac-compliance aliases
+      e. (Recommended) Add the code-security / iac-compliance aliases
          to ~/.zshrc — see "Local manual security review (opt-in)" above and
          docs/LOCAL_SECURITY_REVIEW.md. The review hooks are manual/opt-in, so
          these aliases are how developers actually run them.
@@ -383,8 +383,8 @@ Pre-commit performance for large commits (optional — sensible defaults)
 
 ------------------------------------------------------------------------------
 Done. The code-security and iac-compliance reviews are OPT-IN / manual: they do
-not run on commit. Developers run them on demand via the run-code-security /
-run-iac-compliance aliases whenever a change has security implications warranting
+not run on commit. Developers run them on demand via the code-security /
+iac-compliance aliases whenever a change has security implications warranting
 a local review (see "Local manual security review (opt-in)" above and
 docs/LOCAL_SECURITY_REVIEW.md). The commit-time skills-in-sync guard runs
 automatically. PR-level review is available via whichever path(s) you enabled.

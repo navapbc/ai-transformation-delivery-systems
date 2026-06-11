@@ -8,8 +8,8 @@ whenever a change has security implications that warrant a local review:
 
 | Skill | What it does | When it runs |
 |---|---|---|
-| **`code-security`** | Detects secrets, PII, PHI, OWASP Top 10 issues, and general security defects | Manual / opt-in — `run-code-security` |
-| **`iac-compliance`** | Reviews infrastructure-as-code against **CMS ARS 5.1** and **NIST SP 800-53 Rev 5** controls | Manual / opt-in — `run-iac-compliance` (matching IaC files) |
+| **`code-security`** | Detects secrets, PII, PHI, OWASP Top 10 issues, and general security defects | Manual / opt-in — `code-security` |
+| **`iac-compliance`** | Reviews infrastructure-as-code against **CMS ARS 5.1** and **NIST SP 800-53 Rev 5** controls | Manual / opt-in — `iac-compliance` (matching IaC files) |
 
 Both hooks support **three AI coding assistants** — Claude Code, OpenAI Codex
 CLI, and GitHub Copilot CLI — and each developer chooses which one to use
@@ -155,12 +155,12 @@ This project ships **three layers** of AI-assisted review:
 
 | Layer | Where it runs | What it reviews | When it fires |
 |---|---|---|---|
-| **Pre-commit** | Developer's machine | The staged diff for one commit | Manual / opt-in (`stages: [manual]`) — on demand via `run-code-security` / `run-iac-compliance` |
+| **Pre-commit** | Developer's machine | The staged diff for one commit | Manual / opt-in (`stages: [manual]`) — on demand via `code-security` / `iac-compliance` |
 | **PR-level**   | Developer's machine *or* GitHub Actions *or* GitHub Copilot | The full diff between the PR's base ref and HEAD | On demand, on PR open/sync, or as part of Copilot auto-review |
 | **Codebase audit** | Developer's machine *or* CI | The full content of every reviewable file in the repo, batched by directory | On demand (e.g., quarterly baseline, pre-assessment review, new-repo onboarding) |
 
 The pre-commit layer is shipped **opt-in** (`stages: [manual]`): developers run
-it on demand via the `run-code-security` / `run-iac-compliance` aliases when a
+it on demand via the `code-security` / `iac-compliance` aliases when a
 change has security implications, getting the project's own security/compliance
 methodology — the skill check-lists and self-adjudication — before pushing. See
 [Local manual security review](docs/LOCAL_SECURITY_REVIEW.md) for setup and the
@@ -400,7 +400,7 @@ pre-commit installed at .git/hooks/pre-commit
 > The `code-security` and `iac-compliance` hooks are **opt-in / manual**
 > (`stages: [manual]`) and will **not** run on commit — `pre-commit install`
 > only wires the commit-time `skills-in-sync` guard. Run the reviews on demand
-> via the `run-code-security` / `run-iac-compliance` aliases; see
+> via the `code-security` / `iac-compliance` aliases; see
 > [Local manual security review](docs/LOCAL_SECURITY_REVIEW.md).
 
 ### Step 7 — Commit the configuration
@@ -412,7 +412,7 @@ git commit -m "chore: add AI-assisted code security & IaC compliance hooks"
 
 > The review hooks are opt-in/manual, so this commit will **not** trigger
 > code-security or iac-compliance. Run them on demand with the
-> `run-code-security` / `run-iac-compliance` aliases.
+> `code-security` / `iac-compliance` aliases.
 
 ### Step 8 — Team onboarding
 
@@ -422,7 +422,7 @@ Every developer who clones the repo must:
 2. Set `AI_REVIEW_TOOL` in their shell
 3. Run `scripts/sync-skills.sh` (creates their local derived directory)
 4. Run `pre-commit install`
-5. (Recommended) Add the `run-code-security` / `run-iac-compliance` aliases to
+5. (Recommended) Add the `code-security` / `iac-compliance` aliases to
    `~/.zshrc` — the review hooks are opt-in/manual, so these aliases are how
    developers run them. See
    [Local manual security review](docs/LOCAL_SECURITY_REVIEW.md).
@@ -652,7 +652,7 @@ When a change has security implications, run a review on demand (from anywhere
 in the repo) with the alias:
 
 ```
-run-code-security
+code-security
 ```
 
 which produces output like:
@@ -673,7 +673,7 @@ which produces output like:
 [code-security] ✅  Code Security Review passed. No findings detected.
 ```
 
-`run-iac-compliance` reviews staged IaC files; it reports nothing to do when no
+`iac-compliance` reviews staged IaC files; it reports nothing to do when no
 matching IaC files are staged. Both aliases default to the **staged** diff; for
 a whole-repo sweep, append `--all-files` to the underlying command (see
 [Local manual security review](docs/LOCAL_SECURITY_REVIEW.md)).
@@ -745,7 +745,7 @@ pre-commit.
 You can also run the hooks via the pre-commit runner. Because they are
 `stages: [manual]`, you **must** pass `--hook-stage manual` (a plain
 `pre-commit run code-security` reports *"No hook with id … in stage
-pre-commit"*). The `run-code-security` / `run-iac-compliance` aliases wrap these
+pre-commit"*). The `code-security` / `iac-compliance` aliases wrap these
 — see [Local manual security review](docs/LOCAL_SECURITY_REVIEW.md):
 
 ```bash
