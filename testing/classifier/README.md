@@ -33,8 +33,8 @@ reuses its conventions exactly:
   `copilot`. See [`docs/BEDROCK.md`](./docs/BEDROCK.md).
 - The result-marker contract: the AI ends with one `<<<AI_REVIEW_RESULT:...>>>`
   marker the dispatcher parses.
-- A canonical `SKILL.md` under `.skills/`, synced into tool-specific dirs by
-  `scripts/sync-skills.sh`.
+- The skill text vendored from `navapbc/agent-skills` by
+  `scripts/fetch-skills.sh`, with the in-repo `.skills/` copy as a fallback.
 - A GitHub Actions workflow that ships **disabled**, **advisory/non-blocking**
   by default, with a `--gate` flag to opt into build-failing later.
 - Same bash style: `set -euo pipefail`, `ai_review::`-namespaced helpers,

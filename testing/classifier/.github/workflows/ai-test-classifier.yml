@@ -115,13 +115,11 @@ jobs:
         run: |
           chmod +x .skills/_lib/ai-classifier-dispatch.sh
           chmod +x .skills/test-classifier/scripts/test-classifier-dispatcher.sh
-          chmod +x scripts/sync-skills.sh
+          chmod +x scripts/fetch-skills.sh
 
-      - name: Sync canonical SKILL.md into the chosen tool's directory
+      - name: Vendor canonical skill from agent-skills
         working-directory: testing/classifier
-        env:
-          AI_REVIEW_TOOL: ${{ vars.AI_REVIEW_TOOL }}
-        run: scripts/sync-skills.sh
+        run: scripts/fetch-skills.sh
 
       # Bedrock auth (AI_PROVIDER=bedrock only): OIDC → short-lived STS creds for
       # the caller-owned IAM role. Claude Code picks them up via the AWS SDK

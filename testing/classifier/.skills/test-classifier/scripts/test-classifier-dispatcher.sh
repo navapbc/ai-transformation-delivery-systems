@@ -60,7 +60,14 @@ fi
 # ── Skill identity ──────────────────────────────────────────────────────────
 SKILL_NAME="test-classifier"
 SKILL_HUMAN_NAME="AI Test Classifier (application-bug / test-bug / flaky / environment)"
-SKILL_PATH_CANONICAL=".skills/test-classifier/SKILL.md"
+# Skill text: prefer the copy vendored from agent-skills by fetch-skills.sh;
+# fall back to the in-repo .skills/ copy when the vendor dir is absent.
+BUNDLE_ROOT="$(cd "${SKILLS_ROOT}/.." && pwd)"   # .skills → classifier (bundle root)
+if [[ -f "${BUNDLE_ROOT}/.skills-vendor/test-classifier/SKILL.md" ]]; then
+  SKILL_PATH_CANONICAL=".skills-vendor/test-classifier/SKILL.md"
+else
+  SKILL_PATH_CANONICAL=".skills/test-classifier/SKILL.md"
+fi
 
 # ── Classifier-specific arg parsing ────────────────────────────────────────
 # We intercept our own flags first, then pass the remainder to the shared
@@ -227,10 +234,11 @@ read -r -d '' SKILL_PROMPT <<PROMPT || true
 You have access to the test-classifier skill. The skill's full instructions are
 in this repository at:
 
-  testing/classifier/.skills/test-classifier/SKILL.md
+  ${SKILL_PATH_CANONICAL}
 
-(Tool-specific copies may also exist under .claude/skills/, .codex/skills/, or
-.github/copilot/skills/; all are byte-identical to the canonical file above.)
+(The canonical skill text is published in navapbc/agent-skills and vendored here
+by scripts/fetch-skills.sh; when the vendored copy is absent the in-repo
+.skills/ copy is used. Either way, follow the file at the path above.)
 
 Classify the failing tests for the change under test — the diff between
 AI_REVIEW_AGAINST and HEAD:
@@ -259,8 +267,13 @@ ${SIGNAL_STEP}
   6. Emit a human-readable terminal report (formatted markdown).
   7. After the report, emit ONE machine-readable JSON block delimited by these
      exact markers on their own lines. The object MUST include a top-level
-     "mode" of "OBSERVED" or "INFERRED" (per step 1), plus "summary" and
-     "classifications" as specified in test-classifier/SKILL.md section 6B:
+     "mode" of "OBSERVED" or "INFERRED" (per step 1), plus "summary" and a
+     "classifications" array. Each classification entry has: "test", "path",
+     "line", "verdict" (one of APPLICATION_BUG | TEST_BUG | FLAKY_FAILURE |
+     ENVIRONMENT_ISSUE), "category" (visual-drift | behavioral-drift |
+     e2e-form-flow-drift | other), "confidence" (high | medium | low), and a
+     one-to-two-sentence "rationale". (This JSON contract is owned by the CI
+     dispatcher, not the skill file.)
 
        <!-- AI_CLASSIFIER_JSON_BEGIN -->
        { "mode": "...", "summary": "...", "classifications": [ ... ] }
