@@ -12,6 +12,10 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 #: Default author whose review comments are counted as AI-generated.
 DEFAULT_AUTHOR = "github-copilot[bot]"
 
+#: Default author of the AI test-classifier's PR comments. The classifier posts from CI, so
+#: its login differs from the security reviewer's; the ``testing`` module keys off this.
+DEFAULT_CLASSIFIER_AUTHOR = "github-actions[bot]"
+
 
 def csv_list(value: str | None) -> list[str]:
     """Split a comma-separated configuration string into a clean list.
@@ -49,6 +53,10 @@ class Settings(BaseSettings):
     :ivar github_repos: Comma-separated ``owner/repo`` list to scan. Required for the
         security module (overridable with ``--repo``).
     :ivar github_authors: Comma-separated comment author logins to count as AI-generated.
+    :ivar testing_github_repos: Comma-separated ``owner/repo`` list the ``testing`` module
+        scans for classifier comments. Falls back to ``github_repos`` when unset.
+    :ivar testing_github_authors: Comma-separated author logins of the test-classifier's
+        comments. Falls back to the classifier-bot default when unset.
     :ivar week_ending_day: Weekday that closes the reporting week (e.g. ``thursday`` /
         ``thu``). The query window is the 7 days ending on it.
     :ivar aws_region: Optional AWS region for Security Hub. When unset, boto3's default
@@ -70,6 +78,8 @@ class Settings(BaseSettings):
     github_base_url: str = "https://api.github.com"
     github_repos: str = ""
     github_authors: str = DEFAULT_AUTHOR
+    testing_github_repos: str = ""
+    testing_github_authors: str = ""
     week_ending_day: str = "thursday"
     aws_region: str | None = None
     skip_sechub: bool = False
@@ -84,3 +94,13 @@ class Settings(BaseSettings):
     def authors(self) -> list[str]:
         """Comment authors to count, falling back to the default bot."""
         return csv_list(self.github_authors) or [DEFAULT_AUTHOR]
+
+    @property
+    def testing_repos(self) -> list[str]:
+        """Repositories the testing module scans, falling back to ``github_repos``."""
+        return csv_list(self.testing_github_repos) or self.repos
+
+    @property
+    def testing_authors(self) -> list[str]:
+        """Classifier comment authors, falling back to the classifier-bot default."""
+        return csv_list(self.testing_github_authors) or [DEFAULT_CLASSIFIER_AUTHOR]

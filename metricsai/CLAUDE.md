@@ -45,8 +45,8 @@ week-ending date) → run the selected modules → merge their dicts into
 MetricValue]` whose **keys are the exact spreadsheet column names**. Each built-in module
 calls `register(...)` at import time and is imported in `modules/__init__.py` for that
 side effect. `selected_modules(None)` returns all (sorted); `--module` narrows. To add a
-module: subclass, `register()`, add the import. `build_pr` and `testing` are stubs (zeros);
-`security` is live.
+module: subclass, `register()`, add the import. `build_pr` is a stub (zeros); `security` and
+`testing` are live.
 
 **`security` module is the real one.** It emits *both* the `security_*` and
 `security_compliance_*` column families from a single GitHub comment scan, split by
@@ -58,6 +58,14 @@ Conventional-Comment label (`security` vs `compliance`), plus one AWS Security H
 - `sources/aws.py` (boto3): paginated `securityhub get_findings` → `security_total_sechub_critical_high`.
 - `skip_sechub` (`--skip-sechub` / `METRICSAI_SKIP_SECHUB`) omits the AWS call and that one
   column, so GitHub metrics still gather/post with no AWS creds.
+
+**`testing` module** emits the `testing_classifier_*` columns from one scan of the AI
+test-classifier's PR comments (`fetch_classifier_comments` in `sources/github.py`): comments
+leading with the `test-classifier:` label whose embedded `AI_CLASSIFIER_JSON` block carries a
+`classifications` array. Each array entry expands to one record counted into its verdict
+bucket; the comment's 👍/👎 feed `testing_classifier_thumbs_up_rate_pct`. It uses its own
+`testing_github_repos` / `testing_github_authors` settings (the classifier posts from CI as
+`github-actions[bot]`), falling back to `github_repos` and the classifier-bot default.
 
 **Secrets (`keychain.py`):** a generic `resolve_secret` (env → macOS keychain → TTY prompt)
 backs `resolve_token` (GitHub, service `metricsai-github`) and `resolve_webhook_key` (webhook
