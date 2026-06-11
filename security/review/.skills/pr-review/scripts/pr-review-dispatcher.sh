@@ -38,7 +38,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 if REPO_ROOT="$(git -C "${SCRIPT_DIR}" rev-parse --show-toplevel 2>/dev/null)"; then
   :
 else
-  REPO_ROOT="$(cd "${SCRIPT_DIR}/../../.." && pwd)"
+  # SCRIPT_DIR = security/review/.skills/pr-review/scripts → 5 levels to repo root
+  REPO_ROOT="$(cd "${SCRIPT_DIR}/../../../../.." && pwd)"
 fi
 LIB_PATH="${REPO_ROOT}/.skills/_lib/ai-review-dispatch.sh"
 
@@ -51,7 +52,16 @@ fi
 # ── Skill identity ──────────────────────────────────────────────────────────
 SKILL_NAME="pr-review"
 SKILL_HUMAN_NAME="AI-Assisted PR Review (security + compliance)"
-SKILL_PATH_CANONICAL=".skills/pr-review/SKILL.md"
+# Canonical pr-review text now lives in navapbc/agent-skills, vendored by
+# scripts/fetch-skills.sh into .skills-vendor/. Prefer it; fall back to the
+# in-repo copy when absent (fetch skipped / pre-tag mock state). The two
+# perspective siblings (code-security, iac-compliance) are NOT migrated — they
+# stay in this repo's .skills/ tree and are referenced from there in the prompt.
+if [[ -f "${REPO_ROOT}/.skills-vendor/pr-review/SKILL.md" ]]; then
+  SKILL_PATH_CANONICAL=".skills-vendor/pr-review/SKILL.md"
+else
+  SKILL_PATH_CANONICAL=".skills/pr-review/SKILL.md"
+fi
 
 # ── PR-review-specific arg parsing ─────────────────────────────────────────
 # We extend the shared library's arg parser by intercepting our own flags
@@ -192,27 +202,28 @@ require_gh_cli() {
 # We instruct the AI to emit BOTH a human-readable report AND a fenced JSON
 # block. The dispatcher extracts the JSON block to post via the GitHub API.
 
-read -r -d '' SKILL_PROMPT <<'PROMPT' || true
+read -r -d '' SKILL_PROMPT <<PROMPT || true
 You have access to the pr-review skill. The skill's full instructions are in
 this repository at:
 
-  .skills/pr-review/SKILL.md
+  ${SKILL_PATH_CANONICAL}
 
-(Tool-specific copies may also exist at .claude/skills/pr-review/SKILL.md,
-.codex/skills/pr-review/SKILL.md, or .github/copilot/skills/pr-review/SKILL.md;
-all are byte-identical to the canonical file above.)
+(The canonical pr-review text is published in navapbc/agent-skills and vendored
+here by scripts/fetch-skills.sh; when the vendored copy is absent the in-repo
+.skills/ copy is used. Either way, follow the file at the path above.)
 
-This skill is a composed PR review. You will additionally need to read:
+This skill is a composed PR review. You will additionally need to read these two
+perspective skills, which live in this repository:
 
   .skills/code-security/SKILL.md      (security perspective)
   .skills/iac-compliance/SKILL.md     (compliance perspective)
 
 Run a full PR review on the diff between AI_REVIEW_AGAINST and HEAD:
 
-  git diff "$AI_REVIEW_AGAINST" HEAD --unified=5
-  git diff "$AI_REVIEW_AGAINST" HEAD --name-only
+  git diff "\$AI_REVIEW_AGAINST" HEAD --unified=5
+  git diff "\$AI_REVIEW_AGAINST" HEAD --name-only
 
-Follow the skill instructions in pr-review/SKILL.md exactly:
+Follow the skill instructions exactly:
 
   1. Collect the PR diff.
   2. Determine which perspectives apply (security always; compliance only if
@@ -224,11 +235,18 @@ Follow the skill instructions in pr-review/SKILL.md exactly:
      these exact markers on their own lines:
 
        <!-- AI_REVIEW_JSON_BEGIN -->
-       { ...JSON object as specified in pr-review/SKILL.md... }
+       { ...JSON object per the schema below... }
        <!-- AI_REVIEW_JSON_END -->
 
-     The JSON object must have the schema documented in pr-review/SKILL.md
-     section "6B — Machine-Readable JSON Block".
+     The JSON object has: "review_action" (APPROVE | COMMENT), "summary", and a
+     "comments" array. Each comment has: "path", "line", "side" ("RIGHT"),
+     "perspective" ("security" | "compliance"), "severity" (CRITICAL | HIGH |
+     MEDIUM | LOW), "title", "description" (cite the OWASP category for security
+     findings, and the NIST 800-53 Rev 5 + CMS ARS 5.1 control IDs for
+     compliance findings), "suggestion_kind" ("applicable" | "reference"),
+     "suggestion_body", and "suggestion_language" (only when kind is
+     "reference"). (This JSON contract is owned by the CI dispatcher, not the
+     skill file.)
 
 After the JSON block, end your response with EXACTLY ONE of the following
 markers, on its own line, with no surrounding text:

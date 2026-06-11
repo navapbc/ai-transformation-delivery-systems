@@ -48,7 +48,8 @@ cd "${CLASSIFIER_ROOT}"
 
 # ── Skills to sync ─────────────────────────────────────────────────────────
 SKILLS=(
-  "test-classifier"
+  # test-classifier now lives canonically in navapbc/agent-skills and is
+  # vendored by scripts/fetch-skills.sh — no longer synced from a local copy.
 )
 
 # ── Tool-to-destination mapping ────────────────────────────────────────────
