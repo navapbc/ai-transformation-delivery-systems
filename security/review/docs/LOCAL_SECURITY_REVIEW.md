@@ -1,4 +1,4 @@
-# Local Security Review — Manual Aliases
+# Local Security Review — Manual Functions
 
 The `code-security` and `iac-compliance` hooks are shipped **opt-in**. They are
 configured with `stages: [manual]` in `.pre-commit-config.yaml`, which means
@@ -6,9 +6,11 @@ they **do not run automatically on `git commit`**. Instead, developers run them
 on demand — whenever a change has security implications that warrant a local
 review before pushing.
 
-This guide sets up two shell aliases — `code-security` and
-`iac-compliance` — that make those manual runs a one-word command from
-anywhere inside the repository.
+This guide sets up two shell **functions** — `code-security` and
+`iac-compliance` — that make those reviews a one-word command from anywhere
+inside the repository. By default each reviews **everything you haven't pushed
+yet** (all locally-committed *and* staged changes), so it mirrors what a
+reviewer would see in your PR.
 
 ---
 
@@ -29,19 +31,22 @@ anywhere inside the repository.
   wedge an unrelated commit at an inconvenient time.
 
 To make a hook run automatically on every commit instead, change its
-`stages: [manual]` back to `stages: [pre-commit]` in `.pre-commit-config.yaml`.
+`stages: [manual]` to `stages: [pre-commit]` in `.pre-commit-config.yaml`. Note
+that the **pre-commit stage always reviews the staged diff only** — the
+"everything unpushed" scope below applies to the manual functions, not the
+commit-time hook.
 
 ---
 
 ## Prerequisites
 
-1. **`pre-commit` installed and the hooks present.** From a fresh clone:
+1. **The skill files are installed and synced.** From a fresh clone:
    ```bash
-   pre-commit install        # wires the commit-stage guard (skills-in-sync)
-   scripts/sync-skills.sh     # materializes the skill files for your AI tool
+   scripts/sync-skills.sh      # materializes the skill files for your AI tool
+   pre-commit install          # wires the commit-stage skills-in-sync guard
    ```
-   (Manual-stage hooks run via `pre-commit run --hook-stage manual` regardless
-   of `pre-commit install`, but the rest of the setup above is still required.)
+   (The functions call the dispatcher directly and don't need `pre-commit`, but
+   the sync step is still required so the AI tool can read the skills.)
 2. **`AI_REVIEW_TOOL` set** to `claude`, `codex`, or `copilot` — see
    `README.md`, section "AI tool selection". The dispatcher exits with a helpful
    message if it's unset.
@@ -49,74 +54,83 @@ To make a hook run automatically on every commit instead, change its
 
 ---
 
-## Add the aliases to `~/.zshrc`
+## Add the functions to `~/.zshrc`
 
 Paste both blocks into `~/.zshrc`, then `source ~/.zshrc` (or open a new shell):
 
 ```zsh
-# AI-assisted local security review — manual, opt-in hooks.
-# Run from anywhere inside a repo that has the hooks installed.
-alias code-security='
-root="$(git rev-parse --show-toplevel 2>/dev/null)";
-if [ -z "$root" ]; then
-  echo "✗ not inside a git repository";
-elif grep -q "id: code-security" "$root/.pre-commit-config.yaml" 2>/dev/null; then
-  echo "▶ code-security (staged changes) — full sweep: pre-commit run --hook-stage manual code-security --all-files";
-  pre-commit run --hook-stage manual code-security;
-else
-  echo "✗ code-security hook not configured in $root/.pre-commit-config.yaml";
-fi'
+# AI-assisted local security review — manual, opt-in.
+#   <no arg>  → review everything not yet pushed (committed + staged)
+#   <ref>     → review the committed range <ref>..HEAD
+code-security() {
+  local root disp
+  root="$(git rev-parse --show-toplevel 2>/dev/null)" \
+    || { echo "✗ not inside a git repository"; return 1; }
+  disp="$root/.skills/code-security/scripts/code-security-hook-dispatcher.sh"
+  [ -x "$disp" ] \
+    || { echo "✗ code-security dispatcher not found/executable: $disp"; return 1; }
+  if [ -n "$1" ]; then
+    echo "▶ code-security: ${1}..HEAD (committed range)"
+    "$disp" --against "$1"
+  else
+    echo "▶ code-security: all not-yet-pushed changes (committed + staged)"
+    "$disp" --unpushed
+  fi
+}
 
-alias iac-compliance='
-root="$(git rev-parse --show-toplevel 2>/dev/null)";
-if [ -z "$root" ]; then
-  echo "✗ not inside a git repository";
-elif grep -q "id: iac-compliance" "$root/.pre-commit-config.yaml" 2>/dev/null; then
-  echo "▶ iac-compliance (staged IaC files) — full sweep: pre-commit run --hook-stage manual iac-compliance --all-files";
-  pre-commit run --hook-stage manual iac-compliance;
-else
-  echo "✗ iac-compliance hook not configured in $root/.pre-commit-config.yaml";
-fi'
+iac-compliance() {
+  local root disp
+  root="$(git rev-parse --show-toplevel 2>/dev/null)" \
+    || { echo "✗ not inside a git repository"; return 1; }
+  disp="$root/.skills/iac-compliance/scripts/iac-compliance-hook-dispatcher.sh"
+  [ -x "$disp" ] \
+    || { echo "✗ iac-compliance dispatcher not found/executable: $disp"; return 1; }
+  if [ -n "$1" ]; then
+    echo "▶ iac-compliance: ${1}..HEAD (committed range)"
+    "$disp" --against "$1"
+  else
+    echo "▶ iac-compliance: all not-yet-pushed changes (committed + staged)"
+    "$disp" --unpushed
+  fi
+}
 ```
 
-What each alias does:
+What each function does:
 
 1. **Confirms you're in a git repo** — `git rev-parse --show-toplevel` doubles as
    the repo check (empty → not a repo) and gives the authoritative root, so the
-   alias works from any subdirectory.
-2. **Confirms the hook is configured** — greps the repo-root
-   `.pre-commit-config.yaml` for the specific hook `id`, so it only runs a hook
-   that's actually wired up (and prints a clear message otherwise).
-3. **Runs it manually** — `pre-commit run --hook-stage manual <id>`. The
-   `--hook-stage manual` is required: a `stages: [manual]` hook is invisible to
-   a plain `pre-commit run <id>` (you'd get *"No hook with id … in stage
-   pre-commit"*).
+   function works from any subdirectory.
+2. **Locates the dispatcher** at the repo root and confirms it's executable.
+3. **Runs the review** by calling the dispatcher directly:
+   - **no argument** → `--unpushed`: everything not yet pushed (all committed +
+     staged changes). The base is your branch's upstream, falling back to the
+     merge-base with the remote default branch. If neither can be determined
+     (e.g. a brand-new branch with no remote), it errors and asks for an explicit
+     ref rather than silently reviewing less than you expect.
+   - **a ref** → `--against <ref>`: the committed range `<ref>..HEAD`.
 
 ---
 
 ## Usage
 
 ```bash
-code-security        # review currently staged changes
-iac-compliance       # review staged IaC files (*.tf, *.yaml, etc.)
+code-security                 # everything unpushed: committed + staged
+code-security origin/main     # the committed range origin/main..HEAD
+code-security HEAD~1          # just the last commit
+
+iac-compliance                # same, for infrastructure-as-code
 ```
 
-**Staged vs. whole repo.** By default these review the **staged** diff — the
-same scope a commit-time hook would see — which is fast and usually what you
-want before pushing. For a full-tree sweep, run the underlying command directly:
+**Scope details.**
 
-```bash
-pre-commit run --hook-stage manual code-security --all-files
-pre-commit run --hook-stage manual iac-compliance --all-files
-```
-
-> ⚠️ `--all-files` invokes the AI over the entire repository — slower and more
-> costly. Use it deliberately, not as a default.
-
-**`iac-compliance` only fires on matching files.** That hook has a file filter
-(`*.tf`, `*.tfvars`, `*.bicep`, `*.yaml`, …) and `always_run: false`, so a
-staged run with no matching IaC files staged will report "no files to check" and
-skip. Use `--all-files` to scan IaC across the whole repo regardless of staging.
+- `--unpushed` (the default) reviews **committed + staged** changes — it
+  **excludes unstaged working-tree edits**. Commit or `git add` work-in-progress
+  to include it.
+- `iac-compliance` only reports on infrastructure files (`*.tf`, `*.tfvars`,
+  `*.bicep`, `*.yaml`, …); non-IaC files in the range are ignored.
+- Need a **staged-only** spot check without committing? That's exactly the
+  commit-time hook's scope — run it on the manual stage:
+  `pre-commit run --hook-stage manual code-security` (reviews `git diff --cached`).
 
 ---
 
@@ -140,15 +154,16 @@ of opt-in.
 | Symptom | Cause / fix |
 |---|---|
 | `✗ not inside a git repository` | You're not in a git work tree. `cd` into the repo. |
-| `✗ <hook> not configured …` | The repo's `.pre-commit-config.yaml` doesn't declare that hook id, or you're in a different repo. |
-| `No hook with id … in stage pre-commit` | You ran `pre-commit run <id>` without `--hook-stage manual`. Use the alias, or add the flag. |
+| `✗ <skill> dispatcher not found/executable` | The skills aren't installed at the repo root, or the script lost its `+x` bit. Re-install / `chmod +x`. |
+| `--unpushed: couldn't determine what's been pushed` | No upstream and no remote default branch (e.g. brand-new branch, no remote). Pass an explicit base: `code-security origin/main` or `code-security <ref>`. |
 | `AI_REVIEW_TOOL … not set` | Export `AI_REVIEW_TOOL=claude` (or `codex`/`copilot`); see `README.md`. |
-| `pre-commit: command not found` | Install pre-commit (`brew install pre-commit` / `pip install pre-commit`) and ensure it's on the PATH your interactive shell resolves. |
+| Review seems to miss recent edits | `--unpushed` excludes *unstaged* changes. `git add` or commit them first. |
 
 ---
 
 ## Related
 
-- `README.md` — full setup, severity definitions, flags, performance tuning.
-- `INSTALL.txt` — quick install, including these alias snippets.
+- `README.md` — full setup, severity definitions, flags (`--unpushed`,
+  `--against`, …), performance tuning.
+- `INSTALL.txt` — quick install, including these function snippets.
 - `docs/PR_REVIEW_SETUP.md` — PR-level review (GitHub Actions, Copilot, PATs).

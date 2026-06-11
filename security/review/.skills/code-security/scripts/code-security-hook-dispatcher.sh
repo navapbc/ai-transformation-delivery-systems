@@ -67,15 +67,18 @@ all are byte-identical to the canonical file above.)
 
 Read the SKILL.md, then run a full security review on the diff identified by
 the environment (default: staged changes from `git diff --cached`; if a
-non-default diff range was passed via the dispatcher's --against flag, the
-AI_REVIEW_AGAINST environment variable will be set to that ref — in that case,
-review the diff returned by `git diff $AI_REVIEW_AGAINST HEAD`).
+non-default diff range was passed, the AI_REVIEW_AGAINST environment variable
+will be set to a ref — in that case review the diff returned by
+`git diff $AI_REVIEW_AGAINST HEAD`, OR, when AI_REVIEW_INCLUDE_STAGED=1
+(the --unpushed mode: all committed + staged changes not yet pushed),
+`git diff --cached $AI_REVIEW_AGAINST`).
 
 If the AI_REVIEW_SCOPE_PATHS environment variable is set (newline-separated
 paths), you are one worker in a parallel review — restrict this review to EXACTLY
 those paths. Collect the diff with `git diff --cached -- $AI_REVIEW_SCOPE_PATHS`
-(or `git diff $AI_REVIEW_AGAINST HEAD -- $AI_REVIEW_SCOPE_PATHS` when
-AI_REVIEW_AGAINST is set) and do not report findings outside that set. You see
+(or, when AI_REVIEW_AGAINST is set, `git diff $AI_REVIEW_AGAINST HEAD -- $AI_REVIEW_SCOPE_PATHS`,
+or `git diff --cached $AI_REVIEW_AGAINST -- $AI_REVIEW_SCOPE_PATHS` when
+AI_REVIEW_INCLUDE_STAGED=1) and do not report findings outside that set. You see
 only a slice of the commit: if confirming a finding would require a file outside
 your scope, still report it and note that cross-file confirmation is needed.
 

@@ -5,21 +5,21 @@
 # Hooks:
 #   • code-security      — code-security skill. OPT-IN / manual-only
 #                          (stages: [manual]): does NOT run on commit. Run it
-#                          on demand via the code-security alias.
+#                          on demand via the code-security function.
 #   • iac-compliance     — iac-compliance skill. OPT-IN / manual-only
 #                          (stages: [manual]): does NOT run on commit. Run it
-#                          on demand via the iac-compliance alias.
+#                          on demand via the iac-compliance function.
 #   • skills-in-sync     — fails if SKILL.md was edited but sync-skills.sh
 #                          was not run (keeps .claude/, .codex/, and
 #                          .github/copilot/ copies identical). Runs on commit.
 #
 # Setup instructions: see README.md
-# Manual review aliases + rationale: see docs/LOCAL_SECURITY_REVIEW.md
+# Manual review functions + rationale: see docs/LOCAL_SECURITY_REVIEW.md
 #
 # To install hooks:    pre-commit install   (wires skills-in-sync into commits)
 # To run manually:     pre-commit run --hook-stage manual code-security
 #                  or: pre-commit run --hook-stage manual code-security --all-files
-#                  (the code-security / iac-compliance aliases wrap these)
+#                  (the code-security / iac-compliance functions wrap these)
 #
 # Both review hooks require the AI_REVIEW_TOOL environment variable to be set
 # to one of: claude | codex | copilot. See README.md, section "AI tool
@@ -41,7 +41,7 @@ repos:
         pass_filenames: false
         always_run: true
         verbose: true
-        stages: [manual]   # Opt-in: manual only — run via the code-security alias, never on commit. For commit-time enforcement: [pre-commit]
+        stages: [manual]   # Opt-in: manual only — run via the code-security function, never on commit. For commit-time enforcement: [pre-commit]
 
       # ── IaC compliance review ─────────────────────────────────────────
       - id: iac-compliance
@@ -68,7 +68,7 @@ repos:
         pass_filenames: false
         always_run: false
         verbose: true
-        stages: [manual]   # Opt-in: manual only — run via the iac-compliance alias, never on commit. For commit-time enforcement: [pre-commit]
+        stages: [manual]   # Opt-in: manual only — run via the iac-compliance function, never on commit. For commit-time enforcement: [pre-commit]
 
       # ── Skill-file synchronization guard ──────────────────────────────
       # The canonical SKILL.md lives under .skills/<skill>/ (tool-neutral

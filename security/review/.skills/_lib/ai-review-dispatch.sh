@@ -84,19 +84,49 @@ ai_review::ok()   { printf '%s[%s] %s%s\n' "${AI_C_GREEN}" "${SKILL_NAME}" "$*" 
 ai_review::warn() { printf '%s[%s] %s%s\n' "${AI_C_YELLOW}" "${SKILL_NAME}" "$*" "${AI_C_RESET}" >&2; }
 ai_review::err()  { printf '%s[%s] ERROR: %s%s\n' "${AI_C_RED}" "${SKILL_NAME}" "$*" "${AI_C_RESET}" >&2; }
 
+# ── Base resolution for --unpushed ──────────────────────────────────────────
+# Resolves the "last pushed" point so --unpushed can review everything not yet
+# pushed (committed + staged). Order: the branch's upstream; else the merge-base
+# with the remote default branch (origin/HEAD, then origin/main, origin/master).
+# Prints the base ref on success; returns non-zero if none can be determined (the
+# caller then errors out and asks for an explicit --against, rather than silently
+# narrowing scope).
+ai_review::resolve_unpushed_base() {
+  local base def
+  base="$(git rev-parse --abbrev-ref --symbolic-full-name '@{upstream}' 2>/dev/null || true)"
+  if [[ -z "${base}" ]]; then
+    # Note: `git rev-parse --abbrev-ref origin/HEAD` echoes the literal
+    # "origin/HEAD" on stdout when the symref is unset, which would poison the
+    # fallback — use symbolic-ref, which fails cleanly with empty output.
+    def="$(git symbolic-ref --short -q refs/remotes/origin/HEAD 2>/dev/null || true)"
+    if [[ -z "${def}" ]] && git rev-parse --verify --quiet origin/main >/dev/null 2>&1; then
+      def="origin/main"
+    fi
+    if [[ -z "${def}" ]] && git rev-parse --verify --quiet origin/master >/dev/null 2>&1; then
+      def="origin/master"
+    fi
+    [[ -n "${def}" ]] && base="$(git merge-base HEAD "${def}" 2>/dev/null || true)"
+  fi
+  [[ -n "${base}" ]] || return 1
+  printf '%s' "${base}"
+}
+
 # ── CLI flag parsing ────────────────────────────────────────────────────────
 # Sets:
-#   AI_REVIEW_DRY_RUN      ("1" or "0") — print what would happen, do not call AI
-#   AI_REVIEW_NO_BLOCK     ("1" or "0") — run review but never exit non-zero
-#   AI_REVIEW_AGAINST      (string)     — git ref to diff against; default = staged
-#   AI_REVIEW_JOBS         (int)        — concurrent workers (1 = serial; default 4)
-#   AI_REVIEW_LIST_BATCHES ("1" or "0") — print the batch plan and exit
-#   AI_REVIEW_REMAINING    (array)      — any unparsed args
+#   AI_REVIEW_DRY_RUN       ("1" or "0") — print what would happen, do not call AI
+#   AI_REVIEW_NO_BLOCK      ("1" or "0") — run review but never exit non-zero
+#   AI_REVIEW_AGAINST       (string)     — git ref to diff against; default = staged
+#   AI_REVIEW_INCLUDE_STAGED("1" or "0") — when AGAINST is set, diff base→index
+#                                          (committed + staged) instead of base→HEAD
+#   AI_REVIEW_JOBS          (int)        — concurrent workers (1 = serial; default 4)
+#   AI_REVIEW_LIST_BATCHES  ("1" or "0") — print the batch plan and exit
+#   AI_REVIEW_REMAINING     (array)      — any unparsed args
 ai_review::parse_args() {
   AI_REVIEW_DRY_RUN=0
   AI_REVIEW_NO_BLOCK=0
   AI_REVIEW_NO_ADJUDICATE=0
   AI_REVIEW_AGAINST=""
+  AI_REVIEW_INCLUDE_STAGED=0
   AI_REVIEW_LIST_BATCHES=0
   # Concurrency: env default (validated below), overridable by --jobs.
   AI_REVIEW_JOBS="${AI_REVIEW_JOBS:-4}"
@@ -122,10 +152,22 @@ ai_review::parse_args() {
           exit 2
         fi
         AI_REVIEW_AGAINST="$2"
+        AI_REVIEW_INCLUDE_STAGED=0   # committed range <ref>..HEAD
         shift 2
         ;;
       --against=*)
         AI_REVIEW_AGAINST="${1#*=}"
+        AI_REVIEW_INCLUDE_STAGED=0   # committed range <ref>..HEAD
+        shift
+        ;;
+      --unpushed)
+        # Review everything not yet pushed: committed + staged, i.e. base→index.
+        if ! AI_REVIEW_AGAINST="$(ai_review::resolve_unpushed_base)"; then
+          ai_review::err "--unpushed: couldn't determine what's been pushed (no upstream and no remote default branch)."
+          ai_review::log "  Re-run with an explicit base, e.g.  --against main"
+          exit 2
+        fi
+        AI_REVIEW_INCLUDE_STAGED=1
         shift
         ;;
       --jobs)
@@ -178,9 +220,14 @@ Options:
   --no-adjudicate      Disable adjudication entirely (no self-critique, no
                        second pass) — raw first-pass findings. Same as
                        AI_ADJUDICATION=off.
-  --against <ref>      Review the diff between <ref> and HEAD (or working tree)
-                       instead of the staged changes. Useful for ad-hoc review,
+  --against <ref>      Review the committed diff between <ref> and HEAD instead
+                       of the staged changes. Useful for ad-hoc review,
                        e.g.  --against HEAD~1   or  --against main
+  --unpushed           Review everything not yet pushed — all locally committed
+                       changes AND staged changes (base→index). The base is the
+                       branch's upstream, else the merge-base with the remote
+                       default branch. Errors if neither can be determined (use
+                       --against then). Excludes unstaged working-tree edits.
   --jobs <N>           Run up to N batches concurrently when the diff is large
                        enough to fan out (default 4; also AI_REVIEW_JOBS).
                        1 = serial. The ceiling is the AI vendor's rate limit.
@@ -293,13 +340,22 @@ ai_review::require_cli() {
 # When AI_REVIEW_AGAINST is set, checks the diff between that ref and HEAD.
 # The :- defaults let these run safely under `set -u` in worker processes, which
 # inherit AI_REVIEW_AGAINST from the environment rather than via parse_args.
+# Diff scope (driven by parse_args):
+#   AGAINST empty                       → staged changes        (git diff --cached)
+#   AGAINST set, INCLUDE_STAGED=0       → committed range       (git diff <ref> HEAD)
+#   AGAINST set, INCLUDE_STAGED=1       → committed + staged    (git diff --cached <ref>)
+# The empty-AGAINST (staged) branch is the pre-commit default and is left intact.
 ai_review::has_changes() {
   if [[ -n "${AI_REVIEW_AGAINST:-}" ]]; then
     if ! git rev-parse --verify --quiet "${AI_REVIEW_AGAINST}^{commit}" >/dev/null; then
       ai_review::err "Git ref not found: ${AI_REVIEW_AGAINST}"
       exit 1
     fi
-    ! git diff --quiet "${AI_REVIEW_AGAINST}" HEAD --
+    if [[ "${AI_REVIEW_INCLUDE_STAGED:-0}" == "1" ]]; then
+      ! git diff --cached --quiet "${AI_REVIEW_AGAINST}" --
+    else
+      ! git diff --quiet "${AI_REVIEW_AGAINST}" HEAD --
+    fi
   else
     ! git diff --cached --quiet
   fi
@@ -307,7 +363,11 @@ ai_review::has_changes() {
 
 ai_review::changed_files() {
   if [[ -n "${AI_REVIEW_AGAINST:-}" ]]; then
-    git diff --name-only "${AI_REVIEW_AGAINST}" HEAD --
+    if [[ "${AI_REVIEW_INCLUDE_STAGED:-0}" == "1" ]]; then
+      git diff --cached --name-only "${AI_REVIEW_AGAINST}" --
+    else
+      git diff --name-only "${AI_REVIEW_AGAINST}" HEAD --
+    fi
   else
     git diff --cached --name-only
   fi
@@ -315,7 +375,11 @@ ai_review::changed_files() {
 
 ai_review::diff_command_description() {
   if [[ -n "${AI_REVIEW_AGAINST:-}" ]]; then
-    echo "git diff ${AI_REVIEW_AGAINST} HEAD"
+    if [[ "${AI_REVIEW_INCLUDE_STAGED:-0}" == "1" ]]; then
+      echo "git diff --cached ${AI_REVIEW_AGAINST}"
+    else
+      echo "git diff ${AI_REVIEW_AGAINST} HEAD"
+    fi
   else
     echo "git diff --cached"
   fi
@@ -528,12 +592,14 @@ ai_review::build_adjudication_prompt() {
     code_scope_clause="The first pass cited findings in these files ONLY — restrict your inspection to
 them. Collect their diff with:
   git diff --cached -- ${paths_inline}
-(or, if AI_REVIEW_AGAINST is set in your environment,
-  git diff \$AI_REVIEW_AGAINST HEAD -- ${paths_inline}).
+(or, if AI_REVIEW_AGAINST is set in your environment:
+  git diff --cached \$AI_REVIEW_AGAINST -- ${paths_inline}   when AI_REVIEW_INCLUDE_STAGED=1 (committed + staged),
+  git diff \$AI_REVIEW_AGAINST HEAD -- ${paths_inline}       otherwise).
 Do not review or report on files outside this set."
   else
-    code_scope_clause="The code under review is, by default, the staged changes (\`git diff --cached\`);
-if AI_REVIEW_AGAINST is set in your environment, it is \`git diff \$AI_REVIEW_AGAINST HEAD\`."
+    code_scope_clause="The code under review is, by default, the staged changes (\`git diff --cached\`).
+If AI_REVIEW_AGAINST is set in your environment, it is \`git diff \$AI_REVIEW_AGAINST HEAD\` —
+or, when AI_REVIEW_INCLUDE_STAGED=1, \`git diff --cached \$AI_REVIEW_AGAINST\` (committed + staged)."
   fi
 
   local marker_instructions
@@ -754,6 +820,7 @@ ai_review::fan_out() {
   # Propagate config to the worker processes (they re-source this library).
   export AI_REVIEW_TOOL
   export AI_REVIEW_AGAINST
+  export AI_REVIEW_INCLUDE_STAGED
   export AI_REVIEW_BATCH_BY="${AI_REVIEW_BATCH_BY:-dir}"
   [[ "${AI_REVIEW_NO_ADJUDICATE:-0}" == "1" ]] && export AI_REVIEW_NO_ADJUDICATE
   [[ -n "${AI_ADJUDICATION:-}" ]]       && export AI_ADJUDICATION
@@ -802,6 +869,7 @@ ai_review::worker_main() {
   export AI_REVIEW_CONTEXT_BUDGET
   AI_REVIEW_CONTEXT_BUDGET="$(ai_review::context_budget "${nfiles}")"
   export AI_REVIEW_AGAINST
+  export AI_REVIEW_INCLUDE_STAGED
   # Tell the prompt which adjudication mode is in effect (self-critique applies
   # only in "self"). The first pass self-adjudicates in self mode; in
   # independent mode it reports raw and we run a separate pass below.
@@ -948,6 +1016,7 @@ ai_review::run() {
   # Export AI_REVIEW_AGAINST so the AI subprocess can see it (it tells the AI
   # which git diff range to use; the skill consults this variable).
   export AI_REVIEW_AGAINST
+  export AI_REVIEW_INCLUDE_STAGED
 
   # Resolve the adjudication mode once. The prompt's self-adjudication block
   # applies only when AI_REVIEW_ADJUDICATION_MODE is "self"; the independent

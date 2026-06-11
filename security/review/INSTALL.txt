@@ -180,7 +180,7 @@ Steps:
     # (stages: [manual] in .pre-commit-config.yaml). They do NOT run on
     # `git commit`. Developers run them on demand — whenever a change has
     # security implications warranting a local review — via the
-    # code-security / iac-compliance aliases (see the section
+    # code-security / iac-compliance functions (see the section
     # "Local manual security review (opt-in)" below, and
     # docs/LOCAL_SECURITY_REVIEW.md). `pre-commit install` here only wires
     # the commit-time skills-in-sync guard.
@@ -212,49 +212,59 @@ Steps:
     git commit -m "chore: add AI-assisted code review (pre-commit + PR-level)"
 
 ------------------------------------------------------------------------------
-Local manual security review (opt-in) — shell aliases
+Local manual security review (opt-in) — shell functions
 ------------------------------------------------------------------------------
 
     The code-security and iac-compliance hooks are opt-in (stages: [manual]):
     they do NOT run on commit. Run them on demand whenever a change has
     security implications that warrant a local review before pushing.
 
-    Add these two aliases to ~/.zshrc, then `source ~/.zshrc`. They work from
-    any subdirectory of a repo that has the hooks installed; they check you're
-    in a git repo, confirm the hook is configured, then run it.
+    Add these two functions to ~/.zshrc, then `source ~/.zshrc`. They work from
+    any subdirectory of the repo. With no argument each reviews everything you
+    haven't pushed yet (all committed + staged changes); pass a ref to review a
+    committed range instead.
 
     Full guide: docs/LOCAL_SECURITY_REVIEW.md
 
-    # ── AI-assisted local security review — manual, opt-in hooks ──────────
-    alias code-security='
-    root="$(git rev-parse --show-toplevel 2>/dev/null)";
-    if [ -z "$root" ]; then
-      echo "✗ not inside a git repository";
-    elif grep -q "id: code-security" "$root/.pre-commit-config.yaml" 2>/dev/null; then
-      echo "▶ code-security (staged changes) — full sweep: pre-commit run --hook-stage manual code-security --all-files";
-      pre-commit run --hook-stage manual code-security;
-    else
-      echo "✗ code-security hook not configured in $root/.pre-commit-config.yaml";
-    fi'
+    # ── AI-assisted local security review — manual, opt-in ────────────────
+    #   <no arg>  → everything not yet pushed (committed + staged)
+    #   <ref>     → the committed range <ref>..HEAD
+    code-security() {
+      local root disp
+      root="$(git rev-parse --show-toplevel 2>/dev/null)" \
+        || { echo "✗ not inside a git repository"; return 1; }
+      disp="$root/.skills/code-security/scripts/code-security-hook-dispatcher.sh"
+      [ -x "$disp" ] \
+        || { echo "✗ code-security dispatcher not found/executable: $disp"; return 1; }
+      if [ -n "$1" ]; then
+        echo "▶ code-security: ${1}..HEAD (committed range)"; "$disp" --against "$1"
+      else
+        echo "▶ code-security: all not-yet-pushed changes (committed + staged)"; "$disp" --unpushed
+      fi
+    }
 
-    alias iac-compliance='
-    root="$(git rev-parse --show-toplevel 2>/dev/null)";
-    if [ -z "$root" ]; then
-      echo "✗ not inside a git repository";
-    elif grep -q "id: iac-compliance" "$root/.pre-commit-config.yaml" 2>/dev/null; then
-      echo "▶ iac-compliance (staged IaC files) — full sweep: pre-commit run --hook-stage manual iac-compliance --all-files";
-      pre-commit run --hook-stage manual iac-compliance;
-    else
-      echo "✗ iac-compliance hook not configured in $root/.pre-commit-config.yaml";
-    fi'
+    iac-compliance() {
+      local root disp
+      root="$(git rev-parse --show-toplevel 2>/dev/null)" \
+        || { echo "✗ not inside a git repository"; return 1; }
+      disp="$root/.skills/iac-compliance/scripts/iac-compliance-hook-dispatcher.sh"
+      [ -x "$disp" ] \
+        || { echo "✗ iac-compliance dispatcher not found/executable: $disp"; return 1; }
+      if [ -n "$1" ]; then
+        echo "▶ iac-compliance: ${1}..HEAD (committed range)"; "$disp" --against "$1"
+      else
+        echo "▶ iac-compliance: all not-yet-pushed changes (committed + staged)"; "$disp" --unpushed
+      fi
+    }
 
     Usage:
-      code-security      # review currently staged changes
-      iac-compliance     # review staged IaC files
+      code-security                 # everything unpushed: committed + staged
+      code-security origin/main     # the committed range origin/main..HEAD
+      iac-compliance                # same, for infrastructure-as-code
 
-    Both default to the STAGED diff (fast). For a whole-repo sweep, run the
-    underlying command with --all-files (slower, higher token cost):
-      pre-commit run --hook-stage manual code-security --all-files
+    --unpushed excludes UNSTAGED working-tree edits (commit or `git add` them to
+    include). For a staged-only spot check, use the commit-time hook's scope:
+      pre-commit run --hook-stage manual code-security    # git diff --cached
 
 ------------------------------------------------------------------------------
 Onboarding new team members
@@ -265,10 +275,10 @@ Onboarding new team members
       b. Set AI_REVIEW_TOOL in their shell (.zshenv recommended on macOS)
       c. Run: scripts/sync-skills.sh *
       d. Run: pre-commit install *
-      e. (Recommended) Add the code-security / iac-compliance aliases
+      e. (Recommended) Add the code-security / iac-compliance functions
          to ~/.zshrc — see "Local manual security review (opt-in)" above and
          docs/LOCAL_SECURITY_REVIEW.md. The review hooks are manual/opt-in, so
-         these aliases are how developers actually run them.
+         these functions are how developers actually run them.
       * Necessary for a fresh clone as well
 
     Developers who want to post PR-review comments locally additionally need:
@@ -384,7 +394,7 @@ Pre-commit performance for large commits (optional — sensible defaults)
 ------------------------------------------------------------------------------
 Done. The code-security and iac-compliance reviews are OPT-IN / manual: they do
 not run on commit. Developers run them on demand via the code-security /
-iac-compliance aliases whenever a change has security implications warranting
+iac-compliance functions whenever a change has security implications warranting
 a local review (see "Local manual security review (opt-in)" above and
 docs/LOCAL_SECURITY_REVIEW.md). The commit-time skills-in-sync guard runs
 automatically. PR-level review is available via whichever path(s) you enabled.
