@@ -41,20 +41,26 @@ stay in this repo — so the pr-review dispatcher reads the vendored pr-review t
    read from the skill file — because the published skills are intentionally
    CI-free.
 
-## ⚠️ Status: staged ahead of the agent-skills release tag
+## Status: live against `v0.1.0`
 
-This is wired but **not yet live**. `AGENT_SKILLS_REF` points at a tag that does
-not exist yet, so `fetch-skills.sh` fails by design and the dispatchers use the
-local `.skills/` fallback — i.e. **CI behavior is unchanged today.**
+`navapbc/agent-skills#2` is merged and tagged
+[`v0.1.0`](https://github.com/navapbc/agent-skills/releases/tag/v0.1.0).
+`scripts/fetch-skills.sh` vendors both skills from that tag, and the dispatchers
+resolve to the vendored copies. Verified locally: fetch succeeds, `--check`
+passes, and both dispatchers resolve to `.skills-vendor/`.
 
-### Go-live checklist
+### Done
 
-- [ ] Merge [`navapbc/agent-skills#2`](https://github.com/navapbc/agent-skills/pull/2)
-- [ ] Tag that repo (e.g. `v0.1.0`)
-- [ ] Set `AGENT_SKILLS_REF` in `scripts/fetch-skills.sh` to that tag
+- [x] Merge `navapbc/agent-skills#2`
+- [x] Tag that repo (`v0.1.0`)
+- [x] Point `AGENT_SKILLS_REF` at that tag
+- [x] Verify the fetch + dispatcher path resolution against the tag (locally)
+
+### Remaining (follow-up)
+
 - [ ] Add the `scripts/fetch-skills.sh` step to the CI workflows (GH Actions + Jenkins)
-- [ ] Verify one CI run reads from `.skills-vendor/` (e.g. on Tim's repo)
-- [ ] Delete the now-redundant local canonical copies:
-      `testing/classifier/.skills/test-classifier/SKILL.md` and
-      `security/review/.skills/pr-review/SKILL.md` (the fallback target goes away
-      once vendored is proven; until then, keeping them is the safety net)
+- [ ] Verify one real CI run reads from `.skills-vendor/` (e.g. on Tim's repo)
+- [ ] Delete the now-redundant local canonical copies once vendored is proven in
+      a real CI run: `testing/classifier/.skills/test-classifier/SKILL.md` and
+      `security/review/.skills/pr-review/SKILL.md` (kept for now as the fallback
+      safety net)

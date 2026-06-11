@@ -18,17 +18,10 @@
 # explicit, reviewable bump of AGENT_SKILLS_REF here — exactly like pinning a
 # GitHub Action to a SHA.
 #
-# ─────────────────────────────────────────────────────────────────────────────
-# ⚠️  MOCK / NOT YET LIVE
-# This script is staged ahead of the agent-skills release tag. Until
-# navapbc/agent-skills cuts the tag named in AGENT_SKILLS_REF below, the fetch
-# will fail by design and the dispatchers fall back to the local .skills/ copy
-# (see SKILL_PATH_CANONICAL resolution in each dispatcher). Flip this live by:
-#   1. merging navapbc/agent-skills#2,
-#   2. tagging that repo (e.g. v0.1.0),
-#   3. setting AGENT_SKILLS_REF to that tag,
-#   4. deleting the now-redundant local canonical copies of the migrated skills.
-# ─────────────────────────────────────────────────────────────────────────────
+# If AGENT_SKILLS_REF does not resolve (e.g. a future ref bump before the tag
+# exists), the fetch fails and the dispatchers fall back to the in-repo .skills/
+# copy of the migrated skills (see SKILL_PATH_CANONICAL resolution in each
+# dispatcher) — so a missing ref degrades gracefully rather than breaking CI.
 #
 # Usage:
 #   scripts/fetch-skills.sh                 # vendor all migrated skills at the pin
@@ -39,7 +32,7 @@ set -euo pipefail
 
 # ── Pin ──────────────────────────────────────────────────────────────────────
 # The agent-skills ref to vendor from. MUST be an immutable tag or full SHA in
-# CI — never a branch. (No tag exists yet; this is the mock placeholder.)
+# CI — never a branch. Bump this to upgrade the migrated skills.
 AGENT_SKILLS_REF="${AGENT_SKILLS_REF:-v0.1.0}"
 AGENT_SKILLS_REPO="${AGENT_SKILLS_REPO:-navapbc/agent-skills}"
 
