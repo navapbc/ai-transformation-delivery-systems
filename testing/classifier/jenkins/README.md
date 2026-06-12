@@ -70,13 +70,96 @@ targets the right server. To be explicit, uncomment `GH_HOST` in the
 `Jenkinsfile` `environment` block. The PAT must be minted on the **GHES**
 instance, not github.com.
 
+## Existing pipelines: graft a stage (scripted / shared library)
+
+The `Jenkinsfile` above is **declarative** (`pipeline { … }`) and is the
+drop-in starting point when you control the whole job. Many real CloudBees/
+Jenkins shops instead run **scripted** pipelines (`node { … }`) and/or a
+**shared library** maintained centrally — there a generated declarative file
+fails with `No such DSL method 'pipeline'` (the two syntaxes don't mix in one
+file). **Do not replace a team's existing Jenkinsfile.** Add a stage to it.
+
+The classifier is just "install a CLI → vendor the skill → run the adapter,"
+so it drops into any pipeline style. Scripted equivalent of the work stage:
+
+```groovy
+// Inside your existing `node { … }` (or a shared-library step). Assumes the
+// repo is already checked out and the agent has git/node/npm/gh/jq/python3.
+stage('AI test classifier') {
+  // PR-scoped: skip on non-PR builds (env.CHANGE_ID is set by GitHub Branch Source).
+  if (!env.CHANGE_ID) {
+    echo 'Not a PR build — nothing to classify.'
+    return
+  }
+  withEnv([
+    'AI_REVIEW_TOOL=claude',          // claude | codex | copilot
+    'AI_RUN_SUITE=1',                 // 0 for read-only triage
+    'CI=true',
+  ]) {
+    // Bind the PAT for `gh` to post the comment. Use whatever credential
+    // type/id your store has — secret-text → string(); username/password
+    // → usernamePassword() and export the token half as GH_TOKEN.
+    withCredentials([string(credentialsId: 'github-pat', variable: 'GH_TOKEN')]) {
+      sh '''
+        set -euo pipefail
+        npm install -g @anthropic-ai/claude-code     # or @openai/codex
+        # Run fetch-skills from the classifier dir in a subshell so the cd
+        # doesn't leak — don't rely on $WORKSPACE being stable across steps.
+        ( cd testing/classifier && chmod +x scripts/fetch-skills.sh && scripts/fetch-skills.sh )
+        chmod +x testing/classifier/.skills/_lib/ai-classifier-dispatch.sh \\
+                 testing/classifier/.skills/test-classifier/scripts/test-classifier-dispatcher.sh \\
+                 testing/classifier/jenkins/ci-adapter.sh
+        mkdir -p classifier-out/agent-bodies
+        testing/classifier/jenkins/ci-adapter.sh | tee classifier-out/classification.txt
+      '''
+    }
+  }
+  archiveArtifacts artifacts: 'classifier-out/**', allowEmptyArchive: true
+}
+```
+
+For a **shared library**, wrap the body above in `vars/aiTestClassifier.groovy`
+as a `call()` step and invoke `aiTestClassifier()` from each pipeline — the
+adapter and dispatcher are unchanged.
+
+Two pitfalls seen in the wild:
+- **`No such DSL method`** → you pasted a declarative snippet into a scripted
+  file (or vice-versa). Match the host file's style; use the scripted block
+  above for `node { }` pipelines.
+- **Old/locked-down agents** may not have the freedom to `npm install -g`
+  globally, or may reset `$HOME` between stages. Prefer a **pre-baked agent
+  image** with the CLI + `gh`/`jq`/`python3` already installed (see the air-gap
+  note), and don't assume tools persist across stages.
+
+### Non-multibranch (freestyle / parameterized) jobs
+
+Many existing pipelines aren't multibranch, so there's no `CHANGE_ID`. The
+adapter accepts explicit overrides — pass the PR number and base ref as **build
+parameters** and export them before calling the adapter:
+
+```groovy
+// String/choice build parameters: PR_NUMBER, BASE_REF
+withEnv(["PR_NUMBER=${params.PR_NUMBER}", "BASE_REF=${params.BASE_REF}"]) {
+  sh 'testing/classifier/jenkins/ci-adapter.sh'
+}
+```
+
+When neither `CHANGE_ID` nor `PR_NUMBER` is set, the adapter exits 0 (nothing to
+classify) — so it's safe to leave in a pipeline that also builds non-PR refs.
+
 ## Bedrock (inference inside your AWS account)
 
 To route inference through Amazon Bedrock instead of the direct Anthropic API
 (the no-data-leaves-your-AWS path — see `../docs/BEDROCK.md`):
 
 1. **Remove** `ANTHROPIC_API_KEY` from the `environment` block (a non-empty key
-   forces the direct API and bypasses Bedrock).
+   forces the direct API and bypasses Bedrock — **even if you also set the
+   Bedrock vars**). This is the single most common Bedrock-onboarding mistake:
+   the run "works" but silently bills the direct Anthropic API instead of your
+   AWS account. If the team is on Bedrock, the API key must be **unset**, not
+   just present-but-empty-intent. The adapter/CLI never reads AWS creds itself —
+   it only reads whatever is in the env, so getting this block right is the
+   whole game.
 2. Add the Bedrock env the Claude Code CLI reads:
    ```groovy
    CLAUDE_CODE_USE_BEDROCK = '1'
@@ -86,17 +169,42 @@ To route inference through Amazon Bedrock instead of the direct Anthropic API
 3. Provide AWS credentials by one of (this is a **client security decision** —
    see the "Two auth modes" + "Cost guardrails" sections of `../docs/BEDROCK.md`,
    they apply identically here):
-   - **Static** — a `AWS_BEARER_TOKEN_BEDROCK` secret-text credential (simplest
-     wiring). The key hits a **public** Bedrock endpoint, so a leak means
-     open-ended spend; **the cost guardrails in `BEDROCK.md` (budget alert +
-     tight policy + lowered quota) are mandatory on this path.**
+   - **Static, stored credential** — a `AWS_BEARER_TOKEN_BEDROCK` secret-text
+     credential in the Jenkins store (simplest persistent wiring). The key hits
+     a **public** Bedrock endpoint, so a leak means open-ended spend; **the cost
+     guardrails in `BEDROCK.md` (budget alert + tight policy + lowered quota)
+     are mandatory on this path.**
+   - **Static, build parameter (no stored credential, no IAM role)** — when the
+     team **can't create a Jenkins credential or an IAM role** (a locked-down
+     CloudBees worker, IAM changes gated behind infra review) but *can* mint a
+     **short-lived** Bedrock key, pass it as a **password build parameter** and
+     export it for that one build:
+     ```groovy
+     // Build parameter: password(name: 'AWS_BEARER_TOKEN_BEDROCK')
+     withEnv([
+       'CLAUDE_CODE_USE_BEDROCK=1',
+       'AWS_REGION=us-east-1',
+       'ANTHROPIC_MODEL=us.anthropic.claude-sonnet-4-6',
+       "AWS_BEARER_TOKEN_BEDROCK=${params.AWS_BEARER_TOKEN_BEDROCK}",
+     ]) {
+       sh 'testing/classifier/jenkins/ci-adapter.sh'
+     }
+     ```
+     This needs **no** stored credential and **no** IAM role — it's the fastest
+     way to get a first green run on a locked-down agent. Tradeoff: the key
+     lives in the build's parameter input, so mint it **short-lived** (hours),
+     don't reuse it, and treat this as a smoke-test path, not steady state. The
+     `password()` parameter type keeps it masked in the UI/logs.
    - **Keyless / ephemeral** — the [Jenkins OIDC Provider plugin](https://plugins.jenkins.io/oidc-provider/)
      issues a build JWT; configure an AWS IAM role with an
      `sts:AssumeRoleWithWebIdentity` trust policy and assume it in a stage,
      exporting `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` /
      `AWS_SESSION_TOKEN`. This is the Jenkins analogue of the Actions OIDC step,
      and the posture FISMA/federal reviews typically require — expect a CMS
-     client to ask for it.
+     client to ask for it. Needs the infra team to create the role (IAM changes
+     are often gated), so it's rarely the *first* thing you get working — start
+     with a short-lived build-parameter key to prove the integration, then move
+     to OIDC for steady state.
 
 ## Non-multibranch jobs
 

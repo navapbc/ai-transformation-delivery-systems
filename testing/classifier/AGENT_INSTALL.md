@@ -43,6 +43,21 @@ writing any files — don't write a `.github/workflows/` file into a Jenkins rep
    apply identically on Jenkins (they set the same env vars).
 3. Success signal is the same: a PR build that posts one triage comment.
 
+**Two Jenkins-specific traps — get these right or the onboarding stalls (the
+README has the fixes):**
+- **Don't write a new declarative `Jenkinsfile` into a shop that runs *scripted*
+  pipelines or a shared library.** It fails with `No such DSL method 'pipeline'`.
+  Detect the team's existing pipeline style first; if it's scripted (`node { }`)
+  or a shared library, **add a stage** using the scripted snippet in
+  `jenkins/README.md` ("Existing pipelines: graft a stage") rather than
+  replacing their file. When in doubt, ask the human which style they use.
+- **If the team wants Bedrock, do NOT set `ANTHROPIC_API_KEY`** in the Jenkins
+  env — a non-empty key silently bypasses Bedrock and bills the direct API. For
+  a locked-down CloudBees worker that can't create a Jenkins credential or IAM
+  role, use the **short-lived `AWS_BEARER_TOKEN_BEDROCK` build-parameter** path
+  in `jenkins/README.md` ("Bedrock" → static build parameter) to get a first
+  green run, then move to OIDC for steady state.
+
 Everything from here down (Steps 1–3) is the **GitHub Actions** path.
 
 ## Step 1 — fetch the ready-made caller file and write its bytes
