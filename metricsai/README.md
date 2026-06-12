@@ -7,9 +7,10 @@ field per metric — to a Google Apps Script webhook that fronts a Google Sheet.
 The design goal is simplicity: one row per week, one field per metric, modules that each
 return plain key/value pairs whose keys are exactly the spreadsheet columns.
 
-> **Status:** the `security` module is implemented (GitHub PR comments + AWS Security Hub);
-> `build_pr` and `testing` still return placeholder (zero) values; and the Google Apps
-> Script / Sheet are not built yet. Use `--dry-run` to print the row without sending it.
+> **Status:** the `security` (GitHub PR comments + AWS Security Hub) and `testing` (AI
+> test-classifier PR comments) modules are implemented; `build_pr` still returns
+> placeholder (zero) values; and the Google Apps Script / Sheet are not built yet. Use
+> `--dry-run` to print the row without sending it.
 
 ## Modules and spreadsheet columns
 
@@ -20,7 +21,7 @@ NAME` (repeatable) narrows the scope.
 | ----------- | ------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | _(row key)_ | —      | `week_ending_date`                                                                                                                                                   |
 | `build_pr`  | stub   | `build_pr_avg_cycle_time_days`, `build_pr_ai_gen_pr_rate_pct`, `build_pr_num_comments`                                                                               |
-| `testing`   | stub   | `testing_quality_comment_thumbs_up_rate_pct`, `testing_quality_suggestion_merge_rate_pct`, `testing_quality_time_to_workflow_run_completion`                         |
+| `testing`   | live   | `testing_classifier_total_classifications`, `testing_classifier_thumbs_ups`, `testing_classifier_thumbs_downs`, `testing_classifier_thumbs_up_rate_pct`, `testing_classifier_app_bug`, `testing_classifier_test_bug`, `testing_classifier_flaky_failure`, `testing_classifier_environment_issue` |
 | `security`  | live   | `security_total_security_comments`, `security_thumbs_ups`, `security_thumbs_downs`, `security_critical`, `security_high`, `security_medium`, `security_low`, `security_total_sechub_critical_high`, and the `security_compliance_*` columns below |
 
 The `security` module emits **both** the `security_*` and `security_compliance_*` families:
@@ -30,6 +31,16 @@ plus one AWS Security Hub findings count. The `security_compliance_*` columns ar
 `security_compliance_total_comments`, `security_compliance_thumbs_ups`,
 `security_compliance_thumbs_downs`, `security_compliance_critical`,
 `security_compliance_high`, `security_compliance_medium`, `security_compliance_low`.
+
+The `testing` module scans the AI **test-classifier**'s PR comments — those leading with the
+`test-classifier:` label and embedding a machine-readable JSON verdict block (see
+`testing/classifier/.skills/test-classifier/SKILL.md`). Each comment carries a
+`classifications` array (one entry per failing test); every entry is counted into its verdict
+bucket (`app_bug` / `test_bug` / `flaky_failure` / `environment_issue`), and the comment's
+👍/👎 reactions feed `testing_classifier_thumbs_up_rate_pct` — the classifier's tuning signal.
+The classifier posts from CI, so its author defaults to `github-actions[bot]` (override with
+`METRICSAI_TESTING_GITHUB_AUTHORS`) and its repos default to the shared `github_repos`
+(override with `METRICSAI_TESTING_GITHUB_REPOS`).
 
 ## Prerequisites
 

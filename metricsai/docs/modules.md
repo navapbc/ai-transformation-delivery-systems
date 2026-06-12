@@ -45,7 +45,7 @@ register(DeployModule())
 ## Built-in modules
 
 All registered modules run by default; each owns the spreadsheet columns under its name
-prefix. `security` is implemented; `build_pr` and `testing` are stubs.
+prefix. `security` and `testing` are implemented; `build_pr` is a stub.
 
 ### build_pr
 

@@ -138,3 +138,126 @@ def test_fetch_review_comments_filters_and_normalizes(monkeypatch) -> None:
     )
     assert sorted(c.label for c in out) == ["compliance", "security", "security"]
     assert any(c.thumbs_up == 1 for c in out)  # from the PR conversation comment
+
+
+# --- classifier source: verdict parsing + comment expansion ---
+
+_CLASSIFIER = "github-actions[bot]"
+
+
+def _classifier_body(*verdicts: str) -> str:
+    entries = ", ".join(f'{{"verdict": "{v}"}}' for v in verdicts)
+    return (
+        "test-classifier: AI triage of failing tests\n\n"
+        "<!-- AI_CLASSIFIER_JSON_BEGIN -->\n"
+        f'{{"classifications": [{entries}]}}\n'
+        "<!-- AI_CLASSIFIER_JSON_END -->\n"
+    )
+
+
+def test_parse_verdicts_reads_each_entry() -> None:
+    body = _classifier_body("APPLICATION_BUG", "TEST_BUG")
+    assert github._parse_verdicts(body) == ["APPLICATION_BUG", "TEST_BUG"]
+
+
+def test_parse_verdicts_uppercases_and_handles_missing() -> None:
+    body = (
+        "<!-- AI_CLASSIFIER_JSON_BEGIN -->\n"
+        '{"classifications": [{"verdict": "flaky_failure"}, {"category": "other"}]}\n'
+        "<!-- AI_CLASSIFIER_JSON_END -->"
+    )
+    assert github._parse_verdicts(body) == ["FLAKY_FAILURE", ""]
+
+
+def test_parse_verdicts_empty_when_no_block_or_unparseable() -> None:
+    assert github._parse_verdicts("test-classifier: no json here") == []
+    bad = "<!-- AI_CLASSIFIER_JSON_BEGIN -->\nnot json\n<!-- AI_CLASSIFIER_JSON_END -->"
+    assert github._parse_verdicts(bad) == []
+
+
+def _classifier_obj(login: str, body: str, when, html, reactions=None):
+    return SimpleNamespace(
+        body=body,
+        user=SimpleNamespace(login=login),
+        created_at=when,
+        raw_data={"html_url": html, "reactions": reactions or {}},
+    )
+
+
+def test_classify_classifier_expands_verdicts_with_reactions() -> None:
+    obj = _classifier_obj(
+        _CLASSIFIER,
+        _classifier_body("APPLICATION_BUG", "TEST_BUG"),
+        _IN_WINDOW,
+        "https://github.com/o/r/pull/1",
+        {"+1": 3, "-1": 1},
+    )
+    out = github._classify_classifier(obj, authors_lower={_CLASSIFIER}, start=_START, end=_END)
+    assert [c.verdict for c in out] == ["APPLICATION_BUG", "TEST_BUG"]
+    assert all((c.thumbs_up, c.thumbs_down) == (3, 1) for c in out)
+
+
+def test_classify_classifier_labelled_but_no_json_counts_once() -> None:
+    obj = _classifier_obj(
+        _CLASSIFIER, "test-classifier: triage", _IN_WINDOW, "https://github.com/o/r/pull/1"
+    )
+    out = github._classify_classifier(obj, authors_lower={_CLASSIFIER}, start=_START, end=_END)
+    assert len(out) == 1
+    assert out[0].verdict == ""
+
+
+def test_classify_classifier_skips_wrong_label_author_window() -> None:
+    body = _classifier_body("APPLICATION_BUG")
+    gate = {"authors_lower": {_CLASSIFIER}, "start": _START, "end": _END}
+    # Wrong label (a security comment, not a classifier one).
+    sec = _classifier_obj(_CLASSIFIER, "security: leak", _IN_WINDOW, "x")
+    assert github._classify_classifier(sec, **gate) == []
+    # Wrong author.
+    wrong = _classifier_obj("someone-else", body, _IN_WINDOW, "x")
+    assert github._classify_classifier(wrong, **gate) == []
+    # Outside window.
+    late = _classifier_obj(_CLASSIFIER, body, datetime(2026, 6, 30, tzinfo=UTC), "x")
+    assert github._classify_classifier(late, **gate) == []
+
+
+def test_fetch_classifier_comments_scans_both_surfaces(monkeypatch) -> None:
+    issue = _classifier_obj(
+        _CLASSIFIER,
+        _classifier_body("APPLICATION_BUG"),
+        _IN_WINDOW,
+        "https://github.com/o/r/pull/1",
+        {"+1": 1},
+    )
+    review = _classifier_obj(
+        _CLASSIFIER,
+        _classifier_body("TEST_BUG", "FLAKY_FAILURE"),
+        _IN_WINDOW,
+        "https://github.com/o/r/pull/2",
+        {"+1": 2},
+    )
+
+    class FakeRepo:
+        def get_issues_comments(self, since):
+            return [issue]
+
+        def get_pulls_comments(self, since):
+            return [review]
+
+    class FakeGithub:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def get_repo(self, name):
+            return FakeRepo()
+
+    monkeypatch.setattr(github, "Github", FakeGithub)
+    out = github.fetch_classifier_comments(
+        token="t",
+        base_url="https://api.github.com",
+        repos=["o/r"],
+        authors=[_CLASSIFIER],
+        start=_START,
+        end=_END,
+    )
+    assert sorted(c.verdict for c in out) == ["APPLICATION_BUG", "FLAKY_FAILURE", "TEST_BUG"]
+    assert sum(c.thumbs_up for c in out) == 1 + 2 + 2  # review's 👍 repeated per verdict

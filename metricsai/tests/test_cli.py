@@ -125,14 +125,16 @@ def test_all_modules_run_by_default(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     import metricsai.modules.security as sec
+    import metricsai.modules.testing as testing
 
     monkeypatch.setenv("METRICSAI_GITHUB_TOKEN", "token")
     monkeypatch.setenv("METRICSAI_GITHUB_REPOS", "owner/repo")
     monkeypatch.setattr(sec, "fetch_review_comments", lambda **_: [])
     monkeypatch.setattr(sec, "count_failed_critical_high", lambda **_: 0)
+    monkeypatch.setattr(testing, "fetch_classifier_comments", lambda **_: [])
 
     assert cli.main(["--dry-run"]) == 0
     err = capsys.readouterr().err
     assert "build_pr_num_comments" in err
-    assert "testing_quality_suggestion_merge_rate_pct" in err
+    assert "testing_classifier_thumbs_up_rate_pct" in err
     assert "security_total_sechub_critical_high" in err
