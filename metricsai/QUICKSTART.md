@@ -34,7 +34,7 @@ uv run metricsai --list-modules
 ```
 
 All modules run by default; `--module` (repeatable) narrows. Row key = `week_ending_date`
-(most recent Thursday, window Fri 00:00Z–Thu 23:59:59Z; override the date with
+(most recent Friday, window Sat 00:00Z–Fri 23:59:59Z; override the date with
 `--week-ending YYYY-MM-DD` or the weekday with `--week-ending-day sunday`).
 
 ## Common flags / env
@@ -46,7 +46,7 @@ All modules run by default; `--module` (repeatable) narrows. Row key = `week_end
 | `--repo` (repeat) | `METRICSAI_GITHUB_REPOS` (csv) | repos to scan (required by `security`) |
 | `--author` (repeat) | `METRICSAI_GITHUB_AUTHORS` (csv) | AI comment authors (default `github-copilot[bot]`) |
 | `--github-url` | `METRICSAI_GITHUB_BASE_URL` | Enterprise: `https://<host>/api/v3` |
-| `--week-ending-day` | `METRICSAI_WEEK_ENDING_DAY` | week-closing weekday (default `thursday`) |
+| `--week-ending-day` | `METRICSAI_WEEK_ENDING_DAY` | week-closing weekday (default `friday`) |
 | `--skip-sechub` | `METRICSAI_SKIP_SECHUB` | skip AWS Security Hub |
 | — | `METRICSAI_AWS_REGION` | Security Hub region (else boto3 default) |
 | `-v` / `--debug` | — | INFO / DEBUG logging |

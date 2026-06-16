@@ -89,8 +89,8 @@ uv run metricsai --dry-run -v                   # INFO logging
 uv run metricsai --dry-run --debug              # DEBUG logging (full payload + sources)
 ```
 
-The row is keyed by `week_ending_date`, which defaults to the most recent Thursday (the
-reporting week runs Friday 00:00:00Z through Thursday 23:59:59Z) and can be overridden with
+The row is keyed by `week_ending_date`, which defaults to the most recent Friday (the
+reporting week runs Saturday 00:00:00Z through Friday 23:59:59Z) and can be overridden with
 `--week-ending YYYY-MM-DD`. Change the week-ending weekday with `--week-ending-day`
 (e.g. `sunday`) or `METRICSAI_WEEK_ENDING_DAY`.
 
@@ -134,7 +134,7 @@ All settings use the `METRICSAI_` prefix.
 | `METRICSAI_GITHUB_BASE_URL`         | `https://api.github.com` | GitHub REST base URL. For Enterprise use `https://<host>/api/v3`. (`--github-url`) |
 | `METRICSAI_GITHUB_REPOS`            | _(none)_             | Comma-separated `owner/repo` list to scan. Required by `security`. (`--repo`) |
 | `METRICSAI_GITHUB_AUTHORS`          | `github-copilot[bot]` | Comma-separated comment authors counted as AI-generated. (`--author`)      |
-| `METRICSAI_WEEK_ENDING_DAY`         | `thursday`           | Weekday the reporting week closes on (name or abbrev). `--week-ending-day`   |
+| `METRICSAI_WEEK_ENDING_DAY`         | `friday`             | Weekday the reporting week closes on (name or abbrev). `--week-ending-day`   |
 | `METRICSAI_AWS_REGION`              | _(boto3 default)_    | AWS region for Security Hub. Falls back to `AWS_REGION` / active profile.   |
 | `METRICSAI_SKIP_SECHUB`             | `false`              | Skip the AWS Security Hub query (GitHub metrics still gather/post). `--skip-sechub` |
 | `METRICSAI_REQUEST_TIMEOUT`         | `10.0`               | HTTP request timeout (seconds).                                             |

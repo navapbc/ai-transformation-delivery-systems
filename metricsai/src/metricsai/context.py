@@ -17,7 +17,7 @@ class RunContext:
     :ivar get_github_token: Lazily resolves the GitHub token on first use, so modules that
         do not need it never trigger a keychain lookup or prompt. The resolved value is
         cached for the duration of the run.
-    :ivar week_ending_date: The Thursday that closes the reporting week. Modules derive their
+    :ivar week_ending_date: The Friday that closes the reporting week. Modules derive their
         query window from it via :func:`~metricsai.models.week_window`.
     """
 

@@ -93,8 +93,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--week-ending-day",
         metavar="DAY",
-        help="Weekday the reporting week closes on, e.g. 'thursday' (overrides "
-        "METRICSAI_WEEK_ENDING_DAY; default thursday).",
+        help="Weekday the reporting week closes on, e.g. 'friday' (overrides "
+        "METRICSAI_WEEK_ENDING_DAY; default friday).",
     )
     parser.add_argument(
         "--github-url",

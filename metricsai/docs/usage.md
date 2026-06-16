@@ -17,8 +17,8 @@ uv run metricsai --dry-run --debug         # DEBUG logging
 ```
 
 All registered modules run by default; pass `--module NAME` (repeatable) to narrow scope.
-The row is keyed by `week_ending_date` (default: most recent Thursday; the query window is
-the 7 days ending on it, Fri 00:00:00Z through Thu 23:59:59Z).
+The row is keyed by `week_ending_date` (default: most recent Friday; the query window is
+the 7 days ending on it, Sat 00:00:00Z through Fri 23:59:59Z).
 
 ## Configuration
 
@@ -35,7 +35,7 @@ All settings use the `METRICSAI_` prefix and may be set in the environment.
 | `METRICSAI_GITHUB_BASE_URL`         | `https://api.github.com` | GitHub REST base URL (Enterprise: `https://<host>/api/v3`). `--github-url` |
 | `METRICSAI_GITHUB_REPOS`            | _(none)_                 | Comma-separated `owner/repo` list. Required by `security`. `--repo` |
 | `METRICSAI_GITHUB_AUTHORS`          | `github-copilot[bot]`    | Comma-separated AI comment authors. `--author`                      |
-| `METRICSAI_WEEK_ENDING_DAY`         | `thursday`               | Weekday the reporting week closes on. `--week-ending-day`           |
+| `METRICSAI_WEEK_ENDING_DAY`         | `friday`                 | Weekday the reporting week closes on. `--week-ending-day`           |
 | `METRICSAI_AWS_REGION`              | _(boto3 default)_        | AWS region for Security Hub.                                        |
 | `METRICSAI_SKIP_SECHUB`             | `false`                  | Skip the AWS Security Hub query (GitHub metrics still run). `--skip-sechub` |
 | `METRICSAI_REQUEST_TIMEOUT`         | `10.0`                   | HTTP request timeout (seconds).                                     |

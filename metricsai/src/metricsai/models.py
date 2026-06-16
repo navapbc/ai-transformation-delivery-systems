@@ -23,8 +23,8 @@ WEEKDAYS = {
 }
 
 #: Default day on which the reporting week closes (window: that day back through 6 days
-#: earlier, i.e. Fri 00:00:00Z .. Thu 23:59:59Z for the default).
-DEFAULT_WEEK_ENDING_WEEKDAY = WEEKDAYS["thursday"]
+#: earlier, i.e. Sat 00:00:00Z .. Fri 23:59:59Z for the default).
+DEFAULT_WEEK_ENDING_WEEKDAY = WEEKDAYS["friday"]
 
 
 def weekday_number(name: str) -> int:
@@ -73,7 +73,7 @@ def week_window(week_ending: date) -> tuple[datetime, datetime]:
 class MetricRow(BaseModel):
     """One week's row of metrics destined for the spreadsheet.
 
-    :ivar week_ending_date: The Thursday that closes the reporting week; the row's key column.
+    :ivar week_ending_date: The Friday that closes the reporting week; the row's key column.
     :ivar metrics: Mapping of spreadsheet field name to value, merged from every module.
     """
 
