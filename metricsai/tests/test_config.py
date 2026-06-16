@@ -13,6 +13,12 @@ def test_defaults() -> None:
     assert settings.github_token is None
     assert settings.github_keychain_service == "metricsai-github"
     assert settings.request_timeout == 10.0
+    assert settings.all_authors is False
+
+
+def test_all_authors_reads_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("METRICSAI_ALL_AUTHORS", "true")
+    assert Settings().all_authors is True
 
 
 def test_reads_env(monkeypatch: pytest.MonkeyPatch) -> None:

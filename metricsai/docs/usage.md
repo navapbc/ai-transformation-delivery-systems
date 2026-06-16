@@ -8,6 +8,7 @@ uv run metricsai --list-modules            # list registered modules
 uv run metricsai --module security --dry-run
 uv run metricsai --repo owner/repo --repo owner/other   # repos to scan (repeatable)
 uv run metricsai --author "github-copilot[bot]"         # AI comment author (repeatable)
+uv run metricsai --all-authors                          # security: count any author's comments
 uv run metricsai --github-url https://ghe.example.com/api/v3   # GitHub Enterprise
 uv run metricsai --week-ending 2026-06-07  # set the row's week-ending date
 uv run metricsai --url https://script.google.com/.../exec --tab Metrics
@@ -35,6 +36,7 @@ All settings use the `METRICSAI_` prefix and may be set in the environment.
 | `METRICSAI_GITHUB_BASE_URL`         | `https://api.github.com` | GitHub REST base URL (Enterprise: `https://<host>/api/v3`). `--github-url` |
 | `METRICSAI_GITHUB_REPOS`            | _(none)_                 | Comma-separated `owner/repo` list. Required by `security`. `--repo` |
 | `METRICSAI_GITHUB_AUTHORS`          | `github-copilot[bot]`    | Comma-separated AI comment authors. `--author`                      |
+| `METRICSAI_ALL_AUTHORS`             | `false`                  | Security scan counts comments from any author, ignoring the author allowlist. `--all-authors` |
 | `METRICSAI_WEEK_ENDING_DAY`         | `friday`                 | Weekday the reporting week closes on. `--week-ending-day`           |
 | `METRICSAI_AWS_REGION`              | _(boto3 default)_        | AWS region for Security Hub.                                        |
 | `METRICSAI_SKIP_SECHUB`             | `false`                  | Skip the AWS Security Hub query (GitHub metrics still run). `--skip-sechub` |

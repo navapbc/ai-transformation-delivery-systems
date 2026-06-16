@@ -1,7 +1,8 @@
 """Runtime configuration sourced from environment variables.
 
 All settings use the ``METRICSAI_`` prefix, e.g. ``METRICSAI_WEBHOOK_URL``. The CLI may
-override individual values (notably ``--url``, ``--repo``, ``--author``) at call time.
+override individual values (notably ``--url``, ``--repo``, ``--author``, ``--all-authors``)
+at call time.
 """
 
 from __future__ import annotations
@@ -57,6 +58,11 @@ class Settings(BaseSettings):
         scans for classifier comments. Falls back to ``github_repos`` when unset.
     :ivar testing_github_authors: Comma-separated author logins of the test-classifier's
         comments. Falls back to the classifier-bot default when unset.
+    :ivar all_authors: When ``True``, the ``security`` module counts comments from *any*
+        author and ignores the ``github_authors`` allowlist entirely (the window and
+        Conventional-Comment label gates still apply). Does not affect the ``testing``
+        module, which only counts the test-classifier's own structured comments. Off by
+        default.
     :ivar week_ending_day: Weekday that closes the reporting week (e.g. ``friday`` /
         ``fri``). The query window is the 7 days ending on it.
     :ivar aws_region: Optional AWS region for Security Hub. When unset, boto3's default
@@ -80,6 +86,7 @@ class Settings(BaseSettings):
     github_authors: str = DEFAULT_AUTHOR
     testing_github_repos: str = ""
     testing_github_authors: str = ""
+    all_authors: bool = False
     week_ending_day: str = "friday"
     aws_region: str | None = None
     skip_sechub: bool = False

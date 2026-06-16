@@ -64,6 +64,34 @@ def test_classify_skips_wrong_author() -> None:
     assert "author" in reason
 
 
+def test_classify_match_all_authors_accepts_any_author() -> None:
+    comment, reason = github._classify(
+        _obj(login="someone-else"),
+        _IN_WINDOW,
+        authors_lower=_AUTHORS,
+        start=_START,
+        end=_END,
+        with_reactions=True,
+        match_all_authors=True,
+    )
+    assert reason == ""
+    assert comment is not None
+    assert comment.label == "security"
+
+
+def test_classify_match_all_authors_still_enforces_window_and_label() -> None:
+    # The author gate is lifted, but the window and label gates still apply.
+    gate = {"authors_lower": _AUTHORS, "start": _START, "end": _END, "with_reactions": True}
+    outside, reason = github._classify(
+        _obj(login="anyone"), datetime(2026, 6, 9, tzinfo=UTC), match_all_authors=True, **gate
+    )
+    assert outside is None and "outside window" in reason
+    wrong_label, reason = github._classify(
+        _obj(login="anyone", body="looks good"), _IN_WINDOW, match_all_authors=True, **gate
+    )
+    assert wrong_label is None and "security/compliance" in reason
+
+
 def test_classify_skips_outside_window() -> None:
     comment, reason = _classify(_obj(), datetime(2026, 6, 9, tzinfo=UTC))
     assert comment is None

@@ -97,6 +97,68 @@ def test_skip_sechub_flag(
     assert "security_total_sechub_critical_high" not in err
 
 
+def test_all_authors_flag_flows_to_fetch(monkeypatch: pytest.MonkeyPatch) -> None:
+    import metricsai.modules.security as sec
+
+    captured: dict[str, object] = {}
+
+    def _fake_fetch(**kwargs):
+        captured.update(kwargs)
+        return []
+
+    monkeypatch.setenv("METRICSAI_GITHUB_TOKEN", "token")
+    monkeypatch.setattr(sec, "fetch_review_comments", _fake_fetch)
+
+    argv = ["--dry-run", "--module", "security", "--repo", "o/r", "--skip-sechub", "--all-authors"]
+    assert cli.main(argv) == 0
+    assert captured["match_all_authors"] is True
+
+
+def test_all_authors_warns_when_author_also_set(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import metricsai.modules.security as sec
+
+    monkeypatch.setenv("METRICSAI_GITHUB_TOKEN", "token")
+    monkeypatch.setattr(sec, "fetch_review_comments", lambda **_: [])
+    argv = [
+        "--dry-run",
+        "--module",
+        "security",
+        "--repo",
+        "o/r",
+        "--skip-sechub",
+        "--all-authors",
+        "--author",
+        "alice",
+    ]
+    assert cli.main(argv) == 0
+    assert "are ignored for the security scan" in capsys.readouterr().err
+
+
+def test_all_authors_alone_does_not_warn(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import metricsai.modules.security as sec
+
+    monkeypatch.setenv("METRICSAI_GITHUB_TOKEN", "token")
+    monkeypatch.setattr(sec, "fetch_review_comments", lambda **_: [])
+    argv = ["--dry-run", "--module", "security", "--repo", "o/r", "--skip-sechub", "--all-authors"]
+    assert cli.main(argv) == 0
+    assert "are ignored for the security scan" not in capsys.readouterr().err
+
+
+def test_all_authors_defaults_off(monkeypatch: pytest.MonkeyPatch) -> None:
+    import metricsai.modules.security as sec
+
+    captured: dict[str, object] = {}
+    monkeypatch.setenv("METRICSAI_GITHUB_TOKEN", "token")
+    monkeypatch.setattr(sec, "fetch_review_comments", lambda **kw: captured.update(kw) or [])
+
+    assert cli.main(["--dry-run", "--module", "security", "--repo", "o/r", "--skip-sechub"]) == 0
+    assert captured["match_all_authors"] is False
+
+
 def test_gather_error_is_reported_cleanly(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:

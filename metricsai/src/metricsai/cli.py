@@ -17,7 +17,7 @@ from functools import lru_cache
 
 from metricsai import __version__
 from metricsai.client import MetricsClient
-from metricsai.config import Settings
+from metricsai.config import DEFAULT_AUTHOR, Settings
 from metricsai.context import RunContext
 from metricsai.keychain import TokenError, resolve_token, resolve_webhook_key, store_token
 from metricsai.logging import setup_logging
@@ -45,8 +45,8 @@ def _apply_overrides(settings: Settings, args: argparse.Namespace) -> Settings:
 
     :param settings: The environment-loaded settings.
     :param args: Parsed CLI arguments.
-    :returns: A copy with ``--github-url`` / ``--repo`` / ``--author`` folded in, or the
-        original when no overrides were given.
+    :returns: A copy with ``--github-url`` / ``--repo`` / ``--author`` / ``--all-authors``
+        folded in, or the original when no overrides were given.
     """
     overrides: dict[str, object] = {}
     if args.github_url:
@@ -55,6 +55,8 @@ def _apply_overrides(settings: Settings, args: argparse.Namespace) -> Settings:
         overrides["github_repos"] = ",".join(args.repo)
     if args.author:
         overrides["github_authors"] = ",".join(args.author)
+    if args.all_authors:
+        overrides["all_authors"] = True
     if args.week_ending_day:
         overrides["week_ending_day"] = args.week_ending_day
     if args.skip_sechub:
@@ -113,6 +115,12 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="LOGIN",
         help="Comment author to count as AI-generated (repeatable; overrides "
         "METRICSAI_GITHUB_AUTHORS).",
+    )
+    parser.add_argument(
+        "--all-authors",
+        action="store_true",
+        help="Count security-reviewer comments from any author, ignoring the --author / "
+        "METRICSAI_GITHUB_AUTHORS allowlist (overrides METRICSAI_ALL_AUTHORS).",
     )
     parser.add_argument(
         "--skip-sechub",
@@ -191,6 +199,12 @@ def main(argv: list[str] | None = None) -> int:
         return _store_secret(settings.webhook_keychain_service, "Enter webhook API key: ")
 
     settings = _apply_overrides(settings, args)
+    if settings.all_authors and settings.github_authors not in ("", DEFAULT_AUTHOR):
+        logger.warning(
+            "--all-authors / METRICSAI_ALL_AUTHORS is set, so the configured comment "
+            "authors (%s) are ignored for the security scan.",
+            settings.github_authors,
+        )
     webhook_url = args.url or (str(settings.webhook_url) if settings.webhook_url else None)
     try:
         week_ending_date = args.week_ending or default_week_ending(

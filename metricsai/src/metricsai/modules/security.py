@@ -60,6 +60,7 @@ class SecurityModule(MetricsModule):
             authors=settings.authors,
             start=start,
             end=end,
+            match_all_authors=settings.all_authors,
         )
 
         metrics = _aggregate_comments(comments)

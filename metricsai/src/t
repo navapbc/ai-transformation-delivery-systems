@@ -1,0 +1,68 @@
+cd /Users/bhodges/workspace/ai-transformation-delivery-systems
+
+git checkout -b feat/metricsai-all-authors
+
+git add metricsai/
+
+git commit -m "$(cat <<'EOF'
+feat(metricsai): add --all-authors to count any author's security comments
+
+Add an opt-in boolean (--all-authors / METRICSAI_ALL_AUTHORS, default off)
+that makes the security module's comment scan count any author, ignoring the
+github_authors allowlist. It is threaded into the review scan as
+match_all_authors; when set, _classify skips the author-membership check. The
+window and Conventional-Comment label gates still apply.
+
+Scope is security-only: the classifier source path carries no all-authors
+plumbing, so the testing module always keys off the classifier-bot author (it
+only counts the classifier's own structured comments). cli.main warns when a
+non-default github_authors is configured alongside --all-authors, since the
+author list is then ignored.
+
+Mirrors the existing skip_sechub flag convention. Updates README, QUICKSTART,
+docs/usage, and CLAUDE.md, and adds source/CLI/config tests.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+EOF
+)"
+
+git push -u origin feat/metricsai-all-authors
+
+gh pr create --base main --head feat/metricsai-all-authors \
+  --title "feat(metricsai): add --all-authors to count any author's security comments" \
+  --body "$(cat <<'EOF'
+## What
+
+Adds an opt-in **`--all-authors`** flag (env `METRICSAI_ALL_AUTHORS`, default **off**) that makes the **security** module count PR comments from *any* author, ignoring the `github_authors` allowlist. Only the author gate is lifted — the **window** and **Conventional-Comment label** gates still apply.
+
+## Scope: security-only
+
+The classifier source path (`fetch_classifier_comments` and friends) carries **no** all-authors plumbing, so the `testing` module always keys off the classifier-bot author — it only counts the test-classifier's own structured `AI_CLASSIFIER_JSON` comments, where "any author" has no meaning.
+
+## Behavior when combined with `--author`
+
+`--all-authors` wins (the author check is bypassed). To avoid silently ignoring an explicit `--author` / `METRICSAI_GITHUB_AUTHORS`, `cli.main` logs a one-line **warning** when a non-default author list is configured alongside `--all-authors`. Covers both the flag and env-var combinations.
+
+## Design
+
+Chose a boolean flag over an `--author '*'` sentinel: mirrors the existing `skip_sechub` convention, avoids the shell-glob footgun of `*`, is self-documenting, and gives clean override semantics.
+
+## Changes
+
+- **`config.py`** — new `all_authors: bool = False` setting.
+- **`sources/github.py`** — threaded `match_all_authors` through the review-scan path into `_classify`; guard becomes `if not match_all_authors and login.lower() not in authors_lower`. Classifier path untouched.
+- **`cli.py`** — `--all-authors` `store_true` flag + override (mirrors `--skip-sechub`); warning when a non-default `github_authors` is set alongside it.
+- **`modules/security.py`** — passes `match_all_authors=settings.all_authors`. (`testing.py` does not.)
+- **Docs** — README, QUICKSTART, docs/usage, CLAUDE.md (scoped to the security module).
+- **Tests** — `_classify` bypass + still-enforced window/label; CLI flow-through, default-off, and warning (fires / stays quiet); config default + env.
+
+## Verification
+
+- `uv run pytest` — 64 passed.
+- `uv run ruff check .` / `ruff format --check .` — clean.
+- `metricsai --help` shows `--all-authors`; warning verified live.
+
+🤖 Generated with [Claude Code](https://claude.com/claude-code)
+EOF
+)"
+
