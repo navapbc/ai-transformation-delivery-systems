@@ -58,6 +58,9 @@ Conventional-Comment label (`security` vs `compliance`), plus one AWS Security H
 - `sources/aws.py` (boto3): paginated `securityhub get_findings` → `security_total_sechub_critical_high`.
 - `skip_sechub` (`--skip-sechub` / `METRICSAI_SKIP_SECHUB`) omits the AWS call and that one
   column, so GitHub metrics still gather/post with no AWS creds.
+- `all_authors` (`--all-authors` / `METRICSAI_ALL_AUTHORS`) is a single boolean threaded into
+  the scan as `match_all_authors`; when set, `_classify` / `_classify_classifier` skip the
+  author-allowlist check (window + label gates still apply). Applies to both modules.
 
 **`testing` module** emits the `testing_classifier_*` columns from one scan of the AI
 test-classifier's PR comments (`fetch_classifier_comments` in `sources/github.py`): comments

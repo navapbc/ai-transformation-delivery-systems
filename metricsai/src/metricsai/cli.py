@@ -45,8 +45,8 @@ def _apply_overrides(settings: Settings, args: argparse.Namespace) -> Settings:
 
     :param settings: The environment-loaded settings.
     :param args: Parsed CLI arguments.
-    :returns: A copy with ``--github-url`` / ``--repo`` / ``--author`` folded in, or the
-        original when no overrides were given.
+    :returns: A copy with ``--github-url`` / ``--repo`` / ``--author`` / ``--all-authors``
+        folded in, or the original when no overrides were given.
     """
     overrides: dict[str, object] = {}
     if args.github_url:
@@ -55,6 +55,8 @@ def _apply_overrides(settings: Settings, args: argparse.Namespace) -> Settings:
         overrides["github_repos"] = ",".join(args.repo)
     if args.author:
         overrides["github_authors"] = ",".join(args.author)
+    if args.all_authors:
+        overrides["all_authors"] = True
     if args.week_ending_day:
         overrides["week_ending_day"] = args.week_ending_day
     if args.skip_sechub:
@@ -113,6 +115,12 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="LOGIN",
         help="Comment author to count as AI-generated (repeatable; overrides "
         "METRICSAI_GITHUB_AUTHORS).",
+    )
+    parser.add_argument(
+        "--all-authors",
+        action="store_true",
+        help="Count comments from any author, ignoring the --author / METRICSAI_GITHUB_AUTHORS "
+        "(and testing) allowlists (overrides METRICSAI_ALL_AUTHORS).",
     )
     parser.add_argument(
         "--skip-sechub",

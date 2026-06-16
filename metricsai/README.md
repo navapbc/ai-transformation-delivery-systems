@@ -79,6 +79,7 @@ uv run metricsai --list-modules                 # show registered modules
 uv run metricsai --module security --dry-run    # run a single module
 uv run metricsai --repo navapbc/strata --repo navapbc/oscer --dry-run   # scan these repos
 uv run metricsai --author "github-copilot[bot]" # count this author's comments (repeatable)
+uv run metricsai --all-authors                   # count comments from any author
 uv run metricsai --github-url https://ghe.example.com/api/v3            # GitHub Enterprise
 uv run metricsai --module security --skip-sechub --dry-run   # GitHub-only (no AWS call)
 uv run metricsai --week-ending 2026-06-07       # set the row's week-ending date
@@ -134,6 +135,7 @@ All settings use the `METRICSAI_` prefix.
 | `METRICSAI_GITHUB_BASE_URL`         | `https://api.github.com` | GitHub REST base URL. For Enterprise use `https://<host>/api/v3`. (`--github-url`) |
 | `METRICSAI_GITHUB_REPOS`            | _(none)_             | Comma-separated `owner/repo` list to scan. Required by `security`. (`--repo`) |
 | `METRICSAI_GITHUB_AUTHORS`          | `github-copilot[bot]` | Comma-separated comment authors counted as AI-generated. (`--author`)      |
+| `METRICSAI_ALL_AUTHORS`             | `false`              | Count comments from any author, ignoring the author allowlists. `--all-authors` |
 | `METRICSAI_WEEK_ENDING_DAY`         | `friday`             | Weekday the reporting week closes on (name or abbrev). `--week-ending-day`   |
 | `METRICSAI_AWS_REGION`              | _(boto3 default)_    | AWS region for Security Hub. Falls back to `AWS_REGION` / active profile.   |
 | `METRICSAI_SKIP_SECHUB`             | `false`              | Skip the AWS Security Hub query (GitHub metrics still gather/post). `--skip-sechub` |
@@ -239,7 +241,8 @@ The same token is used for github.com and GitHub Enterprise (set `--github-url` 
 A comment is counted only if **all three** hold — so a manual test often shows zeros:
 
 1. **Author** is in `--author` / `METRICSAI_GITHUB_AUTHORS` (default `github-copilot[bot]`).
-   Comments you wrote yourself won't count unless you add your own login.
+   Comments you wrote yourself won't count unless you add your own login — or pass
+   `--all-authors` / `METRICSAI_ALL_AUTHORS=true` to count comments from *any* author.
 2. **Created within the window** — the 7 days ending on `week_ending_date`. Comments from
    *today* are excluded unless `week_ending_date` covers today (`--week-ending`).
 3. **Body starts with** `security` or `compliance` (Conventional-Comments style).
