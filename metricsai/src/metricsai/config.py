@@ -57,8 +57,8 @@ class Settings(BaseSettings):
         scans for classifier comments. Falls back to ``github_repos`` when unset.
     :ivar testing_github_authors: Comma-separated author logins of the test-classifier's
         comments. Falls back to the classifier-bot default when unset.
-    :ivar week_ending_day: Weekday that closes the reporting week (e.g. ``thursday`` /
-        ``thu``). The query window is the 7 days ending on it.
+    :ivar week_ending_day: Weekday that closes the reporting week (e.g. ``friday`` /
+        ``fri``). The query window is the 7 days ending on it.
     :ivar aws_region: Optional AWS region for Security Hub. When unset, boto3's default
         resolution (``AWS_REGION`` / active profile) is used.
     :ivar skip_sechub: When ``True``, the security module skips the AWS Security Hub query
@@ -80,7 +80,7 @@ class Settings(BaseSettings):
     github_authors: str = DEFAULT_AUTHOR
     testing_github_repos: str = ""
     testing_github_authors: str = ""
-    week_ending_day: str = "thursday"
+    week_ending_day: str = "friday"
     aws_region: str | None = None
     skip_sechub: bool = False
     request_timeout: float = 10.0

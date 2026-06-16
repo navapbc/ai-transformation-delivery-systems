@@ -9,14 +9,14 @@ import pytest
 from metricsai.models import MetricRow, default_week_ending, week_window, weekday_number
 
 
-def test_default_week_ending_returns_thursday() -> None:
-    # 2026-06-10 is a Wednesday; the prior Thursday is 2026-06-04.
-    assert default_week_ending(date(2026, 6, 10)) == date(2026, 6, 4)
+def test_default_week_ending_returns_friday() -> None:
+    # 2026-06-10 is a Wednesday; the prior Friday is 2026-06-05.
+    assert default_week_ending(date(2026, 6, 10)) == date(2026, 6, 5)
 
 
-def test_default_week_ending_on_thursday_is_same_day() -> None:
-    # 2026-06-04 is a Thursday.
-    assert default_week_ending(date(2026, 6, 4)) == date(2026, 6, 4)
+def test_default_week_ending_on_friday_is_same_day() -> None:
+    # 2026-06-05 is a Friday.
+    assert default_week_ending(date(2026, 6, 5)) == date(2026, 6, 5)
 
 
 def test_default_week_ending_configurable_weekday() -> None:

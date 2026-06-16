@@ -36,7 +36,7 @@ A CLI that gathers AI-in-SDLC metrics from pluggable modules and POSTs one weekl
 
 **Pipeline (`cli.py::main`):** load `Settings` (env, `METRICSAI_` prefix) → apply CLI
 overrides via `settings.model_copy(update=...)` → compute `week_ending_date` (default: most
-recent Thursday) → build a `RunContext` (settings, a *lazy/cached* `get_github_token`, and the
+recent Friday) → build a `RunContext` (settings, a *lazy/cached* `get_github_token`, and the
 week-ending date) → run the selected modules → merge their dicts into
 `MetricRow(week_ending_date, metrics)` → `MetricsClient.post()` (or print on `--dry-run`).
 
@@ -100,7 +100,7 @@ paths.
   are blocked, so bootstrap secrets / `aws sso login` unsandboxed first; allowlist
   `api.github.com`, `securityhub.<region>.amazonaws.com`, STS/SSO, and the Apps Script host.
 - Week-ending weekday is configurable (`week_ending_day` setting / `--week-ending-day` /
-  `METRICSAI_WEEK_ENDING_DAY`), default **Thursday**, giving a 7-day inclusive UTC window
-  Fri 00:00:00Z–Thu 23:59:59Z (`models.default_week_ending` / `weekday_number` /
+  `METRICSAI_WEEK_ENDING_DAY`), default **Friday**, giving a 7-day inclusive UTC window
+  Sat 00:00:00Z–Fri 23:59:59Z (`models.default_week_ending` / `weekday_number` /
   `week_window`). Security Hub is single-region via boto3's default credential chain, which
   already honors env `AWS_SESSION_TOKEN` for temporary creds.
