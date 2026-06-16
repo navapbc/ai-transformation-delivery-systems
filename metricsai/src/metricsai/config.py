@@ -58,9 +58,11 @@ class Settings(BaseSettings):
         scans for classifier comments. Falls back to ``github_repos`` when unset.
     :ivar testing_github_authors: Comma-separated author logins of the test-classifier's
         comments. Falls back to the classifier-bot default when unset.
-    :ivar all_authors: When ``True``, count comments from *any* author and ignore the
-        ``github_authors`` / ``testing_github_authors`` allowlists entirely. The window and
-        Conventional-Comment label gates still apply. Off by default.
+    :ivar all_authors: When ``True``, the ``security`` module counts comments from *any*
+        author and ignores the ``github_authors`` allowlist entirely (the window and
+        Conventional-Comment label gates still apply). Does not affect the ``testing``
+        module, which only counts the test-classifier's own structured comments. Off by
+        default.
     :ivar week_ending_day: Weekday that closes the reporting week (e.g. ``friday`` /
         ``fri``). The query window is the 7 days ending on it.
     :ivar aws_region: Optional AWS region for Security Hub. When unset, boto3's default

@@ -248,17 +248,6 @@ def test_classify_classifier_skips_wrong_label_author_window() -> None:
     assert github._classify_classifier(late, **gate) == []
 
 
-def test_classify_classifier_match_all_authors_accepts_any_author() -> None:
-    obj = _classifier_obj(
-        "some-human", _classifier_body("TEST_BUG"), _IN_WINDOW, "https://github.com/o/r/pull/1"
-    )
-    # Without the bypass the wrong author is dropped; with it, the comment counts.
-    gate = {"authors_lower": {_CLASSIFIER}, "start": _START, "end": _END}
-    assert github._classify_classifier(obj, **gate) == []
-    out = github._classify_classifier(obj, **gate, match_all_authors=True)
-    assert [c.verdict for c in out] == ["TEST_BUG"]
-
-
 def test_fetch_classifier_comments_scans_both_surfaces(monkeypatch) -> None:
     issue = _classifier_obj(
         _CLASSIFIER,

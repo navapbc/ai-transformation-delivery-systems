@@ -17,7 +17,7 @@ from functools import lru_cache
 
 from metricsai import __version__
 from metricsai.client import MetricsClient
-from metricsai.config import Settings
+from metricsai.config import DEFAULT_AUTHOR, Settings
 from metricsai.context import RunContext
 from metricsai.keychain import TokenError, resolve_token, resolve_webhook_key, store_token
 from metricsai.logging import setup_logging
@@ -119,8 +119,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--all-authors",
         action="store_true",
-        help="Count comments from any author, ignoring the --author / METRICSAI_GITHUB_AUTHORS "
-        "(and testing) allowlists (overrides METRICSAI_ALL_AUTHORS).",
+        help="Count security-reviewer comments from any author, ignoring the --author / "
+        "METRICSAI_GITHUB_AUTHORS allowlist (overrides METRICSAI_ALL_AUTHORS).",
     )
     parser.add_argument(
         "--skip-sechub",
@@ -199,6 +199,12 @@ def main(argv: list[str] | None = None) -> int:
         return _store_secret(settings.webhook_keychain_service, "Enter webhook API key: ")
 
     settings = _apply_overrides(settings, args)
+    if settings.all_authors and settings.github_authors not in ("", DEFAULT_AUTHOR):
+        logger.warning(
+            "--all-authors / METRICSAI_ALL_AUTHORS is set, so the configured comment "
+            "authors (%s) are ignored for the security scan.",
+            settings.github_authors,
+        )
     webhook_url = args.url or (str(settings.webhook_url) if settings.webhook_url else None)
     try:
         week_ending_date = args.week_ending or default_week_ending(
