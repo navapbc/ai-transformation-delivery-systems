@@ -22,7 +22,7 @@ def _clear_env(monkeypatch: pytest.MonkeyPatch) -> None:
         "METRICSAI_WEBHOOK_TAB",
         "METRICSAI_GITHUB_TOKEN",
         "METRICSAI_GITHUB_REPOS",
-        "METRICSAI_GITHUB_AUTHORS",
+        "METRICSAI_SECURITY_GITHUB_AUTHORS",
         "METRICSAI_GITHUB_BASE_URL",
         "METRICSAI_WEEK_ENDING_DAY",
         "METRICSAI_AWS_REGION",

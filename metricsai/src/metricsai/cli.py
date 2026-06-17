@@ -54,7 +54,7 @@ def _apply_overrides(settings: Settings, args: argparse.Namespace) -> Settings:
     if args.repo:
         overrides["github_repos"] = ",".join(args.repo)
     if args.author:
-        overrides["github_authors"] = ",".join(args.author)
+        overrides["security_github_authors"] = ",".join(args.author)
     if args.all_authors:
         overrides["all_authors"] = True
     if args.week_ending_day:
@@ -114,13 +114,13 @@ def build_parser() -> argparse.ArgumentParser:
         action="append",
         metavar="LOGIN",
         help="Comment author to count as AI-generated (repeatable; overrides "
-        "METRICSAI_GITHUB_AUTHORS).",
+        "METRICSAI_SECURITY_GITHUB_AUTHORS).",
     )
     parser.add_argument(
         "--all-authors",
         action="store_true",
         help="Count security-reviewer comments from any author, ignoring the --author / "
-        "METRICSAI_GITHUB_AUTHORS allowlist (overrides METRICSAI_ALL_AUTHORS).",
+        "METRICSAI_SECURITY_GITHUB_AUTHORS allowlist (overrides METRICSAI_ALL_AUTHORS).",
     )
     parser.add_argument(
         "--skip-sechub",
@@ -199,11 +199,11 @@ def main(argv: list[str] | None = None) -> int:
         return _store_secret(settings.webhook_keychain_service, "Enter webhook API key: ")
 
     settings = _apply_overrides(settings, args)
-    if settings.all_authors and settings.github_authors not in ("", DEFAULT_AUTHOR):
+    if settings.all_authors and settings.security_github_authors not in ("", DEFAULT_AUTHOR):
         logger.warning(
             "--all-authors / METRICSAI_ALL_AUTHORS is set, so the configured comment "
             "authors (%s) are ignored for the security scan.",
-            settings.github_authors,
+            settings.security_github_authors,
         )
     webhook_url = args.url or (str(settings.webhook_url) if settings.webhook_url else None)
     try:
