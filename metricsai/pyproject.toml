@@ -4,8 +4,8 @@ version = "0.1.0"
 description = "Pluggable collector for AI-in-SDLC metrics that reports a timestamped row to a Google Apps Script webhook."
 readme = "README.md"
 requires-python = ">=3.12"
-license = { text = "MIT" }
-authors = [{ name = "Brian Hodges", email = "brianhodges@navapbc.com" }]
+license = { text = "Apache-2.0" }
+authors = [{ name = "Nava PBC" }]
 keywords = ["metrics", "sdlc", "github", "security", "ai"]
 dependencies = [
     "pydantic>=2.6",
