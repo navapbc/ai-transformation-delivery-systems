@@ -62,7 +62,7 @@ Conventional-Comment label (`security` vs `compliance`), plus one AWS Security H
   `match_all_authors`; when set, `_classify` skips the author-allowlist check (window + label
   gates still apply). Security-only — the `testing` module intentionally does not pass it, so
   it always keys off the classifier-bot author. `cli.main` warns if a non-default
-  `github_authors` is set alongside it.
+  `security_github_authors` is set alongside it.
 
 **`testing` module** emits the `testing_classifier_*` columns from one scan of the AI
 test-classifier's PR comments (`fetch_classifier_comments` in `sources/github.py`): comments
@@ -94,7 +94,7 @@ paths.
 
 - Pydantic v2 models/settings; extensive type hints; reStructuredText (`:param:`) docstrings;
   ruff + black at line length 100. Python `>=3.12`.
-- `github_repos` / `github_authors` settings are stored as comma-separated **strings** (to
+- `github_repos` / `security_github_authors` settings are stored as comma-separated **strings** (to
   avoid pydantic JSON-list env parsing); read them via `Settings.repos` / `.authors` or
   `config.csv_list`.
 - `tmp/` is gitignored scratch holding the original shell scripts the `security` module was

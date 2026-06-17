@@ -44,7 +44,7 @@ All modules run by default; `--module` (repeatable) narrows. Row key = `week_end
 | `--url` | `METRICSAI_WEBHOOK_URL` | Apps Script `/exec` endpoint |
 | `--tab` | `METRICSAI_WEBHOOK_TAB` | destination sheet tab |
 | `--repo` (repeat) | `METRICSAI_GITHUB_REPOS` (csv) | repos to scan (required by `security`) |
-| `--author` (repeat) | `METRICSAI_GITHUB_AUTHORS` (csv) | AI comment authors (default `github-copilot[bot]`) |
+| `--author` (repeat) | `METRICSAI_SECURITY_GITHUB_AUTHORS` (csv) | security AI comment authors (default `github-copilot[bot]`) |
 | `--all-authors` | `METRICSAI_ALL_AUTHORS` | security: count comments from any author (ignore the allowlist) |
 | `--github-url` | `METRICSAI_GITHUB_BASE_URL` | Enterprise: `https://<host>/api/v3` |
 | `--week-ending-day` | `METRICSAI_WEEK_ENDING_DAY` | week-closing weekday (default `friday`) |

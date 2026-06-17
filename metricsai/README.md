@@ -134,7 +134,7 @@ All settings use the `METRICSAI_` prefix.
 | `METRICSAI_GITHUB_KEYCHAIN_SERVICE` | `metricsai-github`   | Keychain service name for the GitHub token.                                 |
 | `METRICSAI_GITHUB_BASE_URL`         | `https://api.github.com` | GitHub REST base URL. For Enterprise use `https://<host>/api/v3`. (`--github-url`) |
 | `METRICSAI_GITHUB_REPOS`            | _(none)_             | Comma-separated `owner/repo` list to scan. Required by `security`. (`--repo`) |
-| `METRICSAI_GITHUB_AUTHORS`          | `github-copilot[bot]` | Comma-separated comment authors counted as AI-generated. (`--author`)      |
+| `METRICSAI_SECURITY_GITHUB_AUTHORS` | `github-copilot[bot]` | Comma-separated authors the `security` module counts as AI-generated. (`--author`) |
 | `METRICSAI_ALL_AUTHORS`             | `false`              | Security scan counts comments from any author, ignoring the author allowlist. `--all-authors` |
 | `METRICSAI_WEEK_ENDING_DAY`         | `friday`             | Weekday the reporting week closes on (name or abbrev). `--week-ending-day`   |
 | `METRICSAI_AWS_REGION`              | _(boto3 default)_    | AWS region for Security Hub. Falls back to `AWS_REGION` / active profile.   |
@@ -240,7 +240,7 @@ The same token is used for github.com and GitHub Enterprise (set `--github-url` 
 
 A comment is counted only if **all three** hold — so a manual test often shows zeros:
 
-1. **Author** is in `--author` / `METRICSAI_GITHUB_AUTHORS` (default `github-copilot[bot]`).
+1. **Author** is in `--author` / `METRICSAI_SECURITY_GITHUB_AUTHORS` (default `github-copilot[bot]`).
    Comments you wrote yourself won't count unless you add your own login — or pass
    `--all-authors` / `METRICSAI_ALL_AUTHORS=true` to count comments from *any* author.
 2. **Created within the window** — the 7 days ending on `week_ending_date`. Comments from
