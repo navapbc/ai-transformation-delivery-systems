@@ -26,6 +26,11 @@ from metricsai.modules import REGISTRY, selected_modules
 
 logger = logging.getLogger(__name__)
 
+#: Allowed destination spreadsheet tabs. The tab is required for any gather/post run (it is
+#: part of the metric row's destination); the utility flags (``--list-modules`` etc.) do not
+#: need it. A tab supplied via ``METRICSAI_WEBHOOK_TAB`` is validated against this set too.
+TAB_CHOICES = ("CXT", "DMOD", "EMMY", "OSRE")
+
 
 class GatherError(RuntimeError):
     """Wraps an operational failure (API/auth/network) raised while a module gathers.
@@ -77,8 +82,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--tab",
-        metavar="NAME",
-        help="Destination spreadsheet tab (overrides METRICSAI_WEBHOOK_TAB).",
+        choices=TAB_CHOICES,
+        help="Destination spreadsheet tab (overrides METRICSAI_WEBHOOK_TAB). Required for "
+        "any run that gathers/posts metrics.",
     )
     parser.add_argument(
         "--module",
@@ -205,6 +211,21 @@ def main(argv: list[str] | None = None) -> int:
             "authors (%s) are ignored for the security scan.",
             settings.security_github_authors,
         )
+
+    # The tab is part of the row's destination, so require it (from --tab or the env var)
+    # before doing any gathering. argparse already constrains --tab to TAB_CHOICES; this also
+    # rejects an out-of-set METRICSAI_WEBHOOK_TAB and a missing value.
+    tab = args.tab or settings.webhook_tab
+    if tab not in TAB_CHOICES:
+        if tab is None:
+            logger.error(
+                "No destination tab. Pass --tab {%s} or set METRICSAI_WEBHOOK_TAB.",
+                ",".join(TAB_CHOICES),
+            )
+        else:
+            logger.error("Invalid tab %r; choose one of: %s.", tab, ", ".join(TAB_CHOICES))
+        return 2
+
     webhook_url = args.url or (str(settings.webhook_url) if settings.webhook_url else None)
     try:
         week_ending_date = args.week_ending or default_week_ending(
@@ -241,7 +262,6 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     row = MetricRow(week_ending_date=week_ending_date, metrics=metrics)
-    tab = args.tab or settings.webhook_tab
 
     if args.dry_run:
         MetricsClient(webhook_url or "", tab=tab, timeout=settings.request_timeout).post(

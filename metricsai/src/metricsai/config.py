@@ -42,8 +42,10 @@ class Settings(BaseSettings):
         set it takes precedence over the keychain (sandbox/CI fallback).
     :ivar webhook_keychain_service: Service name under which the webhook key is stored in
         the macOS keychain.
-    :ivar webhook_tab: Optional destination tab (sheet) name; sent in the POST body so one
-        deployment can feed multiple tabs.
+    :ivar webhook_tab: Destination tab (sheet) name, sent in the POST body so one deployment
+        can feed multiple tabs. Required for any gather/post run and constrained to the CLI's
+        tab choices (see ``--tab`` / :data:`metricsai.cli.TAB_CHOICES`); may be supplied here
+        instead of on the command line.
     :ivar github_token: Optional GitHub token taken straight from the environment. When set
         it takes precedence over the keychain, which makes sandboxed/CI runs work without
         any keychain access.

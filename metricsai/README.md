@@ -83,7 +83,7 @@ uv run metricsai --all-authors                   # security: count comments from
 uv run metricsai --github-url https://ghe.example.com/api/v3            # GitHub Enterprise
 uv run metricsai --module security --skip-sechub --dry-run   # GitHub-only (no AWS call)
 uv run metricsai --week-ending 2026-06-07       # set the row's week-ending date
-uv run metricsai --url https://script.google.com/.../exec --tab Metrics   # post to a tab
+uv run metricsai --url https://script.google.com/.../exec --tab CXT       # post to a tab
 uv run metricsai --set-token                    # store the GitHub token in the keychain
 uv run metricsai --set-webhook-key              # store the webhook key in the keychain
 uv run metricsai --dry-run -v                   # INFO logging
@@ -129,7 +129,7 @@ All settings use the `METRICSAI_` prefix.
 | `METRICSAI_WEBHOOK_URL`             | _(none)_             | Apps Script endpoint. Overridable with `--url`.                             |
 | `METRICSAI_WEBHOOK_KEY`             | _(none)_             | Webhook API key (sent in the body); takes precedence over the keychain.     |
 | `METRICSAI_WEBHOOK_KEYCHAIN_SERVICE`| `metricsai-webhook`  | Keychain service name for the webhook key.                                  |
-| `METRICSAI_WEBHOOK_TAB`             | _(none)_             | Destination spreadsheet tab. Overridable with `--tab`.                      |
+| `METRICSAI_WEBHOOK_TAB`             | _(none)_             | Destination tab; **required** for gather/post, one of `CXT`/`DMOD`/`EMMY`/`OSRE`. Overridable with `--tab`. |
 | `METRICSAI_GITHUB_TOKEN`            | _(none)_             | GitHub token; takes precedence over the keychain.                           |
 | `METRICSAI_GITHUB_KEYCHAIN_SERVICE` | `metricsai-github`   | Keychain service name for the GitHub token.                                 |
 | `METRICSAI_GITHUB_BASE_URL`         | `https://api.github.com` | GitHub REST base URL. For Enterprise use `https://<host>/api/v3`. (`--github-url`) |

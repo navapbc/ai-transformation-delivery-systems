@@ -29,7 +29,7 @@ Or via env: `METRICSAI_GITHUB_TOKEN`, `METRICSAI_WEBHOOK_KEY`.
 uv run metricsai --dry-run                              # gather all, print row, no POST
 uv run metricsai --module security --repo OWNER/REPO    # one module, scan a repo
 uv run metricsai --repo o/r --skip-sechub --dry-run     # GitHub only, no AWS
-uv run metricsai --url "$URL" --tab Metrics             # gather all, POST to a tab
+uv run metricsai --url "$URL" --tab CXT                 # gather all, POST to a tab
 uv run metricsai --list-modules
 ```
 
@@ -42,7 +42,7 @@ All modules run by default; `--module` (repeatable) narrows. Row key = `week_end
 | Flag | Env | Purpose |
 |------|-----|---------|
 | `--url` | `METRICSAI_WEBHOOK_URL` | Apps Script `/exec` endpoint |
-| `--tab` | `METRICSAI_WEBHOOK_TAB` | destination sheet tab |
+| `--tab` | `METRICSAI_WEBHOOK_TAB` | destination tab (**required** to gather/post): `CXT`/`DMOD`/`EMMY`/`OSRE` |
 | `--repo` (repeat) | `METRICSAI_GITHUB_REPOS` (csv) | repos to scan (required by `security`) |
 | `--author` (repeat) | `METRICSAI_SECURITY_GITHUB_AUTHORS` (csv) | security AI comment authors (default `github-copilot[bot]`) |
 | `--all-authors` | `METRICSAI_ALL_AUTHORS` | security: count comments from any author (ignore the allowlist) |
