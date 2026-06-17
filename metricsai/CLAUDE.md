@@ -78,8 +78,12 @@ key, service `metricsai-webhook`). Non-interactive contexts never prompt — the
 with guidance. The webhook key is not needed for `--dry-run`.
 
 **Webhook + Apps Script (`client.py`):** the client POSTs flat JSON
-`{week_ending_date, **metrics}` plus reserved body fields `_key` (API key) and `_tab` (tab),
-and follows redirects (Apps Script 302s a POST to a googleusercontent URL). The Apps Script
+`{week_ending_date, **metrics}` plus reserved body fields `_key` (API key) and `_tab` (tab).
+The tab is **required** for any gather/post run (including `--dry-run`) and constrained to
+`cli.TAB_CHOICES` (`CXT`/`DMOD`/`EMMY`/`OSRE`); `cli.main` resolves it from `--tab` or
+`METRICSAI_WEBHOOK_TAB` and fails fast (exit 2) if missing/invalid, before any gathering. The
+utility flags (`--list-modules`, `--set-token`, `--set-webhook-key`) return earlier and don't
+need it. The client follows redirects (Apps Script 302s a POST to a googleusercontent URL). The Apps Script
 endpoint itself is **not built yet**; its intended contract: align values to columns **by
 header name** (not order), append missing columns automatically, and **always return HTTP
 200** with an `{ok: ...}` body — so a bad key isn't an HTTP error. Apps Script cannot read
