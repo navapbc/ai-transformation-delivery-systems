@@ -30,6 +30,7 @@ uv run metricsai --dry-run                              # gather all, print row,
 uv run metricsai --module security --repo OWNER/REPO    # one module, scan a repo
 uv run metricsai --repo o/r --skip-sechub --dry-run     # GitHub only, no AWS
 uv run metricsai --url "$URL" --tab CXT                 # gather all, POST to a tab
+uv run metricsai --repo navapbc/foo --repo navapbc/bar --url "$URL" --tab CXT  # multiple repos, POST
 uv run metricsai --list-modules
 ```
 
