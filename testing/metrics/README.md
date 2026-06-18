@@ -63,6 +63,10 @@ the body starts with `test-classifier:`. Reaction counts are read from the
 inlined `.reactions` summary that both the issue-comments and pull-comments list
 endpoints return on each comment — no extra per-comment reactions API call.
 
+Set `TARGET_USER=ANY` to match on the `test-classifier:` label alone, for teams
+whose developers post the classifier locally (so the author is the developer, not
+a fixed bot). The `metricsai` tool exposes the same via `--all-authors`.
+
 ## Running it (TSV fallback — the default)
 
 ```bash
