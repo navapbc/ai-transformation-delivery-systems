@@ -9,7 +9,13 @@ Only comments are kept whose author is one of ``authors`` (unless ``match_all_au
 set, which accepts any author), whose creation time falls within ``[start, end]``, and whose
 body begins with ``security`` or ``compliance`` (the Conventional-Comment label).
 Thumbs-up/down reaction totals are read from the inline reaction summary that GitHub returns
-with each comment; review submissions carry no reactions.
+with each comment.
+
+Review submissions get a second pass (:func:`_scan_review_offdiff`): the PR-review
+dispatcher cannot inline-anchor a finding whose line is outside the diff, so it lists those
+in the review *body* -- which does not start with the label -- and they are parsed out here
+into individual comments. A review's own summary-level 👍/👎 (which REST does not expose for
+reviews) is fetched via GraphQL and folded into the ``security`` totals.
 
 Diagnostics: each repository logs a per-source ``fetched/matched`` summary at INFO
 (``-v``), and every skipped comment logs its reason (author / window / label) at DEBUG
@@ -32,6 +38,19 @@ logger = logging.getLogger(__name__)
 #: A body beginning (ignoring leading whitespace) with the Conventional-Comment label.
 _LABEL_RE = re.compile(r"^\s*(security|compliance)", re.IGNORECASE)
 
+#: Header the PR-review dispatcher writes above the off-diff findings it could not
+#: inline-anchor (GitHub rejects the whole review if a comment lands off the diff), so it
+#: lists them in the review *body* instead. See ``security/review`` dispatcher.
+_OFFDIFF_HEADER = "Findings outside the diff (not inline-anchored)"
+
+#: One off-diff finding bullet, e.g. ``- **security(high)** `app.py:42` - Hardcoded key``.
+#: The body these come from never starts with the label, so :func:`_classify` misses them.
+_OFFDIFF_BULLET_RE = re.compile(
+    r"^\s*-\s*\*\*(?P<label>security|compliance)\((?P<sev>critical|high|medium|low)\)\*\*"
+    r"\s+`(?P<loc>[^`]*)`\s*-\s*(?P<title>.+?)\s*$",
+    re.IGNORECASE | re.MULTILINE,
+)
+
 #: A body beginning (ignoring leading whitespace) with the ``test-classifier:`` label.
 _CLASSIFIER_LABEL_RE = re.compile(r"^\s*test-classifier:", re.IGNORECASE)
 
@@ -52,12 +71,16 @@ class Comment:
     :ivar body: The full comment body.
     :ivar thumbs_up: Count of ``+1`` reactions.
     :ivar thumbs_down: Count of ``-1`` reactions.
+    :ivar is_summary: When ``True`` this is not a finding but a carrier for a review's
+        summary-level reactions (see :func:`_scan_review_offdiff`); aggregation counts its
+        reactions but does not count it as a comment or read a severity from it.
     """
 
     label: str
     body: str
     thumbs_up: int
     thumbs_down: int
+    is_summary: bool = False
 
 
 def fetch_review_comments(
@@ -94,6 +117,7 @@ def fetch_review_comments(
                 start=start,
                 end=end,
                 match_all_authors=match_all_authors,
+                requester=gh.requester,
             )
         )
     return out
@@ -268,8 +292,14 @@ def _scan_repo(
     start: datetime,
     end: datetime,
     match_all_authors: bool = False,
+    requester: object = None,
 ) -> list[Comment]:
-    """Scan one repository's three comment sources, with fetched/matched diagnostics.
+    """Scan one repository's comment sources, with fetched/matched diagnostics.
+
+    Beyond the three standard sources (issue / review / submission), review submission
+    bodies are also mined for *off-diff* findings -- the ones the PR-review dispatcher
+    could not inline-anchor and instead listed in the review body (see
+    :func:`_scan_review_offdiff`); that pass is reported under the ``offdiff`` source.
 
     :param repo: A PyGithub ``Repository``.
     :param full_name: ``owner/repo`` (for log messages).
@@ -277,10 +307,17 @@ def _scan_repo(
     :param start: Inclusive window start (UTC).
     :param end: Inclusive window end (UTC).
     :param match_all_authors: When ``True``, accept any author and ignore ``authors_lower``.
+    :param requester: The PyGithub ``Requester`` (``Github.requester``) used for the GraphQL
+        lookup of review summary reactions, which REST does not expose for reviews.
     :returns: The matching comments from this repository.
     """
     matched: list[Comment] = []
-    counts: dict[str, list[int]] = {"issue": [0, 0], "review": [0, 0], "submission": [0, 0]}
+    counts: dict[str, list[int]] = {
+        "issue": [0, 0],
+        "review": [0, 0],
+        "submission": [0, 0],
+        "offdiff": [0, 0],
+    }
 
     def record(source: str, obj: object, when: datetime | None, *, with_reactions: bool) -> None:
         counts[source][0] += 1
@@ -314,6 +351,19 @@ def _scan_repo(
             break
         for review in pull.get_reviews():
             record("submission", review, review.submitted_at, with_reactions=False)
+            # Mine the same review body for off-diff findings the dispatcher could not
+            # inline-anchor, plus its summary-level reactions.
+            counts["offdiff"][0] += 1
+            for comment in _scan_review_offdiff(
+                review,
+                requester,
+                authors_lower=authors_lower,
+                start=start,
+                end=end,
+                match_all_authors=match_all_authors,
+            ):
+                matched.append(comment)
+                counts["offdiff"][1] += 1
 
     summary = ", ".join(f"{source} {f}/{m}" for source, (f, m) in counts.items())
     logger.info("github %s: %s (fetched/matched)", full_name, summary)
@@ -355,6 +405,132 @@ def _classify(
         return None, f"body does not start with security/compliance: {body[:60]!r}"
     up, down = _reactions(obj) if with_reactions else (0, 0)
     return Comment(label=match.group(1).lower(), body=body, thumbs_up=up, thumbs_down=down), ""
+
+
+def _scan_review_offdiff(
+    review: object,
+    requester: object,
+    *,
+    authors_lower: set[str],
+    start: datetime,
+    end: datetime,
+    match_all_authors: bool = False,
+) -> list[Comment]:
+    """Parse a review body's off-diff findings and attach its summary-level reactions.
+
+    The PR-review dispatcher cannot inline-anchor a finding whose line is outside the PR
+    diff (GitHub rejects the entire review with HTTP 422), so it lists those findings in
+    the review *body* under :data:`_OFFDIFF_HEADER`, one bullet each. Those bodies start
+    with the dispatcher's prose summary, not the Conventional-Comment label, so
+    :func:`_classify` skips them and the findings would otherwise go uncounted.
+
+    Each bullet becomes one :class:`Comment` carrying a synthesised body (``label: title``
+    plus a ``Severity:`` line) so the security module's existing label and severity
+    aggregation works unchanged; per-finding reactions are not available, so they are zero.
+    The review's own 👍/👎 -- the "was this review helpful" signal on the summary -- is
+    fetched via GraphQL (REST does not expose reactions for reviews) and returned once as a
+    single ``is_summary`` carrier comment labelled ``security``.
+
+    :param review: A PyGithub ``PullRequestReview``.
+    :param requester: The PyGithub ``Requester`` for the GraphQL reaction lookup.
+    :param authors_lower: Lower-cased author logins to keep.
+    :param start: Inclusive window start (UTC).
+    :param end: Inclusive window end (UTC).
+    :param match_all_authors: When ``True``, accept any author and ignore ``authors_lower``.
+    :returns: One comment per off-diff finding, plus a summary-reaction carrier if present.
+    """
+    body = getattr(review, "body", None)
+    login = _login(review)
+    when = getattr(review, "submitted_at", None)
+    if not body or not _in_scope(
+        login,
+        when,
+        authors_lower=authors_lower,
+        start=start,
+        end=end,
+        match_all_authors=match_all_authors,
+    ):
+        return []
+
+    out: list[Comment] = []
+    header = body.find(_OFFDIFF_HEADER)
+    if header != -1:
+        for m in _OFFDIFF_BULLET_RE.finditer(body, header):
+            label = m.group("label").lower()
+            out.append(
+                Comment(
+                    label=label,
+                    body=f"{label}: {m.group('title').strip()}\nSeverity: {m.group('sev').upper()}",
+                    thumbs_up=0,
+                    thumbs_down=0,
+                )
+            )
+
+    up, down = _review_reactions(requester, getattr(review, "raw_data", None) or {})
+    if up or down:
+        out.append(
+            Comment(label="security", body="", thumbs_up=up, thumbs_down=down, is_summary=True)
+        )
+    return out
+
+
+def _review_reactions(requester: object, raw: dict) -> tuple[int, int]:
+    """Return a review's ``(thumbs_up, thumbs_down)`` via GraphQL, or ``(0, 0)`` on failure.
+
+    REST omits reactions for pull-request reviews (there is no reactions endpoint for
+    them), so the summary-level 👍/👎 is only reachable through GraphQL -- ``PullRequestReview``
+    implements the ``Reactable`` interface. A missing node id, a GraphQL/permission error,
+    or a network failure degrades quietly to ``(0, 0)`` rather than aborting the scan.
+
+    :param requester: The PyGithub ``Requester`` (``Github.requester``).
+    :param raw: The review's ``raw_data`` (its ``node_id`` keys the GraphQL node lookup).
+    :returns: ``(thumbs_up, thumbs_down)`` reaction totals on the review.
+    """
+    node_id = raw.get("node_id")
+    if requester is None or not node_id:
+        return 0, 0
+    try:
+        _, resp = requester.graphql_node(
+            node_id, "reactionGroups { content users { totalCount } }", "PullRequestReview"
+        )
+    except Exception as exc:  # GraphQL / permission / network errors must not abort the scan.
+        logger.debug("review reactions lookup failed for %s: %s", node_id, exc)
+        return 0, 0
+    node = ((resp or {}).get("data") or {}).get("node") or {}
+    up = down = 0
+    for group in node.get("reactionGroups") or []:
+        total = int((group.get("users") or {}).get("totalCount") or 0)
+        if group.get("content") == "THUMBS_UP":
+            up = total
+        elif group.get("content") == "THUMBS_DOWN":
+            down = total
+    return up, down
+
+
+def _in_scope(
+    login: str | None,
+    when: datetime | None,
+    *,
+    authors_lower: set[str],
+    start: datetime,
+    end: datetime,
+    match_all_authors: bool,
+) -> bool:
+    """Whether a comment/review passes the author and window gates (no label check).
+
+    :param login: The author login, or ``None`` if absent.
+    :param when: The creation/submission time, or ``None`` if absent.
+    :param authors_lower: Lower-cased author logins to keep.
+    :param start: Inclusive window start (UTC).
+    :param end: Inclusive window end (UTC).
+    :param match_all_authors: When ``True``, accept any author and ignore ``authors_lower``.
+    :returns: ``True`` when author (unless lifted) and window both pass.
+    """
+    if login is None or when is None:
+        return False
+    if not match_all_authors and login.lower() not in authors_lower:
+        return False
+    return start <= _as_utc(when) <= end
 
 
 def _is_pull_comment(obj: object) -> bool:

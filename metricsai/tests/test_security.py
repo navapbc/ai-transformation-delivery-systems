@@ -62,6 +62,20 @@ def test_aggregate_classifies_counts_and_severities() -> None:
     assert metrics["security_compliance_thumbs_ups"] == 1
 
 
+def test_aggregate_summary_reactions_count_but_are_not_findings() -> None:
+    # An is_summary carrier folds a review's summary-level reactions into the security
+    # totals without counting as a comment or contributing a severity.
+    comments = [
+        Comment("security", "security: leak\nSeverity: HIGH", thumbs_up=1, thumbs_down=0),
+        Comment("security", "", thumbs_up=0, thumbs_down=2, is_summary=True),
+    ]
+    metrics = _aggregate_comments(comments)
+    assert metrics["security_total_security_comments"] == 1  # carrier not counted
+    assert metrics["security_thumbs_ups"] == 1
+    assert metrics["security_thumbs_downs"] == 2  # carrier's 👎 folded in
+    assert metrics["security_high"] == 1  # carrier contributes no severity
+
+
 def test_gather_requires_repos() -> None:
     with pytest.raises(ValueError, match="No repositories"):
         SecurityModule().gather(_ctx(github_token="t"))

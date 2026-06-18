@@ -85,9 +85,13 @@ def _aggregate_comments(comments: list[Comment]) -> dict[str, MetricValue]:
     }
     for comment in comments:
         bucket = buckets[comment.label]
-        bucket["total"] += 1
         bucket["up"] += comment.thumbs_up
         bucket["down"] += comment.thumbs_down
+        if comment.is_summary:
+            # A reaction-only carrier for a review's summary-level 👍/👎 -- not a finding,
+            # so it counts toward neither the comment total nor a severity bucket.
+            continue
+        bucket["total"] += 1
         match = _SEVERITY_RE.search(comment.body)
         if match is not None:
             bucket[match.group(1).lower()] += 1
