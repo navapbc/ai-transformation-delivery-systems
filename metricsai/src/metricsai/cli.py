@@ -125,8 +125,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--all-authors",
         action="store_true",
-        help="Count security-reviewer comments from any author, ignoring the --author / "
-        "METRICSAI_SECURITY_GITHUB_AUTHORS allowlist (overrides METRICSAI_ALL_AUTHORS).",
+        help="Count comments from any author (security and testing), matching on the "
+        "Conventional-Comment label alone (overrides METRICSAI_ALL_AUTHORS).",
     )
     parser.add_argument(
         "--skip-sechub",

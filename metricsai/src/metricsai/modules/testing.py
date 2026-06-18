@@ -60,6 +60,7 @@ class TestingModule(MetricsModule):
             authors=settings.testing_authors,
             start=start,
             end=end,
+            match_all_authors=settings.all_authors,
         )
         return _aggregate_classifications(classifications)
 
