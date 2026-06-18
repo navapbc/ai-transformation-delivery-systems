@@ -149,6 +149,8 @@ def test_fetch_review_comments_filters_and_normalizes(monkeypatch) -> None:
             return [FakePull()]
 
     class FakeGithub:
+        requester = None
+
         def __init__(self, *args, **kwargs):
             pass
 
@@ -166,6 +168,99 @@ def test_fetch_review_comments_filters_and_normalizes(monkeypatch) -> None:
     )
     assert sorted(c.label for c in out) == ["compliance", "security", "security"]
     assert any(c.thumbs_up == 1 for c in out)  # from the PR conversation comment
+
+
+# --- off-diff findings + summary-level reactions (_scan_review_offdiff) ---
+
+
+class _FakeRequester:
+    """Stub GitHub requester returning fixed reaction totals for ``graphql_node``."""
+
+    def __init__(self, up: int = 0, down: int = 0):
+        self._groups = [
+            {"content": "THUMBS_UP", "users": {"totalCount": up}},
+            {"content": "THUMBS_DOWN", "users": {"totalCount": down}},
+        ]
+
+    def graphql_node(self, node_id, output_schema, node_type):
+        return {}, {"data": {"node": {"reactionGroups": self._groups}}}
+
+
+def _review(login, body, when, node_id="R_kwDO"):
+    return SimpleNamespace(
+        body=body,
+        user=SimpleNamespace(login=login),
+        submitted_at=when,
+        raw_data={"node_id": node_id},
+    )
+
+
+_OFFDIFF_BODY = (
+    "Reviewed 3 files against origin/main. Found 2 findings.\n\n"
+    "_Reviewed by AI, was this helpful? Please react with 👍 or 👎._\n\n"
+    "---\n\n"
+    "#### Findings outside the diff (not inline-anchored)\n\n"
+    "- **security(high)** `app.py:42` - Hardcoded API key\n"
+    "- **compliance(low)** `infra/x.tf:3` - Missing required tag\n"
+)
+
+
+def _offdiff(review, requester, *, match_all_authors=False):
+    return github._scan_review_offdiff(
+        review,
+        requester,
+        authors_lower=_AUTHORS,
+        start=_START,
+        end=_END,
+        match_all_authors=match_all_authors,
+    )
+
+
+def test_scan_review_offdiff_parses_findings_and_summary_reaction() -> None:
+    out = _offdiff(_review("github-copilot[bot]", _OFFDIFF_BODY, _IN_WINDOW), _FakeRequester(0, 1))
+
+    findings = [c for c in out if not c.is_summary]
+    assert sorted(c.label for c in findings) == ["compliance", "security"]
+    sec = next(c for c in findings if c.label == "security")
+    comp = next(c for c in findings if c.label == "compliance")
+    assert "Severity: HIGH" in sec.body and (sec.thumbs_up, sec.thumbs_down) == (0, 0)
+    assert "Severity: LOW" in comp.body
+
+    # The review's single 👎 rides on one is_summary carrier, labelled security.
+    summary = [c for c in out if c.is_summary]
+    assert len(summary) == 1
+    assert summary[0].label == "security"
+    assert (summary[0].thumbs_up, summary[0].thumbs_down) == (0, 1)
+
+
+def test_scan_review_offdiff_no_section_no_reactions_is_empty() -> None:
+    review = _review("github-copilot[bot]", "Reviewed 1 file. No findings.", _IN_WINDOW)
+    assert _offdiff(review, _FakeRequester(0, 0)) == []
+
+
+def test_scan_review_offdiff_section_present_but_no_reaction_omits_carrier() -> None:
+    out = _offdiff(_review("github-copilot[bot]", _OFFDIFF_BODY, _IN_WINDOW), _FakeRequester(0, 0))
+    assert out and all(not c.is_summary for c in out)
+
+
+def test_scan_review_offdiff_respects_author_and_window() -> None:
+    wrong_author = _review("someone-else", _OFFDIFF_BODY, _IN_WINDOW)
+    assert _offdiff(wrong_author, _FakeRequester(1, 1)) == []
+    late = _review("github-copilot[bot]", _OFFDIFF_BODY, datetime(2026, 6, 30, tzinfo=UTC))
+    assert _offdiff(late, _FakeRequester(1, 1)) == []
+    # match_all_authors lifts the author gate.
+    assert _offdiff(wrong_author, _FakeRequester(0, 0), match_all_authors=True)
+
+
+def test_review_reactions_degrades_to_zero() -> None:
+    assert github._review_reactions(_FakeRequester(1, 1), {}) == (0, 0)  # no node_id
+    assert github._review_reactions(None, {"node_id": "R_1"}) == (0, 0)  # no requester
+
+    class Boom:
+        def graphql_node(self, *args):
+            raise RuntimeError("graphql unavailable")
+
+    assert github._review_reactions(Boom(), {"node_id": "R_1"}) == (0, 0)
 
 
 # --- classifier source: verdict parsing + comment expansion ---
