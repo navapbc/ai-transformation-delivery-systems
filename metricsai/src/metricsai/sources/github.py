@@ -479,8 +479,10 @@ def _review_reactions(requester: object, raw: dict) -> tuple[int, int]:
 
     REST omits reactions for pull-request reviews (there is no reactions endpoint for
     them), so the summary-level 👍/👎 is only reachable through GraphQL -- ``PullRequestReview``
-    implements the ``Reactable`` interface. A missing node id, a GraphQL/permission error,
-    or a network failure degrades quietly to ``(0, 0)`` rather than aborting the scan.
+    implements the ``Reactable`` interface. The per-group total comes from ``reactors`` (the
+    ``users`` field GitHub once exposed here was removed in 2021); a missing node id, a
+    GraphQL/permission error, or a network failure degrades quietly to ``(0, 0)`` rather than
+    aborting the scan.
 
     :param requester: The PyGithub ``Requester`` (``Github.requester``).
     :param raw: The review's ``raw_data`` (its ``node_id`` keys the GraphQL node lookup).
@@ -491,7 +493,7 @@ def _review_reactions(requester: object, raw: dict) -> tuple[int, int]:
         return 0, 0
     try:
         _, resp = requester.graphql_node(
-            node_id, "reactionGroups { content users { totalCount } }", "PullRequestReview"
+            node_id, "reactionGroups { content reactors { totalCount } }", "PullRequestReview"
         )
     except Exception as exc:  # GraphQL / permission / network errors must not abort the scan.
         logger.debug("review reactions lookup failed for %s: %s", node_id, exc)
@@ -499,7 +501,8 @@ def _review_reactions(requester: object, raw: dict) -> tuple[int, int]:
     node = ((resp or {}).get("data") or {}).get("node") or {}
     up = down = 0
     for group in node.get("reactionGroups") or []:
-        total = int((group.get("users") or {}).get("totalCount") or 0)
+        # ``reactors`` is the current field; fall back to the legacy ``users`` for old GHE.
+        total = int((group.get("reactors") or group.get("users") or {}).get("totalCount") or 0)
         if group.get("content") == "THUMBS_UP":
             up = total
         elif group.get("content") == "THUMBS_DOWN":

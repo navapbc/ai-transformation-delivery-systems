@@ -174,12 +174,17 @@ def test_fetch_review_comments_filters_and_normalizes(monkeypatch) -> None:
 
 
 class _FakeRequester:
-    """Stub GitHub requester returning fixed reaction totals for ``graphql_node``."""
+    """Stub GitHub requester returning fixed reaction totals for ``graphql_node``.
 
-    def __init__(self, up: int = 0, down: int = 0):
+    Uses the current ``reactors`` field (the ``users`` field was removed from
+    ``ReactionGroup`` in 2021); ``legacy=True`` emulates an old GHE that still serves ``users``.
+    """
+
+    def __init__(self, up: int = 0, down: int = 0, *, legacy: bool = False):
+        key = "users" if legacy else "reactors"
         self._groups = [
-            {"content": "THUMBS_UP", "users": {"totalCount": up}},
-            {"content": "THUMBS_DOWN", "users": {"totalCount": down}},
+            {"content": "THUMBS_UP", key: {"totalCount": up}},
+            {"content": "THUMBS_DOWN", key: {"totalCount": down}},
         ]
 
     def graphql_node(self, node_id, output_schema, node_type):
@@ -250,6 +255,14 @@ def test_scan_review_offdiff_respects_author_and_window() -> None:
     assert _offdiff(late, _FakeRequester(1, 1)) == []
     # match_all_authors lifts the author gate.
     assert _offdiff(wrong_author, _FakeRequester(0, 0), match_all_authors=True)
+
+
+def test_review_reactions_reads_reactors_and_maps_down_correctly() -> None:
+    # The 👎 must land in thumbs_down, not thumbs_up (regression: wrong content mapping).
+    assert github._review_reactions(_FakeRequester(0, 3), {"node_id": "R_1"}) == (0, 3)
+    assert github._review_reactions(_FakeRequester(2, 0), {"node_id": "R_1"}) == (2, 0)
+    # Legacy GHE still serving the old ``users`` field is read via the fallback.
+    assert github._review_reactions(_FakeRequester(1, 4, legacy=True), {"node_id": "R_1"}) == (1, 4)
 
 
 def test_review_reactions_degrades_to_zero() -> None:
