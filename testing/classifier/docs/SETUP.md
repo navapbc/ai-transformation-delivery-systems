@@ -8,28 +8,29 @@ independent paths**, and you can use any or all:
 
 | Path | What it does | Who runs it | Setup effort |
 |---|---|---|---|
-| **A. Reusable workflow (recommended)** | Consumer repo adds a tiny caller workflow that references the bundle's reusable workflow with a pinned SHA — no files copied in. Runs on every PR; posts a triage comment with the verdicts + 👍/👎 | Repo admin enables once | Low (one-time) |
-| **B. Local dispatcher run** | Developer runs `test-classifier-dispatcher.sh` on their machine against a PR; classifications print to the terminal and (with `--post-comment`) post as a PR comment via `gh` CLI | Any developer | Low (per developer) |
+| **A. Local dispatcher run** | Developer runs `test-classifier-dispatcher.sh` on their own machine; classifications print to the terminal. With no PR it classifies the local committed + staged diff (`--unpushed`); against a PR, `--post-comment` posts the comment via `gh` CLI | Any developer | Low (per developer) |
+| **B. Reusable workflow (recommended backstop)** | Consumer repo adds a tiny caller workflow that references the bundle's reusable workflow with a pinned SHA — no files copied in. Runs on every PR; posts a triage comment with the verdicts + 👍/👎 | Repo admin enables once | Low (one-time) |
 | **C. Vendored workflow** | Copy the bundle's workflow file into your repo's live workflows dir. Fallback for repos that can't use reusable workflows | Repo admin enables once | Medium (one-time) |
 | **D. Jenkins** | For teams whose CI is Jenkins, not GitHub Actions (GitHub.com or GitHub Enterprise). A reference `Jenkinsfile` + a thin adapter map Jenkins' PR env onto the same dispatcher contract. Full guide: [`../jenkins/README.md`](../jenkins/README.md) | Repo / Jenkins admin enables once | Medium (one-time) |
 
-Most pilots use **A + B**: the reusable workflow provides the consistent,
-recorded backstop that feeds the metrics loop, and developers can classify
-locally while iterating. Use **C** only when policy forbids referencing an
-external reusable workflow. Use **D** when the team's CI is Jenkins rather than
-GitHub Actions — the classifier core is CI-agnostic, so paths A and D run the
-same dispatcher and produce the same comment + metrics.
+Most pilots use **A + B**: developers classify locally while iterating (A), and
+the reusable workflow (B) provides the consistent, recorded backstop that feeds
+the metrics loop. Use **C** only when policy forbids referencing an external
+reusable workflow. Use **D** when the team's CI is Jenkins rather than GitHub
+Actions — the classifier core is CI-agnostic, so paths B and D run the same
+dispatcher and produce the same comment + metrics.
 
-This guide mirrors `security/review/docs/PR_REVIEW_SETUP.md` step for step;
-the difference is the classifier's metrics sink, which the security bundle does
-not have.
+This guide mirrors `security/review/docs/PR_REVIEW_SETUP.md` step for step —
+including the path lettering: **Path A is the local developer run, Path B is the
+CI workflow**, exactly as in the security bundle. The difference is the
+classifier's metrics sink, which the security bundle does not have.
 
 ---
 
 ## Contents
 
-1. [Path A — Reusable workflow (recommended)](#path-a--reusable-workflow-recommended)
-2. [Path B — Local dispatcher run](#path-b--local-dispatcher-run)
+1. [Path A — Local dispatcher run](#path-a--local-dispatcher-run)
+2. [Path B — Reusable workflow (recommended backstop)](#path-b--reusable-workflow-recommended-backstop)
 3. [Path C — Vendored workflow](#path-c--vendored-workflow)
 4. [Path D — Jenkins](../jenkins/README.md)
 5. [Fine-grained personal access token setup](#fine-grained-personal-access-token-setup)
@@ -38,9 +39,128 @@ not have.
 
 ---
 
-## Path A — Reusable workflow (recommended)
+## Path A — Local dispatcher run
 
-This is the recommended way to use the classifier in CI. The bundle ships a
+This is the developer-initiated path: a developer working on a branch runs the
+local dispatcher to classify failing tests. With **no PR** it classifies the
+local committed + staged diff (`--unpushed`); on a PR branch it discovers the PR
+and can post the comment. This is the testing sibling of the security bundle's
+Path A (its local `pr-review` run).
+
+> **Want a one-word command instead of the full dispatcher path?** Add the
+> `test-classifier` shell function from
+> [`LOCAL_TEST_CLASSIFIER.md`](./LOCAL_TEST_CLASSIFIER.md) to your `~/.zshrc`. It
+> defaults to `--unpushed` (everything committed + staged, no PR needed) and
+> mirrors the security bundle's local-review function.
+
+### Prerequisites
+
+- The classifier bundle is installed under `testing/classifier/` (see
+  `INSTALL.txt`).
+- `AI_REVIEW_TOOL` is set in the developer's shell (`claude` | `codex` |
+  `copilot`).
+- The matching AI CLI is installed (`claude`, `codex`, or `copilot`).
+- The GitHub CLI (`gh`) is installed and authenticated — needed only for the
+  PR-based modes (auto-discovery, `--pr`, `--post-comment`). A `--unpushed`
+  local run needs no PR and no `gh`.
+
+### Installing `gh`
+
+```bash
+# macOS
+brew install gh
+
+# Linux
+# See https://github.com/cli/cli/blob/trunk/docs/install_linux.md
+
+# Authenticate (one-time, interactive)
+gh auth login
+```
+
+Choose **GitHub.com**, **HTTPS**, and **Login with a web browser** unless your
+security policy requires a PAT (see the
+[fine-grained PAT section](#fine-grained-personal-access-token-setup) below).
+
+### Daily usage
+
+```bash
+# Classify the current branch's PR; print the report to the terminal only:
+testing/classifier/.skills/test-classifier/scripts/test-classifier-dispatcher.sh
+
+# NO open PR yet? Classify everything you haven't pushed (committed + staged),
+# just like the security runner's `--unpushed`. Report-only — nothing is posted:
+testing/classifier/.skills/test-classifier/scripts/test-classifier-dispatcher.sh \
+  --unpushed
+
+# Classify and post the comment with the mandatory 👍/👎 ask:
+testing/classifier/.skills/test-classifier/scripts/test-classifier-dispatcher.sh \
+  --post-comment
+
+# Explicit PR number (works from any branch):
+testing/classifier/.skills/test-classifier/scripts/test-classifier-dispatcher.sh \
+  --pr 1234 --post-comment
+
+# Dry run — show the plan (tool, PR, diff range), make no AI call:
+testing/classifier/.skills/test-classifier/scripts/test-classifier-dispatcher.sh \
+  --dry-run
+
+# Opt in to running the suite locally (OBSERVED). OFF by default for the local
+# path so a run never auto-installs deps or executes tests on your machine:
+AI_RUN_SUITE=1 \
+testing/classifier/.skills/test-classifier/scripts/test-classifier-dispatcher.sh \
+  --post-comment
+```
+
+By default a **local** run is read-only and INFERRED (predicts from the diff) —
+it will not install deps or run your suite. Set `AI_RUN_SUITE=1` to let the agent
+run the suite locally (the same OBSERVED behavior CI uses). CI sets this for you.
+
+By default the dispatcher prints the classification report to the terminal
+only. Add `--post-comment` to also post the PR comment.
+
+### What gets posted
+
+With `--post-comment`, the dispatcher posts **one** PR comment per classified
+failure (or one rolled-up comment) stating:
+
+- The call: one of **`APPLICATION_BUG`** (test fails because the app
+  regressed — fix the code), **`TEST_BUG`** (test fails but the app is correct
+  — fix the test), **`FLAKY_FAILURE`** (intermittent — re-run, then deflake),
+  or **`ENVIRONMENT_ISSUE`** (infra: timeout/connection/OOM/missing service —
+  fix the env or re-run). A passing test is simply not classified.
+- A short rationale for the call.
+- A **mandatory 👍 / 👎 ask** — the developer reacts 👍 if the call is right, 👎 if
+  wrong. That reaction is the tuning signal the metrics loop reads.
+
+The classifier is **advisory** — posting a comment never fails anything. Use
+`--gate` only if you have explicitly decided to make an unconfirmed
+`APPLICATION_BUG` a blocker (out of pilot scope; see the PLAYBOOK §4).
+
+### Flags reference (classifier-specific)
+
+| Flag | Effect |
+|---|---|
+| `--pr <number>`   | Explicit PR number. Overrides auto-discovery via `gh pr view`. |
+| `--post-comment`  | Post the classifier comment (verdicts + 👍/👎 ask) via `gh api`. Without it, the report only prints / uploads as an artifact. |
+| `--gate`          | Exit non-zero on any unconfirmed triaged failure (e.g. an `APPLICATION_BUG`). For CI gating (out of pilot scope). |
+| `--json-only`     | Print only the JSON block (for piping into the metrics harvest). |
+
+Plus the shared dispatcher-library flags (identical to security/review):
+
+| Flag | Effect |
+|---|---|
+| `-n`, `--dry-run` | Print the plan; do not invoke AI. |
+| `--no-block`      | Always exit 0 regardless of result. |
+| `--against <ref>` | Override the diff base ref (bypasses PR discovery). |
+| `--unpushed`      | Classify everything not yet pushed (committed + staged) with **no PR** — resolves the base from upstream / remote-default merge-base, like the security runner. Report-only (incompatible with `--post-comment`, which needs a PR). |
+| `-h`, `--help`    | Show help. |
+
+---
+
+## Path B — Reusable workflow (recommended backstop)
+
+This is the recommended way to run the classifier in CI as the recorded,
+metrics-feeding backstop. The bundle ships a
 **reusable workflow** at the repo root —
 `.github/workflows/test-classifier.yml` (with `on: workflow_call`) — that your
 repo calls with a single pinned `uses:` line. **No files are copied into your
@@ -99,7 +219,7 @@ no merge.
 
 In this path, `tool` is a **workflow input** in the caller's `with:` block —
 **not** a repository variable. (Repository variables only apply to the local
-and vendored paths below.)
+path above and the vendored path below.)
 
 ### Step 2 — Set the API-key secret
 
@@ -125,7 +245,7 @@ Only set the secret matching your chosen `tool` input.
 > `provider: bedrock` input and replaces the API-key secret with an assumed IAM
 > role.
 
-That is the whole setup for Path A. On the next PR the workflow runs, triages
+That is the whole setup for Path B. On the next PR the workflow runs, triages
 any failing tests, and posts one comment with the verdicts + a mandatory 👍/👎.
 The full report is also uploaded as a CI artifact, and the run is non-blocking.
 
@@ -171,114 +291,12 @@ workflow code change (the vars are already wired through).
 
 ---
 
-## Path B — Local dispatcher run
-
-This is the developer-initiated path: a developer working on a branch runs the
-local dispatcher to classify the failing tests on the PR they're working on.
-
-### Prerequisites
-
-- The classifier bundle is installed under `testing/classifier/` (see
-  `INSTALL.txt`).
-- `AI_REVIEW_TOOL` is set in the developer's shell (`claude` | `codex` |
-  `copilot`).
-- The matching AI CLI is installed (`claude`, `codex`, or `copilot`).
-- The GitHub CLI (`gh`) is installed and authenticated (needed for PR
-  discovery and, with `--post-comment`, for posting the comment).
-
-### Installing `gh`
-
-```bash
-# macOS
-brew install gh
-
-# Linux
-# See https://github.com/cli/cli/blob/trunk/docs/install_linux.md
-
-# Authenticate (one-time, interactive)
-gh auth login
-```
-
-Choose **GitHub.com**, **HTTPS**, and **Login with a web browser** unless your
-security policy requires a PAT (see the
-[fine-grained PAT section](#fine-grained-personal-access-token-setup) below).
-
-### Daily usage
-
-```bash
-# Classify the current branch's PR; print the report to the terminal only:
-testing/classifier/.skills/test-classifier/scripts/test-classifier-dispatcher.sh
-
-# Classify and post the comment with the mandatory 👍/👎 ask:
-testing/classifier/.skills/test-classifier/scripts/test-classifier-dispatcher.sh \
-  --post-comment
-
-# Explicit PR number (works from any branch):
-testing/classifier/.skills/test-classifier/scripts/test-classifier-dispatcher.sh \
-  --pr 1234 --post-comment
-
-# Dry run — show the plan (tool, PR, diff range), make no AI call:
-testing/classifier/.skills/test-classifier/scripts/test-classifier-dispatcher.sh \
-  --dry-run
-
-# Opt in to running the suite locally (OBSERVED). OFF by default for Path B so a
-# local run never auto-installs deps or executes tests on your machine:
-AI_RUN_SUITE=1 \
-testing/classifier/.skills/test-classifier/scripts/test-classifier-dispatcher.sh \
-  --post-comment
-```
-
-By default a **local** run is read-only and INFERRED (predicts from the diff) —
-it will not install deps or run your suite. Set `AI_RUN_SUITE=1` to let the agent
-run the suite locally (the same OBSERVED behavior CI uses). CI sets this for you.
-
-By default the dispatcher prints the classification report to the terminal
-only. Add `--post-comment` to also post the PR comment.
-
-### What gets posted
-
-With `--post-comment`, the dispatcher posts **one** PR comment per classified
-failure (or one rolled-up comment) stating:
-
-- The call: one of **`APPLICATION_BUG`** (test fails because the app
-  regressed — fix the code), **`TEST_BUG`** (test fails but the app is correct
-  — fix the test), **`FLAKY_FAILURE`** (intermittent — re-run, then deflake),
-  or **`ENVIRONMENT_ISSUE`** (infra: timeout/connection/OOM/missing service —
-  fix the env or re-run). A passing test is simply not classified.
-- A short rationale for the call.
-- A **mandatory 👍 / 👎 ask** — the developer reacts 👍 if the call is right, 👎 if
-  wrong. That reaction is the tuning signal the metrics loop reads.
-
-The classifier is **advisory** — posting a comment never fails anything. Use
-`--gate` only if you have explicitly decided to make an unconfirmed
-`APPLICATION_BUG` a blocker (out of pilot scope; see the PLAYBOOK §4).
-
-### Flags reference (classifier-specific)
-
-| Flag | Effect |
-|---|---|
-| `--pr <number>`   | Explicit PR number. Overrides auto-discovery via `gh pr view`. |
-| `--post-comment`  | Post the classifier comment (verdicts + 👍/👎 ask) via `gh api`. Without it, the report only prints / uploads as an artifact. |
-| `--gate`          | Exit non-zero on any unconfirmed triaged failure (e.g. an `APPLICATION_BUG`). For CI gating (out of pilot scope). |
-| `--json-only`     | Print only the JSON block (for piping into the metrics harvest). |
-
-Plus the shared dispatcher-library flags (identical to security/review):
-
-| Flag | Effect |
-|---|---|
-| `-n`, `--dry-run` | Print the plan; do not invoke AI. |
-| `--no-block`      | Always exit 0 regardless of result. |
-| `--against <ref>` | Override the diff base ref (bypasses PR discovery). |
-| `-h`, `--help`    | Show help. |
-
----
-
 ## Path C — Vendored workflow
 
 > **Fallback path.** Use this only for repos that can't use reusable workflows
 > (e.g. policy forbids referencing an external `uses:`). It requires copying the
 > bundle's workflow file into your repo. If you can, prefer
-> [Path A — Reusable workflow](#path-a--reusable-workflow-recommended) instead.
+> [Path B — Reusable workflow](#path-b--reusable-workflow-recommended-backstop) instead.
 
 A workflow file lives at
 `testing/classifier/.github/workflows/ai-test-classifier.yml`. It is

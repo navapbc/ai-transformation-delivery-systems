@@ -233,7 +233,7 @@ mandatory, not optional.
 Two ways, matching the two consumption paths in
 [`SETUP.md`](./SETUP.md).
 
-### Path A — Reusable workflow (recommended)
+### Path B — Reusable workflow (recommended)
 
 In your caller workflow (`.github/workflows/ai-test-classifier.yml`), set the
 provider inputs. The example below uses **`aws-auth: static`** — one Bedrock API
@@ -353,7 +353,7 @@ region = "<your region>"
 - **`Could not load credentials from any providers` / role not assumed** — the
   OIDC step failed. Check the role ARN, that the OIDC provider exists in the
   account, and that the trust policy's `:sub` matches `repo:<OWNER>/<REPO>:...`.
-  Confirm `id-token: write` is present **in the caller** (Path A) — the reusable
+  Confirm `id-token: write` is present **in the caller** (Path B) — the reusable
   workflow can't add it.
 - **`on-demand throughput isn't supported`** — you passed a bare model ID. Use a
   cross-region **inference profile** ID (the `us.` prefix), which is the default.

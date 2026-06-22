@@ -59,7 +59,8 @@ testing/classifier/
 ├── INSTALL.txt                                 ← quick install steps
 ├── docs/
 │   ├── PLAYBOOK.md                             ← the prescriptive pilot playbook
-│   └── SETUP.md                                ← reusable workflow (recommended) + local + vendored setup
+│   ├── SETUP.md                                ← reusable workflow (recommended) + local + vendored setup
+│   └── LOCAL_TEST_CLASSIFIER.md                ← one-word local run (zshrc function, --unpushed)
 ├── .github/
 │   ├── copilot-instructions.md                 ← Copilot test-classification instructions
 │   └── workflows/
@@ -116,8 +117,9 @@ dispatcher contract.
 
 1. Read **`docs/PLAYBOOK.md`** — the four-verdict taxonomy, the metrics loop,
    and the embedded security-considerations section.
-2. Follow **`docs/SETUP.md`** — Path A (reusable workflow, recommended), Path B
-   (run locally), Path C (vendored workflow fallback). On **Jenkins**, follow
+2. Follow **`docs/SETUP.md`** — Path A (run locally), Path B (reusable workflow,
+   the recommended CI backstop), Path C (vendored workflow fallback). On
+   **Jenkins**, follow
    **`jenkins/README.md`** instead (the non-Actions CI path).
 3. Use **`INSTALL.txt`** for the fast-path file-copy steps.
 

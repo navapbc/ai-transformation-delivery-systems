@@ -96,11 +96,42 @@ ai_review::err()  { printf '%s[%s] ERROR: %s%s\n' "${AI_C_RED}" "${SKILL_NAME}" 
 #   AI_REVIEW_DRY_RUN   ("1" or "0") — print what would happen, do not call AI
 #   AI_REVIEW_NO_BLOCK  ("1" or "0") — run classification but never exit non-zero
 #   AI_REVIEW_AGAINST   (string)     — git ref to diff against (the change under test)
+#   AI_REVIEW_INCLUDE_STAGED ("1"/"0") — when set, diff base→index (committed +
+#                                        staged) instead of base→HEAD; set by --unpushed
 #   AI_REVIEW_REMAINING (array)      — any unparsed args
+
+# ── Base resolution for --unpushed ──────────────────────────────────────────
+# Resolves the "last pushed" point so --unpushed can classify everything not yet
+# pushed (committed + staged). Order: the branch's upstream; else the merge-base
+# with the remote default branch (origin/HEAD, then origin/main, origin/master).
+# Prints the base ref on success; returns non-zero if none can be determined (the
+# caller then errors and asks for an explicit --against rather than silently
+# narrowing scope). Mirrors the security dispatcher's resolver.
+ai_review::resolve_unpushed_base() {
+  local base def
+  base="$(git rev-parse --abbrev-ref --symbolic-full-name '@{upstream}' 2>/dev/null || true)"
+  if [[ -z "${base}" ]]; then
+    # `git rev-parse --abbrev-ref origin/HEAD` echoes the literal "origin/HEAD"
+    # when the symref is unset, which would poison the fallback — use
+    # symbolic-ref, which fails cleanly with empty output.
+    def="$(git symbolic-ref --short -q refs/remotes/origin/HEAD 2>/dev/null || true)"
+    if [[ -z "${def}" ]] && git rev-parse --verify --quiet origin/main >/dev/null 2>&1; then
+      def="origin/main"
+    fi
+    if [[ -z "${def}" ]] && git rev-parse --verify --quiet origin/master >/dev/null 2>&1; then
+      def="origin/master"
+    fi
+    [[ -n "${def}" ]] && base="$(git merge-base HEAD "${def}" 2>/dev/null || true)"
+  fi
+  [[ -n "${base}" ]] || return 1
+  printf '%s' "${base}"
+}
+
 ai_review::parse_args() {
   AI_REVIEW_DRY_RUN=0
   AI_REVIEW_NO_BLOCK=0
   AI_REVIEW_AGAINST=""
+  AI_REVIEW_INCLUDE_STAGED=0
   AI_REVIEW_REMAINING=()
 
   while [[ $# -gt 0 ]]; do
@@ -123,6 +154,17 @@ ai_review::parse_args() {
         ;;
       --against=*)
         AI_REVIEW_AGAINST="${1#*=}"
+        shift
+        ;;
+      --unpushed)
+        # Classify everything not yet pushed: committed + staged, i.e. base→index.
+        # No PR required — this is the local backstop (report-only; nothing posts).
+        if ! AI_REVIEW_AGAINST="$(ai_review::resolve_unpushed_base)"; then
+          ai_review::err "--unpushed: couldn't determine what's been pushed (no upstream and no remote default branch)."
+          ai_review::log "  Re-run with an explicit base, e.g.  --against main"
+          exit 2
+        fi
+        AI_REVIEW_INCLUDE_STAGED=1
         shift
         ;;
       -h|--help)
@@ -158,6 +200,11 @@ Options:
   --against <ref>      Classify failures relative to the change between <ref> and
                        HEAD (the "change under test"), e.g. --against origin/main
                        or --against HEAD~1.
+  --unpushed           Classify everything not yet pushed (committed + staged),
+                       resolving the base from the branch's upstream or the
+                       merge-base with the remote default branch. No PR needed —
+                       the run is report-only (nothing is posted). The local
+                       backstop, mirroring the security runner's --unpushed.
   -h, --help           Show this help and exit.
 
 Environment variables:
@@ -227,14 +274,19 @@ ai_review::require_cli() {
 # ── Diff collection ─────────────────────────────────────────────────────────
 # Determines whether there is a "change under test" to reason about.
 # When AI_REVIEW_AGAINST is empty, falls back to the staged diff (local use).
-# When AI_REVIEW_AGAINST is set, uses the diff between that ref and HEAD.
+# When AI_REVIEW_AGAINST is set: base→HEAD (committed range), or base→index
+# (committed + staged) under --unpushed (AI_REVIEW_INCLUDE_STAGED=1).
 ai_review::has_changes() {
   if [[ -n "${AI_REVIEW_AGAINST}" ]]; then
     if ! git rev-parse --verify --quiet "${AI_REVIEW_AGAINST}^{commit}" >/dev/null; then
       ai_review::err "Git ref not found: ${AI_REVIEW_AGAINST}"
       exit 1
     fi
-    ! git diff --quiet "${AI_REVIEW_AGAINST}" HEAD --
+    if [[ "${AI_REVIEW_INCLUDE_STAGED:-0}" == "1" ]]; then
+      ! git diff --cached --quiet "${AI_REVIEW_AGAINST}" --
+    else
+      ! git diff --quiet "${AI_REVIEW_AGAINST}" HEAD --
+    fi
   else
     ! git diff --cached --quiet
   fi
@@ -242,7 +294,11 @@ ai_review::has_changes() {
 
 ai_review::changed_files() {
   if [[ -n "${AI_REVIEW_AGAINST}" ]]; then
-    git diff --name-only "${AI_REVIEW_AGAINST}" HEAD --
+    if [[ "${AI_REVIEW_INCLUDE_STAGED:-0}" == "1" ]]; then
+      git diff --cached --name-only "${AI_REVIEW_AGAINST}" --
+    else
+      git diff --name-only "${AI_REVIEW_AGAINST}" HEAD --
+    fi
   else
     git diff --cached --name-only
   fi
@@ -250,7 +306,11 @@ ai_review::changed_files() {
 
 ai_review::diff_command_description() {
   if [[ -n "${AI_REVIEW_AGAINST}" ]]; then
-    echo "git diff ${AI_REVIEW_AGAINST} HEAD"
+    if [[ "${AI_REVIEW_INCLUDE_STAGED:-0}" == "1" ]]; then
+      echo "git diff --cached ${AI_REVIEW_AGAINST} (committed + staged, unpushed)"
+    else
+      echo "git diff ${AI_REVIEW_AGAINST} HEAD"
+    fi
   else
     echo "git diff --cached"
   fi

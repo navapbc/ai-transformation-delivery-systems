@@ -30,6 +30,7 @@
 #   test-classifier-dispatcher.sh                              # auto-discover PR; print only
 #   test-classifier-dispatcher.sh --pr 1234 --post-comment     # post the PR comment
 #   test-classifier-dispatcher.sh --against origin/main        # explicit base ref
+#   test-classifier-dispatcher.sh --unpushed                   # local: committed+staged, NO PR (report-only)
 #   test-classifier-dispatcher.sh --json-only                  # emit only the JSON block
 #   test-classifier-dispatcher.sh --gate                       # exit 1 on CLASSIFIED
 #   test-classifier-dispatcher.sh --dry-run                    # show plan, no AI call
@@ -78,12 +79,15 @@ fi
 #   --gate                Exit 1 if the result is CLASSIFIED (CI-blocking mode)
 #   --json-only           Print only the JSON block (machine consumption)
 #
-# All other flags (--dry-run, --no-block, --against) fall through to the lib.
+# All other flags (--dry-run, --no-block, --against, --unpushed) fall through to
+# the lib. --unpushed classifies the local committed+staged diff with NO PR —
+# PR discovery is skipped and the run is report-only (nothing posts).
 
 PR_NUMBER=""
 POST_COMMENT=0
 GATE_MODE=0
 JSON_ONLY=0
+WANT_HELP=0
 REMAINING_FOR_LIB=()
 
 while [[ $# -gt 0 ]]; do
@@ -114,6 +118,14 @@ while [[ $# -gt 0 ]]; do
       ;;
     --json-only)
       JSON_ONLY=1
+      shift
+      ;;
+    -h|--help)
+      # Defer: PR discovery runs before the lib's parser, so a bare --help left
+      # for the lib would error on PR lookup before reaching the help text. We
+      # can't print here either — the lib (which defines print_help) is sourced
+      # below. Flag it and emit right after the source.
+      WANT_HELP=1
       shift
       ;;
     *)
@@ -148,8 +160,14 @@ ai_review::discover_pr_context() {
   # both the PR number and the base ref (e.g. the Jenkins adapter passing
   # CHANGE_ID + CHANGE_TARGET) supplies both flags and we skip `gh pr view`
   # entirely — gh is then needed only to post the comment.
+  # --against (explicit base) and --unpushed (local committed+staged, no PR)
+  # both fix the diff range without needing `gh pr view`. In either case skip
+  # PR discovery: the library's parser resolves the range. With --unpushed there
+  # is no PR, so comment posting stays disabled (the --post-comment guard below
+  # errors on the empty PR number) — a local run is report-only by design.
   for arg in "${REMAINING_FOR_LIB[@]+"${REMAINING_FOR_LIB[@]}"}"; do
-    if [[ "${arg}" == "--against" ]] || [[ "${arg}" == --against=* ]]; then
+    if [[ "${arg}" == "--against" ]] || [[ "${arg}" == --against=* ]] \
+       || [[ "${arg}" == "--unpushed" ]]; then
       if [[ -n "${PR_NUMBER}" ]]; then
         AI_REVIEW_PR_NUMBER="${PR_NUMBER}"
       fi
@@ -240,11 +258,12 @@ in this repository at:
 by scripts/fetch-skills.sh; when the vendored copy is absent the in-repo
 .skills/ copy is used. Either way, follow the file at the path above.)
 
-Classify the failing tests for the change under test — the diff between
-AI_REVIEW_AGAINST and HEAD:
+Classify the failing tests for the change under test. The exact git range is in
+the AI_REVIEW_DIFF_RANGE env var (base→HEAD normally; base→index, i.e. committed
++ staged, for a local --unpushed run). Use it verbatim:
 
-  git diff "\$AI_REVIEW_AGAINST" HEAD --unified=5
-  git diff "\$AI_REVIEW_AGAINST" HEAD --name-only
+  git diff \$AI_REVIEW_DIFF_RANGE --unified=5
+  git diff \$AI_REVIEW_DIFF_RANGE --name-only
 
 Follow the skill instructions in test-classifier/SKILL.md exactly:
 
@@ -294,6 +313,13 @@ PROMPT
 # ── Source shared library ───────────────────────────────────────────────────
 # shellcheck source=../../_lib/ai-classifier-dispatch.sh
 source "${LIB_PATH}"
+
+# --help was requested during arg parsing above; the lib (which defines the help
+# text) is now loaded, so emit it and exit before any PR discovery / AI call.
+if (( WANT_HELP == 1 )); then
+  ai_review::print_help
+  exit 0
+fi
 
 # ── Helpers: JSON extraction and PR-comment posting ────────────────────────
 
@@ -511,6 +537,16 @@ test_classifier::run() {
 
   export AI_REVIEW_AGAINST
 
+  # The git range the AI should diff, matching the dispatcher's own accounting:
+  #   --unpushed (INCLUDE_STAGED) → `--cached <base>`  (committed + staged)
+  #   otherwise                   → `<base> HEAD`      (committed range)
+  if [[ "${AI_REVIEW_INCLUDE_STAGED:-0}" == "1" ]]; then
+    AI_REVIEW_DIFF_RANGE="--cached ${AI_REVIEW_AGAINST}"
+  else
+    AI_REVIEW_DIFF_RANGE="${AI_REVIEW_AGAINST} HEAD"
+  fi
+  export AI_REVIEW_DIFF_RANGE
+
   local classifier_output
   local invoke_rc=0
   classifier_output="$(ai_review::invoke_ai)" || invoke_rc=$?
@@ -555,7 +591,7 @@ test_classifier::run() {
       ai_review::info "Result is NO_ACTION — nothing to triage, so no PR comment is posted."
     else
       if [[ -z "${AI_REVIEW_PR_NUMBER:-}" ]]; then
-        ai_review::err "--post-comment requires a discoverable PR. Use --pr <number> or ensure 'gh pr view' resolves."
+        ai_review::err "--post-comment requires a discoverable PR. Use --pr <number> or ensure 'gh pr view' resolves. (A --unpushed local run has no PR, so it is report-only — drop --post-comment.)"
         exit 1
       fi
       local json_block
