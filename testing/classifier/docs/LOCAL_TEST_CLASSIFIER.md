@@ -35,8 +35,15 @@ and uses the same `--unpushed` scope rule. This is the ergonomics layer over
 
 ## Prerequisites
 
-1. **The classifier bundle is installed** under `testing/classifier/` (see
-   [`../INSTALL.txt`](../INSTALL.txt) / [`../AGENT_INSTALL.md`](../AGENT_INSTALL.md)).
+1. **The classifier bundle's scripts are present** under `testing/classifier/`
+   in your repo. The source repo is public, so one command vendors just that
+   subtree (no auth) — run it from your repo root:
+   ```bash
+   curl -fsSL https://codeload.github.com/navapbc/ai-transformation-delivery-systems/tar.gz/refs/tags/pilot \
+     | tar -xz --strip-components=1 '*/testing/classifier'
+   ```
+   See [`SETUP.md`](./SETUP.md) Path A → "Step 0 — Install the bundle" for the
+   pinned-SHA and sparse-checkout variants.
 2. **`AI_REVIEW_TOOL` set** to `claude`, `codex`, or `copilot` — see the
    `README.md`, section "AI tool selection". The dispatcher exits with a helpful
    message if it's unset.

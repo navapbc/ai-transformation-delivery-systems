@@ -55,14 +55,33 @@ Path A (its local `pr-review` run).
 
 ### Prerequisites
 
-- The classifier bundle is installed under `testing/classifier/` (see
-  `INSTALL.txt`).
+- The classifier bundle's scripts are present under `testing/classifier/` in
+  your repo — see [Step 0](#step-0--install-the-bundle) just below.
 - `AI_REVIEW_TOOL` is set in the developer's shell (`claude` | `codex` |
   `copilot`).
 - The matching AI CLI is installed (`claude`, `codex`, or `copilot`).
 - The GitHub CLI (`gh`) is installed and authenticated — needed only for the
   PR-based modes (auto-discovery, `--pr`, `--post-comment`). A `--unpushed`
   local run needs no PR and no `gh`.
+
+### Step 0 — Install the bundle
+
+Unlike the CI path (Path B), which copies nothing in, a local run needs the
+classifier scripts present in your repo. The source repo is **public**, so one
+command vendors just the `testing/classifier/` subtree from the pinned `pilot`
+tag — no auth, no `gh`:
+
+```bash
+# Run from your repo root. Pin to a tag (pilot) or a commit SHA.
+curl -fsSL https://codeload.github.com/navapbc/ai-transformation-delivery-systems/tar.gz/refs/tags/pilot \
+  | tar -xz --strip-components=1 '*/testing/classifier'
+```
+
+This drops the bundle at `testing/classifier/` with the dispatcher's `+x` bit
+intact. Commit the tree (or add it to your repo however you vendor third-party
+code). To upgrade later, re-run the command with a newer tag/SHA. If you'd
+rather track it as a live subtree, a `git clone --filter=blob:none --sparse`
+of the source repo with `git sparse-checkout set testing/classifier` works too.
 
 ### Installing `gh`
 
@@ -167,24 +186,11 @@ repo calls with a single pinned `uses:` line. **No files are copied into your
 repo.** Upgrading is a one-line SHA bump; there is no vendored copy to drift,
 and provenance is unambiguous.
 
-### Step 0 — One-time org prerequisite (private source repo)
-
-`navapbc/ai-transformation-delivery-systems` is **private**, so before any other
-repo can call its reusable workflow, an org/repo admin must allow it once:
-
-1. In **this source repo**: **Settings** → **Actions** → **General** →
-   **Access** → set **"Accessible from repositories in the 'navapbc'
-   organization"** (or list the specific consumer repos).
-
-This single setting unlocks two things at runtime, both with the consumer's
-default `GITHUB_TOKEN` — **no PAT is required**:
-
-- the `uses:` reference to the reusable workflow resolves, and
-- the workflow's own step that fetches this bundle's scripts (a pinned source
-  tarball via the GitHub API) is authorized.
-
-If you see `error: workflow was not found` or a `404` fetching the bundle in the
-consumer's Actions log, this setting is the cause.
+`navapbc/ai-transformation-delivery-systems` is **public**, so no org-access
+prerequisite is needed: any repo can call its reusable workflow, and both the
+`uses:` reference and the workflow's own step that fetches the bundle scripts
+(a pinned source tarball) resolve with the consumer's default `GITHUB_TOKEN` —
+**no PAT required**.
 
 ### Step 1 — Add the caller workflow
 
@@ -198,7 +204,6 @@ on:
     types: [opened, synchronize, reopened]
 # Required in the CALLER — a reusable workflow can't grant more than the caller
 # holds. Without pull-requests: write the run 403s when it posts the comment.
-# (See Step 4.)
 permissions:
   contents: read
   pull-requests: write
