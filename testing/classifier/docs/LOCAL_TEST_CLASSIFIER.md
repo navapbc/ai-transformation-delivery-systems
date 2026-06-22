@@ -123,6 +123,11 @@ AI_RUN_SUITE=1 test-classifier        # run the suite locally and triage REAL fa
   runs your suite (OBSERVED) — the only mode in which `FLAKY_FAILURE` /
   `ENVIRONMENT_ISSUE` are reliably reachable, since you can't see a timeout or
   non-determinism from a diff.
+- **Live progress.** On a local interactive run the dispatcher streams the
+  agent's steps (each `⏺` reasoning line and `⏎` tool call) to your terminal as
+  they happen, so it isn't a blinking cursor while it works. The final report is
+  unchanged. To silence the step stream (just wait for the report), set
+  `AI_REVIEW_STREAM=0`. In CI the run is always silent until it finishes.
 
 ---
 

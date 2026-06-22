@@ -341,6 +341,64 @@ ai_review::timeout_prefix() {
   # are the remaining backstops.
 }
 
+# ── Live progress streaming (local interactive runs only) ───────────────────
+# By default `claude -p` is captured into a variable for parsing, so the user
+# sees nothing — a blinking cursor — until the whole run finishes. On a local
+# interactive run we instead ask claude for its event stream
+# (--output-format stream-json --verbose), narrate each step to STDERR (the
+# terminal), and emit ONLY the final result text to STDOUT so the dispatcher's
+# marker/JSON parse is byte-identical to the plain `-p` path.
+#
+# Gated so CI is unaffected: stream only when stdout is a TTY, not CI, the user
+# hasn't opted out (AI_REVIEW_STREAM=0), and python3 is present to split the
+# stream. Otherwise fall back to plain `-p`.
+ai_review::should_stream() {
+  [[ "${AI_REVIEW_STREAM:-1}" != "0" ]] || return 1
+  [[ -t 1 ]] || return 1
+  [[ "${CI:-}" != "true" ]] || return 1
+  command -v python3 &>/dev/null || return 1
+  return 0
+}
+
+# Reads claude stream-json (NDJSON) on stdin. Narrates assistant text + tool
+# calls to STDERR; prints the final result text to STDOUT. Keeps the contract:
+# STDOUT carries exactly the agent's final answer (markers + JSON intact).
+ai_review::stream_split() {
+  python3 -c '
+import sys, json
+def w(s):  # progress → stderr, flushed so it appears live
+    sys.stderr.write(s + "\n"); sys.stderr.flush()
+final = ""
+for line in sys.stdin:
+    line = line.strip()
+    if not line:
+        continue
+    try:
+        e = json.loads(line)
+    except Exception:
+        continue
+    t = e.get("type")
+    if t == "assistant":
+        for blk in e.get("message", {}).get("content", []):
+            bt = blk.get("type")
+            if bt == "text":
+                txt = (blk.get("text") or "").strip()
+                if txt:
+                    w("  ⏺ " + txt)
+            elif bt == "tool_use":
+                inp = blk.get("input", {}) or {}
+                arg = inp.get("command") or inp.get("file_path") or inp.get("pattern") or inp.get("description") or ""
+                arg = str(arg).replace("\n", " ")
+                if len(arg) > 80:
+                    arg = arg[:77] + "..."
+                w("  ⏎ " + str(blk.get("name")) + ("  " + arg if arg else ""))
+    elif t == "result":
+        final = e.get("result") or ""
+# emit the final answer on stdout for the dispatcher to parse
+sys.stdout.write(final)
+'
+}
+
 ai_review::invoke_claude() {
   ai_review::require_cli "claude" \
     "Install Claude Code:  npm install -g @anthropic-ai/claude-code"
@@ -354,21 +412,49 @@ ai_review::invoke_claude() {
   # span/metric exporter defaults to `none` (its console form writes to STDOUT
   # and would corrupt this parsed result); the run is captured via
   # OTEL_LOG_RAW_API_BODIES file output instead. So stdout here stays clean.
+  # On a local interactive run, stream the agent's steps live (see
+  # should_stream / stream_split): --output-format stream-json --verbose emits
+  # NDJSON events that stream_split narrates to STDERR while forwarding only the
+  # final result text to STDOUT — so the captured stdout (and its marker/JSON
+  # parse) is identical to the plain `-p` path. CI keeps the silent, clean path.
+  local stream=0
+  if ai_review::should_stream; then
+    stream=1
+    ai_review::info "Streaming the agent's steps below (set AI_REVIEW_STREAM=0 to silence)…" >&2
+  fi
+
   if (( AI_RUN_SUITE == 1 )); then
     # Grant execution so the agent can install deps + run the suite headlessly.
     # Headless `claude -p` HANGS on any Bash call without a permission grant, so
     # this flag set is required for suite-running, not optional. --allowedTools
     # scopes it to exactly what the task needs; --max-turns bounds the loop.
     #
-    # NOTE: no 2>&1 here — keep the agent's stderr diagnostics OUT of the
-    # captured stdout so they can't corrupt the JSON/marker parse. stderr still
-    # flows to the CI log.
-    $(ai_review::timeout_prefix) claude -p "${SKILL_PROMPT}" \
-      --permission-mode bypassPermissions \
-      --allowedTools "Bash,Read,Edit" \
-      --max-turns "${AI_SUITE_MAX_TURNS}"
+    # NOTE: no 2>&1 — keep the agent's stderr diagnostics OUT of the captured
+    # stdout so they can't corrupt the JSON/marker parse. stderr still flows to
+    # the terminal / CI log.
+    if (( stream == 1 )); then
+      # < /dev/null: `-p` otherwise waits on stdin (the pipe keeps it open) and
+      # warns "no stdin data received in 3s". We pass the prompt as an arg, so
+      # there is no stdin to read.
+      $(ai_review::timeout_prefix) claude -p "${SKILL_PROMPT}" \
+        --permission-mode bypassPermissions \
+        --allowedTools "Bash,Read,Edit" \
+        --max-turns "${AI_SUITE_MAX_TURNS}" \
+        --output-format stream-json --verbose < /dev/null \
+        | ai_review::stream_split
+    else
+      $(ai_review::timeout_prefix) claude -p "${SKILL_PROMPT}" \
+        --permission-mode bypassPermissions \
+        --allowedTools "Bash,Read,Edit" \
+        --max-turns "${AI_SUITE_MAX_TURNS}"
+    fi
   else
-    claude -p "${SKILL_PROMPT}" 2>&1
+    if (( stream == 1 )); then
+      claude -p "${SKILL_PROMPT}" --output-format stream-json --verbose < /dev/null \
+        | ai_review::stream_split
+    else
+      claude -p "${SKILL_PROMPT}" 2>&1
+    fi
   fi
 }
 
