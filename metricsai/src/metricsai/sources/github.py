@@ -152,6 +152,7 @@ def fetch_classifier_comments(
     authors: Iterable[str],
     start: datetime,
     end: datetime,
+    match_all_authors: bool = False,
 ) -> list[Classification]:
     """Fetch the AI test-classifier's comments and expand them to per-verdict records.
 
@@ -167,6 +168,7 @@ def fetch_classifier_comments(
     :param authors: Comment author logins to keep (case-insensitive).
     :param start: Inclusive window start (timezone-aware UTC).
     :param end: Inclusive window end (timezone-aware UTC).
+    :param match_all_authors: When ``True``, accept any author and ignore ``authors``.
     :returns: One record per classification across all matching comments.
     """
     gh = Github(base_url=base_url, auth=Auth.Token(token))
@@ -176,14 +178,25 @@ def fetch_classifier_comments(
         logger.debug("Scanning %s for classifier comments", full_name)
         out.extend(
             _scan_repo_classifier(
-                gh.get_repo(full_name), full_name, authors_lower, start=start, end=end
+                gh.get_repo(full_name),
+                full_name,
+                authors_lower,
+                start=start,
+                end=end,
+                match_all_authors=match_all_authors,
             )
         )
     return out
 
 
 def _scan_repo_classifier(
-    repo: object, full_name: str, authors_lower: set[str], *, start: datetime, end: datetime
+    repo: object,
+    full_name: str,
+    authors_lower: set[str],
+    *,
+    start: datetime,
+    end: datetime,
+    match_all_authors: bool = False,
 ) -> list[Classification]:
     """Scan one repository's PR issue + review comments for classifier verdicts.
 
@@ -197,6 +210,7 @@ def _scan_repo_classifier(
     :param authors_lower: Lower-cased author logins to keep.
     :param start: Inclusive window start (UTC).
     :param end: Inclusive window end (UTC).
+    :param match_all_authors: When ``True``, accept any author and ignore ``authors_lower``.
     :returns: The classifications harvested from this repository's classifier comments.
     """
     matched: list[Classification] = []
@@ -204,7 +218,13 @@ def _scan_repo_classifier(
 
     def record(source: str, obj: object) -> None:
         counts[source][0] += 1
-        records = _classify_classifier(obj, authors_lower=authors_lower, start=start, end=end)
+        records = _classify_classifier(
+            obj,
+            authors_lower=authors_lower,
+            start=start,
+            end=end,
+            match_all_authors=match_all_authors,
+        )
         if records:
             matched.extend(records)
             counts[source][1] += 1
@@ -223,7 +243,12 @@ def _scan_repo_classifier(
 
 
 def _classify_classifier(
-    obj: object, *, authors_lower: set[str], start: datetime, end: datetime
+    obj: object,
+    *,
+    authors_lower: set[str],
+    start: datetime,
+    end: datetime,
+    match_all_authors: bool = False,
 ) -> list[Classification]:
     """Expand one raw comment into its classifications, or ``[]`` if it does not count.
 
@@ -236,6 +261,7 @@ def _classify_classifier(
     :param authors_lower: Lower-cased author logins to keep.
     :param start: Inclusive window start (UTC).
     :param end: Inclusive window end (UTC).
+    :param match_all_authors: When ``True``, accept any author and ignore ``authors_lower``.
     :returns: One :class:`Classification` per verdict, or ``[]`` when the comment is skipped.
     """
     body = getattr(obj, "body", None)
@@ -243,7 +269,7 @@ def _classify_classifier(
     when = getattr(obj, "created_at", None)
     if not body or login is None or when is None:
         return []
-    if login.lower() not in authors_lower:
+    if not match_all_authors and login.lower() not in authors_lower:
         return []
     timestamp = _as_utc(when)
     if not (start <= timestamp <= end):

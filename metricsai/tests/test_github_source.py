@@ -356,6 +356,25 @@ def test_classify_classifier_skips_wrong_label_author_window() -> None:
     assert github._classify_classifier(late, **gate) == []
 
 
+def test_classify_classifier_match_all_authors_accepts_any_author() -> None:
+    # A classifier comment posted under a developer's identity (Path A) still counts.
+    obj = _classifier_obj("someone-else", _classifier_body("APPLICATION_BUG"), _IN_WINDOW, "x")
+    out = github._classify_classifier(
+        obj, authors_lower={_CLASSIFIER}, start=_START, end=_END, match_all_authors=True
+    )
+    assert [c.verdict for c in out] == ["APPLICATION_BUG"]
+
+
+def test_classify_classifier_match_all_authors_still_enforces_window_and_label() -> None:
+    # The author gate is lifted, but the window and label gates still apply.
+    gate = {"authors_lower": {_CLASSIFIER}, "start": _START, "end": _END, "match_all_authors": True}
+    when = datetime(2026, 6, 30, tzinfo=UTC)
+    late = _classifier_obj("anyone", _classifier_body("TEST_BUG"), when, "x")
+    assert github._classify_classifier(late, **gate) == []
+    wrong_label = _classifier_obj("anyone", "security: leak", _IN_WINDOW, "x")
+    assert github._classify_classifier(wrong_label, **gate) == []
+
+
 def test_fetch_classifier_comments_scans_both_surfaces(monkeypatch) -> None:
     issue = _classifier_obj(
         _CLASSIFIER,
