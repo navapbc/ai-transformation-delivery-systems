@@ -1,5 +1,10 @@
 #!/usr/bin/env bash
 
+# DEPRECATED: This script is superseded by `metricsai` (../../metricsai/README.md).
+# Its `security` module gathers the same AWS Security Hub findings count and reports it as
+# part of a single weekly row. Use metricsai instead; this script is retained for reference
+# only and is no longer maintained.
+
 aws securityhub get-findings \
     --filters '{
         "ComplianceStatus": [{"Value": "FAILED", "Comparison": "EQUALS"}],
