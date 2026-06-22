@@ -349,12 +349,18 @@ ai_review::timeout_prefix() {
 # terminal), and emit ONLY the final result text to STDOUT so the dispatcher's
 # marker/JSON parse is byte-identical to the plain `-p` path.
 #
-# Gated so CI is unaffected: stream only when stdout is a TTY, not CI, the user
-# hasn't opted out (AI_REVIEW_STREAM=0), and python3 is present to split the
-# stream. Otherwise fall back to plain `-p`.
+# Gated so CI is unaffected: stream only when a terminal is watching, not CI,
+# the user hasn't opted out (AI_REVIEW_STREAM=0), and python3 is present to split
+# the stream. Otherwise fall back to plain `-p`.
+#
+# We test STDERR (-t 2), NOT stdout. invoke_ai's stdout is captured by the
+# dispatcher via `$(...)`, so inside this function stdout is always a pipe —
+# `-t 1` would be false even in a real terminal and streaming would never engage.
+# stderr is not captured (it flows to the terminal), so `-t 2` is the correct
+# "a human is watching" signal, and stderr is exactly where we narrate progress.
 ai_review::should_stream() {
   [[ "${AI_REVIEW_STREAM:-1}" != "0" ]] || return 1
-  [[ -t 1 ]] || return 1
+  [[ -t 2 ]] || return 1
   [[ "${CI:-}" != "true" ]] || return 1
   command -v python3 &>/dev/null || return 1
   return 0
