@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# DEPRECATED: This script is superseded by `metricsai` (../../metricsai/README.md).
+# Its `security` module gathers the same GitHub PR comment metrics and reports them as a
+# single weekly row. Use metricsai instead; this script is retained for reference only and
+# is no longer maintained.
+
 # --- Configuration ---
 REPOSITORIES=(
   "navapbc/strata"

@@ -1,5 +1,12 @@
 # Overview
 
+> **⚠️ Deprecated.** This collection method — the `pr_review_comments.sh` and
+> `retrieve_sechub_misconfigurations.sh` scripts — has been superseded by
+> [`metricsai`](../../metricsai/README.md), whose `security` module gathers the same
+> GitHub PR comment and AWS Security Hub metrics (and reports them as a single weekly row).
+> Use `metricsai` instead; these scripts are retained for reference only and are no longer
+> maintained.
+
 Security metrics are to be collected weekly on Fridays, or the last working day of the week. They are to be input into the security metrics Google sheet shared by the crew. Sources of metrics include GitHub pull requests and SecurityHub compliance standard findings. These metrics help to evaluate the efficacy of shift-left workflow enhancements.
 
 ## AI-reviewed GitHub Pull Requests
