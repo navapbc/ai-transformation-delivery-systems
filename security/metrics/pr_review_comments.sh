@@ -51,7 +51,9 @@ fetch_api() {
 for REPO in "${REPOSITORIES[@]}"; do
     echo "Processing repository: $REPO..."
 
-    PR_LIST=$(gh pr list -R "$REPO" --state all --limit 1000 --json number 2>/dev/null) || {
+    PR_LIST=$(gh pr list -R "$REPO" --state all --limit 1000 \
+        --search "updated:${START_DATE}..${END_DATE}" \
+        --json number 2>/dev/null) || {
         echo "WARNING: Skipping $REPO: Failed to fetch PR list."
         continue
     }
