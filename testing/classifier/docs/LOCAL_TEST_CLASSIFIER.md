@@ -118,6 +118,12 @@ AI_RUN_SUITE=1 test-classifier        # run the suite locally and triage REAL fa
   and never posts a PR comment. Posting (with the mandatory 👍/👎 ask that feeds
   the metrics loop) happens on the PR run — Path B, or `--post-comment` against a
   real PR. See [`SETUP.md`](./SETUP.md).
+- **The actionable summary.** After the full report, the dispatcher prints a
+  compact, colored summary — one line per failing test with its verdict,
+  `file:line`, confidence, and the one-line *what to do* (`→ Fix the TEST`,
+  `→ Fix the CODE`, `→ Re-run / deflake`, `→ Fix the ENV`). That's the punchline:
+  the classifier is **diagnostic** — it tells you which side to fix, never writes
+  the patch. Read the summary, then make the change yourself.
 - **INFERRED vs OBSERVED.** Without `AI_RUN_SUITE=1` the agent predicts failures
   from the diff (INFERRED) and never touches your toolchain. With it, the agent
   runs your suite (OBSERVED) — the only mode in which `FLAKY_FAILURE` /

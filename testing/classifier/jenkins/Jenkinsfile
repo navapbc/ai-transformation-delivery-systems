@@ -92,11 +92,6 @@ pipeline {
           esac
         '''
 
-        // Vendor the skill from agent-skills before invoking the dispatcher.
-        dir('testing/classifier') {
-          sh 'chmod +x scripts/fetch-skills.sh && scripts/fetch-skills.sh'
-        }
-
         // Ensure the scripts are executable (a fresh checkout may drop the bit),
         // then hand off to the CI adapter — it normalizes CHANGE_ID/CHANGE_TARGET
         // and execs the dispatcher with --pr / --against / --post-comment.

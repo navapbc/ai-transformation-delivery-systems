@@ -61,14 +61,10 @@ fi
 # ── Skill identity ──────────────────────────────────────────────────────────
 SKILL_NAME="test-classifier"
 SKILL_HUMAN_NAME="AI Test Classifier (application-bug / test-bug / flaky / environment)"
-# Skill text: prefer the copy vendored from agent-skills by fetch-skills.sh;
-# fall back to the in-repo .skills/ copy when the vendor dir is absent.
+# Skill text lives in-repo and is the canonical source of truth (this bundle owns
+# its skill — no external fetch).
 BUNDLE_ROOT="$(cd "${SKILLS_ROOT}/.." && pwd)"   # .skills → classifier (bundle root)
-if [[ -f "${BUNDLE_ROOT}/.skills-vendor/test-classifier/SKILL.md" ]]; then
-  SKILL_PATH_CANONICAL=".skills-vendor/test-classifier/SKILL.md"
-else
-  SKILL_PATH_CANONICAL=".skills/test-classifier/SKILL.md"
-fi
+SKILL_PATH_CANONICAL=".skills/test-classifier/SKILL.md"
 
 # ── Classifier-specific arg parsing ────────────────────────────────────────
 # We intercept our own flags first, then pass the remainder to the shared
@@ -254,9 +250,7 @@ in this repository at:
 
   ${SKILL_PATH_CANONICAL}
 
-(The canonical skill text is published in navapbc/agent-skills and vendored here
-by scripts/fetch-skills.sh; when the vendored copy is absent the in-repo
-.skills/ copy is used. Either way, follow the file at the path above.)
+Follow the file at the path above.
 
 Classify the failing tests for the change under test. The exact git range is in
 the AI_REVIEW_DIFF_RANGE env var (base→HEAD normally; base→index, i.e. committed
@@ -331,6 +325,78 @@ extract_classifier_json() {
     /<!-- AI_CLASSIFIER_JSON_END -->/   { capturing=0; next }
     capturing { print }
   '
+}
+
+# Strip the machine-only markers from the AI output for HUMAN display: the
+# JSON block (BEGIN→END inclusive) and the <<<AI_REVIEW_RESULT:…>>> line. These
+# exist for parsing / PR-comment posting and are noise in a local terminal run.
+# Parsing always uses the untouched ${classifier_output}; this only affects what
+# is printed. Trailing blank lines left by the removal are collapsed.
+strip_machine_markers() {
+  local input="$1"
+  printf '%s\n' "${input}" | awk '
+    /<!-- AI_CLASSIFIER_JSON_BEGIN -->/ { skip=1; next }
+    /<!-- AI_CLASSIFIER_JSON_END -->/   { skip=0; next }
+    skip { next }
+    /^<<<AI_REVIEW_RESULT:[A-Z_]+>>>[[:space:]]*$/ { next }
+    { print }
+  ' | awk 'NF { blanks=0; print; next } { blanks++; if (blanks<=1) print }'
+}
+
+# Compact, terminal-native summary of the verdicts — the actionable punchline a
+# local developer needs, lifted out of the long markdown report. One line per
+# failing test: VERDICT, file:line, confidence, and the one-line "what to do"
+# action derived from the verdict (mirrors SKILL.md's taxonomy table). The skill
+# is diagnostic-only, so this points at the side to fix; it never proposes a
+# patch. Printed to STDERR so it never touches the parsed stdout. Best-effort:
+# if python3 or the JSON is unavailable, we silently skip it (the full report
+# above still stands).
+render_terminal_summary() {
+  local classifier_json="$1"
+  command -v python3 &>/dev/null || return 0
+  [[ -n "${classifier_json}" ]] || return 0
+
+  AI_C_RED="${AI_C_RED}" AI_C_YELLOW="${AI_C_YELLOW}" AI_C_GREEN="${AI_C_GREEN}" \
+  AI_C_BLUE="${AI_C_BLUE}" AI_C_BOLD="${AI_C_BOLD}" AI_C_RESET="${AI_C_RESET}" \
+  python3 - "${classifier_json}" >&2 <<'PY'
+import json, os, sys
+
+RED=os.environ.get("AI_C_RED",""); YEL=os.environ.get("AI_C_YELLOW","")
+GRN=os.environ.get("AI_C_GREEN",""); BLU=os.environ.get("AI_C_BLUE","")
+BOLD=os.environ.get("AI_C_BOLD",""); RST=os.environ.get("AI_C_RESET","")
+
+try:
+    data = json.loads(sys.argv[1])
+except Exception:
+    sys.exit(0)
+
+cls = data.get("classifications") or []
+if not cls:
+    sys.exit(0)
+
+# verdict → (color, one-line action). Mirrors SKILL.md's "What it means / action".
+ACTION = {
+    "APPLICATION_BUG":  (RED, "Fix the CODE — the app regressed; the test caught a real defect."),
+    "TEST_BUG":         (YEL, "Fix the TEST — the app is correct; the assertion is stale."),
+    "FLAKY_FAILURE":    (BLU, "Re-run to confirm, then deflake — not a code/test-logic patch."),
+    "ENVIRONMENT_ISSUE":(BLU, "Fix the ENV / re-run — neither the app nor the test is at fault."),
+}
+
+mode = data.get("mode","")
+print(f"\n{BOLD}─── Test Classifier — {len(cls)} classified" + (f" ({mode})" if mode else "") + f" ───{RST}")
+for c in cls:
+    verdict = c.get("verdict","") or "UNKNOWN"
+    color, action = ACTION.get(verdict, (RST, ""))
+    loc = c.get("path","")
+    line = c.get("line")
+    if loc and line not in (None, ""):
+        loc = f"{loc}:{line}"
+    conf = c.get("confidence","")
+    conf_s = f"  ({conf})" if conf else ""
+    print(f"  {color}{verdict:<17}{RST} {loc}{conf_s}")
+    if action:
+        print(f"    {color}→{RST} {action}")
+PY
 }
 
 # Render the ONE PR comment body from the classifier JSON, including the
@@ -554,7 +620,9 @@ test_classifier::run() {
   if (( JSON_ONLY == 1 )); then
     extract_classifier_json "${classifier_output}"
   else
-    printf '%s\n' "${classifier_output}"
+    # Human-facing terminal output: drop the machine-only markers (JSON block +
+    # result sentinel). Parsing below still uses the untouched classifier_output.
+    strip_machine_markers "${classifier_output}"
     ai_review::log "────────────────────────────────────────────────────────────"
   fi
 
@@ -569,6 +637,11 @@ test_classifier::run() {
   case "${result}" in
     CLASSIFIED)
       ai_review::info "Classifier result: CLASSIFIED"
+      # Terminal-native actionable summary (verdict + file:line + what-to-do),
+      # for a human run only. Skipped under --json-only (machine consumption).
+      if (( JSON_ONLY != 1 )); then
+        render_terminal_summary "$(extract_classifier_json "${classifier_output}")"
+      fi
       ;;
     NO_ACTION)
       ai_review::ok "Classifier result: NO_ACTION (nothing failed)."

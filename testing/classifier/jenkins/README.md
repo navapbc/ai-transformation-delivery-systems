@@ -103,9 +103,6 @@ stage('AI test classifier') {
       sh '''
         set -euo pipefail
         npm install -g @anthropic-ai/claude-code     # or @openai/codex
-        # Run fetch-skills from the classifier dir in a subshell so the cd
-        # doesn't leak — don't rely on $WORKSPACE being stable across steps.
-        ( cd testing/classifier && chmod +x scripts/fetch-skills.sh && scripts/fetch-skills.sh )
         chmod +x testing/classifier/.skills/_lib/ai-classifier-dispatch.sh \\
                  testing/classifier/.skills/test-classifier/scripts/test-classifier-dispatcher.sh \\
                  testing/classifier/jenkins/ci-adapter.sh
