@@ -219,10 +219,12 @@ Local manual security review (opt-in) — shell functions
     they do NOT run on commit. Run them on demand whenever a change has
     security implications that warrant a local review before pushing.
 
-    Add these two functions to ~/.zshrc, then `source ~/.zshrc`. They work from
-    any subdirectory of the repo. With no argument each reviews everything you
-    haven't pushed yet (all committed + staged changes); pass a ref to review a
-    committed range instead.
+    Add these functions to ~/.zshrc, then `source ~/.zshrc`. They work from
+    any subdirectory of the repo. With no argument code-security/iac-compliance
+    review everything you haven't pushed yet (all committed + staged changes);
+    pass a ref to review a committed range instead. code-security-lite N is a
+    lighter option that reviews only your last N commits (HEAD~N..HEAD) — less
+    output, cost, and time when you only need to re-check recent work.
 
     Full guide: docs/LOCAL_SECURITY_REVIEW.md
 
@@ -243,6 +245,21 @@ Local manual security review (opt-in) — shell functions
       fi
     }
 
+    # ── AI-assisted local security review — lite ──────────────────────────
+    #   <N>  → only the last N commits (committed range HEAD~N..HEAD)
+    code-security-lite() {
+      local root disp n="$1"
+      if [ -z "$n" ] || [ -n "${n//[0-9]/}" ] || [ "$n" -lt 1 ]; then
+        echo "✗ usage: code-security-lite <N>   (N = number of recent commits, an integer ≥ 1)"; return 1
+      fi
+      root="$(git rev-parse --show-toplevel 2>/dev/null)" \
+        || { echo "✗ not inside a git repository"; return 1; }
+      disp="$root/.skills/code-security/scripts/code-security-hook-dispatcher.sh"
+      [ -x "$disp" ] \
+        || { echo "✗ code-security dispatcher not found/executable: $disp"; return 1; }
+      echo "▶ code-security-lite: HEAD~${n}..HEAD (last ${n} commit(s))"; "$disp" --against "HEAD~${n}"
+    }
+
     iac-compliance() {
       local root disp
       root="$(git rev-parse --show-toplevel 2>/dev/null)" \
@@ -260,8 +277,12 @@ Local manual security review (opt-in) — shell functions
     Usage:
       code-security                 # everything unpushed: committed + staged
       code-security origin/main     # the committed range origin/main..HEAD
+      code-security-lite 1          # lite: just the last commit (HEAD~1..HEAD)
+      code-security-lite 3          # lite: the last 3 commits (HEAD~3..HEAD)
       iac-compliance                # same, for infrastructure-as-code
 
+    code-security-lite reviews COMMITTED changes only (HEAD~N..HEAD) — commit your
+    work first to include it.
     --unpushed excludes UNSTAGED working-tree edits (commit or `git add` them to
     include). For a staged-only spot check, use the commit-time hook's scope:
       pre-commit run --hook-stage manual code-security    # git diff --cached
@@ -275,8 +296,8 @@ Onboarding new team members
       b. Set AI_REVIEW_TOOL in their shell (.zshenv recommended on macOS)
       c. Run: scripts/sync-skills.sh *
       d. Run: pre-commit install *
-      e. (Recommended) Add the code-security / iac-compliance functions
-         to ~/.zshrc — see "Local manual security review (opt-in)" above and
+      e. (Recommended) Add the code-security / code-security-lite / iac-compliance
+         functions to ~/.zshrc — see "Local manual security review (opt-in)" above and
          docs/LOCAL_SECURITY_REVIEW.md. The review hooks are manual/opt-in, so
          these functions are how developers actually run them.
       * Necessary for a fresh clone as well

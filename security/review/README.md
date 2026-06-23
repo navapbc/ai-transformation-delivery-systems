@@ -8,7 +8,7 @@ whenever a change has security implications that warrant a local review:
 
 | Skill | What it does | When it runs |
 |---|---|---|
-| **`code-security`** | Detects secrets, PII, PHI, OWASP Top 10 issues, and general security defects | Manual / opt-in — `code-security` |
+| **`code-security`** | Detects secrets, PII, PHI, OWASP Top 10 issues, and general security defects | Manual / opt-in — `code-security` (full unpushed scope) or `code-security-lite N` (just the last `N` commits) |
 | **`iac-compliance`** | Reviews infrastructure-as-code against **CMS ARS 5.1** and **NIST SP 800-53 Rev 5** controls | Manual / opt-in — `iac-compliance` (matching IaC files) |
 
 Both hooks support **three AI coding assistants** — Claude Code, OpenAI Codex
@@ -155,7 +155,7 @@ This project ships **three layers** of AI-assisted review:
 
 | Layer | Where it runs | What it reviews | When it fires |
 |---|---|---|---|
-| **Pre-commit** | Developer's machine | The staged diff for one commit | Manual / opt-in (`stages: [manual]`) — on demand via `code-security` / `iac-compliance` |
+| **Pre-commit** | Developer's machine | The staged diff for one commit | Manual / opt-in (`stages: [manual]`) — on demand via `code-security` / `code-security-lite N` / `iac-compliance` |
 | **PR-level**   | Developer's machine *or* GitHub Actions *or* GitHub Copilot | The full diff between the PR's base ref and HEAD | On demand, on PR open/sync, or as part of Copilot auto-review |
 | **Codebase audit** | Developer's machine *or* CI | The full content of every reviewable file in the repo, batched by directory | On demand (e.g., quarterly baseline, pre-assessment review, new-repo onboarding) |
 
@@ -422,9 +422,9 @@ Every developer who clones the repo must:
 2. Set `AI_REVIEW_TOOL` in their shell
 3. Run `scripts/sync-skills.sh` (creates their local derived directory)
 4. Run `pre-commit install`
-5. (Recommended) Add the `code-security` / `iac-compliance` functions to
-   `~/.zshrc` — the review hooks are opt-in/manual, so these functions are how
-   developers run them. See
+5. (Recommended) Add the `code-security` / `code-security-lite` / `iac-compliance`
+   functions to `~/.zshrc` — the review hooks are opt-in/manual, so these
+   functions are how developers run them. See
    [Local manual security review](docs/LOCAL_SECURITY_REVIEW.md).
 
 Add this to your project's `Makefile`:
@@ -677,7 +677,19 @@ committed *and* staged changes — and produces output like:
 Pass a ref to review a committed range instead (`code-security origin/main` →
 `origin/main..HEAD`). `iac-compliance` works the same way, reporting only on
 infrastructure files. The default scope **excludes unstaged working-tree edits**
-— commit or `git add` them to include. See
+— commit or `git add` them to include.
+
+When a full unpushed review is more output, cost, and time than you need, use
+**`code-security-lite N`** to scope the review to just your **last `N` commits**
+(`HEAD~N..HEAD`):
+
+```
+code-security-lite 1     # just the last commit
+code-security-lite 3     # the last 3 commits
+```
+
+`code-security-lite` reviews committed changes only — commit your work first to
+include it. See
 [Local manual security review](docs/LOCAL_SECURITY_REVIEW.md) for the function
 definitions and details.
 
