@@ -13,9 +13,6 @@
 .codex/skills/
 .github/copilot/skills/
 
-# Skills vendored from agent-skills by scripts/fetch-skills.sh.
-.skills-vendor/
-
 # ── Classifier output ──────────────────────────────────────────────────────
 # The workflow writes the per-run classification (the CI artifact / audit trail)
 # here before uploading it as a CI artifact. Not source-of-truth — don't commit.

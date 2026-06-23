@@ -61,14 +61,10 @@ fi
 # ── Skill identity ──────────────────────────────────────────────────────────
 SKILL_NAME="test-classifier"
 SKILL_HUMAN_NAME="AI Test Classifier (application-bug / test-bug / flaky / environment)"
-# Skill text: prefer the copy vendored from agent-skills by fetch-skills.sh;
-# fall back to the in-repo .skills/ copy when the vendor dir is absent.
+# Skill text lives in-repo and is the canonical source of truth (this bundle owns
+# its skill — no external fetch).
 BUNDLE_ROOT="$(cd "${SKILLS_ROOT}/.." && pwd)"   # .skills → classifier (bundle root)
-if [[ -f "${BUNDLE_ROOT}/.skills-vendor/test-classifier/SKILL.md" ]]; then
-  SKILL_PATH_CANONICAL=".skills-vendor/test-classifier/SKILL.md"
-else
-  SKILL_PATH_CANONICAL=".skills/test-classifier/SKILL.md"
-fi
+SKILL_PATH_CANONICAL=".skills/test-classifier/SKILL.md"
 
 # ── Classifier-specific arg parsing ────────────────────────────────────────
 # We intercept our own flags first, then pass the remainder to the shared
@@ -254,9 +250,7 @@ in this repository at:
 
   ${SKILL_PATH_CANONICAL}
 
-(The canonical skill text is published in navapbc/agent-skills and vendored here
-by scripts/fetch-skills.sh; when the vendored copy is absent the in-repo
-.skills/ copy is used. Either way, follow the file at the path above.)
+Follow the file at the path above.
 
 Classify the failing tests for the change under test. The exact git range is in
 the AI_REVIEW_DIFF_RANGE env var (base→HEAD normally; base→index, i.e. committed
@@ -331,6 +325,22 @@ extract_classifier_json() {
     /<!-- AI_CLASSIFIER_JSON_END -->/   { capturing=0; next }
     capturing { print }
   '
+}
+
+# Strip the machine-only markers from the AI output for HUMAN display: the
+# JSON block (BEGIN→END inclusive) and the <<<AI_REVIEW_RESULT:…>>> line. These
+# exist for parsing / PR-comment posting and are noise in a local terminal run.
+# Parsing always uses the untouched ${classifier_output}; this only affects what
+# is printed. Trailing blank lines left by the removal are collapsed.
+strip_machine_markers() {
+  local input="$1"
+  printf '%s\n' "${input}" | awk '
+    /<!-- AI_CLASSIFIER_JSON_BEGIN -->/ { skip=1; next }
+    /<!-- AI_CLASSIFIER_JSON_END -->/   { skip=0; next }
+    skip { next }
+    /^<<<AI_REVIEW_RESULT:[A-Z_]+>>>[[:space:]]*$/ { next }
+    { print }
+  ' | awk 'NF { blanks=0; print; next } { blanks++; if (blanks<=1) print }'
 }
 
 # Render the ONE PR comment body from the classifier JSON, including the
@@ -554,7 +564,9 @@ test_classifier::run() {
   if (( JSON_ONLY == 1 )); then
     extract_classifier_json "${classifier_output}"
   else
-    printf '%s\n' "${classifier_output}"
+    # Human-facing terminal output: drop the machine-only markers (JSON block +
+    # result sentinel). Parsing below still uses the untouched classifier_output.
+    strip_machine_markers "${classifier_output}"
     ai_review::log "────────────────────────────────────────────────────────────"
   fi
 

@@ -196,11 +196,6 @@ jobs:
           cp -R .classifier-bundle/testing "$GITHUB_WORKSPACE/testing"
           chmod +x testing/classifier/.skills/_lib/ai-classifier-dispatch.sh
           chmod +x testing/classifier/.skills/test-classifier/scripts/test-classifier-dispatcher.sh
-          chmod +x testing/classifier/scripts/fetch-skills.sh
-
-      - name: Vendor SKILL.md from agent-skills
-        working-directory: testing/classifier
-        run: scripts/fetch-skills.sh
 
       # ── Bedrock auth (provider=bedrock only) ────────────────────────────────
       # Exchange this run's GitHub OIDC token for short-lived STS credentials by
