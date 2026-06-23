@@ -423,9 +423,10 @@ ai_review::invoke_claude() {
   # NDJSON events that stream_split narrates to STDERR while forwarding only the
   # final result text to STDOUT — so the captured stdout (and its marker/JSON
   # parse) is identical to the plain `-p` path. CI keeps the silent, clean path.
-  local stream=0
-  if ai_review::should_stream; then
-    stream=1
+  # Streaming decision is made in invoke_ai (BEFORE it exports CI=true for the
+  # suite run, since should_stream is gated on CI). We just read it here.
+  local stream="${AI_REVIEW_DO_STREAM:-0}"
+  if (( stream == 1 )); then
     ai_review::info "Streaming the agent's steps below (set AI_REVIEW_STREAM=0 to silence)…" >&2
   fi
 
@@ -495,6 +496,32 @@ ai_review::invoke_copilot() {
 }
 
 ai_review::invoke_ai() {
+  # In OBSERVED mode the agent runs the repo's test suite. Many JS runners
+  # (vitest browser mode, jest) default to interactive WATCH mode when stdin
+  # isn't a TTY-less CI context — under our headless agent shell they print a
+  # banner and then HANG waiting for a browser session that never attaches, so
+  # the suite "runs" but collects zero tests. Exporting CI=true makes those
+  # runners do a single, headless, non-watch run instead (vitest reads CI to
+  # force headless + run-once; jest/others honor it similarly). The agent
+  # subprocess and the test runner it spawns inherit this.
+  #
+  # Safe to export here: invoke_ai is called via `$(...)`, which runs it in a
+  # SUBSHELL, so this never reaches the dispatcher's own color state. It only
+  # affects the AI process and its children.
+  #
+  # ORDER MATTERS: should_stream() is gated on CI != true, so we must decide
+  # whether to stream BEFORE exporting CI — otherwise OBSERVED runs (which set
+  # CI=true) would silently lose live progress. Stash the decision in
+  # AI_REVIEW_DO_STREAM for the tool functions to read.
+  if ai_review::should_stream; then
+    AI_REVIEW_DO_STREAM=1
+  else
+    AI_REVIEW_DO_STREAM=0
+  fi
+  if (( AI_RUN_SUITE == 1 )); then
+    export CI=true
+  fi
+
   case "${AI_REVIEW_TOOL_RESOLVED}" in
     claude)  ai_review::invoke_claude ;;
     codex)   ai_review::invoke_codex  ;;
