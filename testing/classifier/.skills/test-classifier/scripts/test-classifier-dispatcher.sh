@@ -399,8 +399,10 @@ ${SIGNAL_STEP}
      "classifications" array. Each classification entry has: "test", "path",
      "line", "verdict" (one of APPLICATION_BUG | TEST_BUG | FLAKY_FAILURE |
      ENVIRONMENT_ISSUE), "category" (visual-drift | behavioral-drift |
-     e2e-form-flow-drift | other), "confidence" (high | medium | low), and a
-     one-to-two-sentence "rationale". (This JSON contract is owned by the CI
+     e2e-form-flow-drift | other), "confidence" (high | medium | low),
+     "in_scope" (boolean — true if the failure is part of the change under test,
+     false if it is a pre-existing/unrelated failure surfaced by the full suite;
+     omitted ⇒ true), and a one-to-two-sentence "rationale". (This JSON contract is owned by the CI
      dispatcher, not the skill file.)
 
        <!-- AI_CLASSIFIER_JSON_BEGIN -->
@@ -577,13 +579,17 @@ else:
 lines.append("")
 lines.append(summary)
 lines.append("")
-lines.append("| Verdict | Test | Confidence |")
-lines.append("|---|---|---|")
+lines.append("| Verdict | Test | Confidence | Scope |")
+lines.append("|---|---|---|---|")
 for c in classifications:
     verdict = c.get("verdict", "?")
     test = c.get("test", "?")
     confidence = c.get("confidence", "?")
-    lines.append(f"| {verdict} | `{test}` | {confidence} |")
+    # in_scope omitted means assume in-scope (a changes own failures are the
+    # common case). False = a pre-existing/unrelated failure surfaced by the suite.
+    in_scope = c.get("in_scope", True)
+    scope = "change" if in_scope else "pre-existing"
+    lines.append(f"| {verdict} | `{test}` | {confidence} | {scope} |")
 lines.append("")
 
 # Per-test rationales, collapsed by default so the comment stays scannable.

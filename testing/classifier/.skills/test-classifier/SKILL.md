@@ -270,6 +270,22 @@ so you never invent a code regression to explain a timeout.
   decision, not a static one. If correctness genuinely needs a human to look,
   give your best verdict at `confidence: low` and name the decision the human
   must make.
+- **Failures unrelated to the change under test are normal — triage them, don't
+  escalate them.** When you run the whole suite (OBSERVED), you will routinely
+  see failures in tests the diff never touched — pre-existing breakage, an
+  earlier commit's drift, flakiness elsewhere. This is expected and is *not* a
+  reason to alarm or to blame the change under test. Handle it calmly:
+    - **Classify every observed failure** (discovery of pre-existing breakage is
+      useful signal), but **decide the verdict against the change under test**.
+      A failure in a file the diff did not touch is almost never an
+      `APPLICATION_BUG` *of this change* — say so in the rationale ("pre-existing;
+      the change under test does not touch this code path").
+    - **Mark scope.** Set `"in_scope": true` when the failing test or the code it
+      exercises is part of the diff, `false` when it is pre-existing/unrelated.
+      The headline verdict is about the in-scope failures; out-of-scope ones are
+      reported as discovery, clearly labeled, never conflated with the change.
+    - Never invent a regression to "explain" an unrelated failure, and never let
+      unrelated failures flip your read of an otherwise-clean change.
 
 When in doubt, prefer `confidence: low` and an honest rationale over a confident
 wrong call. A low-confidence-but-correct triage is useful; a high-confidence
@@ -401,6 +417,7 @@ markers must be a single object with the schema below.
       "verdict": "APPLICATION_BUG",
       "category": "behavioral-drift",
       "confidence": "high",
+      "in_scope": true,
       "rationale": "The refactor of applyDiscount() now returns the pre-discount total. Nothing in the change intended to remove the discount; the code regressed and the test correctly caught it. Fix the code; do NOT relax the test."
     },
     {
@@ -410,6 +427,7 @@ markers must be a single object with the schema below.
       "verdict": "TEST_BUG",
       "category": "visual-drift",
       "confidence": "high",
+      "in_scope": true,
       "rationale": "The diff intentionally changes the banner copy to 'Welcome back'. The app renders the new, correct copy; the snapshot assertion is stale. Update the test, not the code."
     },
     {
@@ -419,7 +437,8 @@ markers must be a single object with the schema below.
       "verdict": "FLAKY_FAILURE",
       "category": "e2e-form-flow-drift",
       "confidence": "low",
-      "rationale": "Submit step times out at 'Create account' on this run only; the diff does not touch the submit handler. Likely a flaky selector/wait. Re-run to confirm before treating it as a regression."
+      "in_scope": false,
+      "rationale": "Submit step times out at 'Create account' on this run only; the diff does not touch the submit handler. Pre-existing/unrelated to the change. Likely a flaky selector/wait. Re-run to confirm before treating it as a regression."
     },
     {
       "test": "orders › fetches the order history",
@@ -428,6 +447,7 @@ markers must be a single object with the schema below.
       "verdict": "ENVIRONMENT_ISSUE",
       "category": "other",
       "confidence": "high",
+      "in_scope": false,
       "rationale": "Failed with 'connection refused' to the orders DB on the runner. The backing service was unavailable; neither the app nor the test is at fault. Re-run once CI provides the service, or fix the CI service definition."
     }
   ]
@@ -459,6 +479,12 @@ markers must be a single object with the schema below.
   - `category` — one of `"visual-drift"`, `"behavioral-drift"`,
     `"e2e-form-flow-drift"`, `"other"`.
   - `confidence` — one of `"high"`, `"medium"`, `"low"`.
+  - `in_scope` — boolean. `true` when the failing test, or the code path it
+    exercises, is part of the change under test (the diff); `false` when it is a
+    pre-existing/unrelated failure surfaced by running the full suite. Out-of-scope
+    failures are still classified (useful discovery) but are clearly *not* the
+    change's fault — see "Failures unrelated to the change under test" in Step 3.
+    Omitted ⇒ treated as `true` (assume in-scope unless stated otherwise).
   - `rationale` — ONE or at most TWO short sentences (≤ ~280 chars): the evidence
     for the verdict and the fix. Be terse — name the mismatch and what to change,
     not a narrative. For `APPLICATION_BUG`, say plainly the fix belongs in the app
@@ -471,9 +497,10 @@ was triaged, so the run emits `CLASSIFIED`.
 
 ### 6C — PR comment body (what the dispatcher posts)
 
-The dispatcher renders ONE issue comment on the PR from the JSON
-above. The comment **MUST** request a mandatory 👍/👎 reaction and explain that
-the reaction is the tuning signal. The rendered body looks like this:
+The dispatcher renders ONE comment on the PR from the JSON above. The `Scope`
+column comes from each entry's `in_scope` flag — `change` for failures that are
+part of the change under test, `pre-existing` for unrelated ones surfaced by the
+full suite. The rendered body looks like this:
 
 ```
 test-classifier: AI triage of failing tests
@@ -484,12 +511,12 @@ test-classifier: AI triage of failing tests
 
 <one-line summary>
 
-| Verdict | Test | Confidence |
-|---|---|---|
-| APPLICATION_BUG | `checkout › applies the loyalty discount` | high |
-| TEST_BUG | `Banner › renders the announcement copy` | high |
-| FLAKY_FAILURE | `signup › submits the registration form` | low |
-| ENVIRONMENT_ISSUE | `orders › fetches the order history` | high |
+| Verdict | Test | Confidence | Scope |
+|---|---|---|---|
+| APPLICATION_BUG | `checkout › applies the loyalty discount` | high | change |
+| TEST_BUG | `Banner › renders the announcement copy` | high | change |
+| FLAKY_FAILURE | `signup › submits the registration form` | low | pre-existing |
+| ENVIRONMENT_ISSUE | `orders › fetches the order history` | high | pre-existing |
 
 <details><summary>Per-test rationale</summary>
 
@@ -497,16 +524,13 @@ test-classifier: AI triage of failing tests
 
 </details>
 
-**React 👍 if right / 👎 if wrong**, and on a 👎 please **reply to this comment with a one-line reason** — that reply is the most useful tuning signal we get. Advisory, non-blocking.
+_Advisory, non-blocking — diagnostic only; the classifier never edits code or tests._
 ```
 
-The reaction ask is not optional decoration; it is the core of the feedback
-loop. The dispatcher will state it explicitly, and the metrics layer
-(`testing/metrics/`) harvests the 👍/👎 counts off this exact comment. Because
-the dispatcher posts this as a pull-request *review* comment (not a plain issue
-comment), it has a native Reply thread — so a 👎 can carry a one-line reason,
-and the harvester reads that reply back alongside the reaction. The reaction is
-still the primary signal; the reply reason is the optional bonus.
+The comment does **not** ask for a GitHub 👍/👎 reaction. The helpfulness signal
+is captured locally at run time by `--submit`'s terminal prompt (written straight
+to the Testing Events sheet); the posted comment is the verdict record, not a
+feedback-collection device.
 
 ---
 
