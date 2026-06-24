@@ -216,6 +216,42 @@ require_gh_cli() {
   fi
 }
 
+# Resolve the owner/name slug of the repo the PR lives in, from the `origin`
+# remote — NOT `gh repo view`. On a fork, `gh repo view` resolves to the PARENT
+# repo (e.g. a navapbc/ai-chatbot checkout reports vercel/chatbot), so posting
+# and the metrics row would target the wrong repo. `origin` is the fork you are
+# actually working in and whose PR number you passed. Override with AI_REVIEW_REPO
+# (owner/name) for the rare cross-remote case. Cached after first resolution.
+AI_REVIEW_REPO_SLUG=""
+ai_review::repo_slug() {
+  if [[ -n "${AI_REVIEW_REPO_SLUG}" ]]; then
+    printf '%s' "${AI_REVIEW_REPO_SLUG}"; return 0
+  fi
+  if [[ -n "${AI_REVIEW_REPO:-}" ]]; then
+    AI_REVIEW_REPO_SLUG="${AI_REVIEW_REPO}"
+    printf '%s' "${AI_REVIEW_REPO_SLUG}"; return 0
+  fi
+  local url
+  url="$(git remote get-url origin 2>/dev/null || true)"
+  if [[ -z "${url}" ]]; then
+    echo "ERROR: no 'origin' remote — cannot determine which repo the PR lives in." >&2
+    echo "       Set one (git remote add origin <url>) or export AI_REVIEW_REPO=owner/name." >&2
+    return 1
+  fi
+  # Normalize both forms to owner/name:
+  #   https://github.com/owner/name(.git)   git@github.com:owner/name(.git)
+  local slug="${url}"
+  slug="${slug#*github.com[:/]}"   # strip scheme/host up to owner
+  slug="${slug%.git}"              # strip trailing .git
+  if [[ ! "${slug}" =~ ^[^/]+/[^/]+$ ]]; then
+    echo "ERROR: could not parse owner/name from origin URL: ${url}" >&2
+    echo "       Export AI_REVIEW_REPO=owner/name to set it explicitly." >&2
+    return 1
+  fi
+  AI_REVIEW_REPO_SLUG="${slug}"
+  printf '%s' "${AI_REVIEW_REPO_SLUG}"
+}
+
 ai_review::discover_pr_context() {
   # If --against was passed, it wins for the diff range — no base-ref lookup
   # needed. But we still record --pr (when given) as the PR number so comment
@@ -241,8 +277,10 @@ ai_review::discover_pr_context() {
   # If --pr was given, look up that PR's base ref.
   if [[ -n "${PR_NUMBER}" ]]; then
     require_gh_cli "PR number was specified via --pr"
+    local repo_slug
+    repo_slug="$(ai_review::repo_slug)" || exit 1
     local base
-    base="$(gh pr view "${PR_NUMBER}" --json baseRefName --jq '.baseRefName' 2>/dev/null || true)"
+    base="$(gh pr view "${PR_NUMBER}" -R "${repo_slug}" --json baseRefName --jq '.baseRefName' 2>/dev/null || true)"
     if [[ -z "${base}" ]]; then
       echo "ERROR: could not look up PR #${PR_NUMBER} via gh CLI." >&2
       echo "       Verify the PR number exists and you have access to it." >&2
@@ -266,9 +304,12 @@ ai_review::discover_pr_context() {
   fi
 
   # Let gh extract the fields with --jq (same idiom as the --pr branch above),
-  # rather than scraping the raw JSON with brittle regexes.
-  AI_REVIEW_PR_NUMBER="$(gh pr view --json number --jq '.number' 2>/dev/null || true)"
-  AI_REVIEW_PR_BASE="$(gh pr view --json baseRefName --jq '.baseRefName' 2>/dev/null || true)"
+  # rather than scraping the raw JSON with brittle regexes. Pin to origin's slug
+  # so a fork checkout discovers its OWN PR, not the parent repo's.
+  local repo_slug
+  repo_slug="$(ai_review::repo_slug)" || exit 1
+  AI_REVIEW_PR_NUMBER="$(gh pr view -R "${repo_slug}" --json number --jq '.number' 2>/dev/null || true)"
+  AI_REVIEW_PR_BASE="$(gh pr view -R "${repo_slug}" --json baseRefName --jq '.baseRefName' 2>/dev/null || true)"
 
   if [[ -z "${AI_REVIEW_PR_NUMBER}" ]] || [[ -z "${AI_REVIEW_PR_BASE}" ]]; then
     echo "ERROR: 'gh pr view' could not find an open PR for the current branch." >&2
@@ -585,7 +626,7 @@ post_issue_comment_to_github() {
         "repos/${repo_slug}/issues/${pr_number}/comments" \
         --method POST \
         --field body="${body}" --jq '"\(.id)\t\(.created_at)"' 2>/dev/null || true)"
-  if [[ -z "$resp" || "$resp" == $'\t' ]]; then
+  if ! ai_review::valid_comment_capture "$resp"; then
     echo "ERROR: 'gh api' issue-comment call failed." >&2
     echo "       Check your gh auth status and that your token has 'pull-requests: write'" >&2
     echo "       (or 'issues: write')." >&2
@@ -593,6 +634,17 @@ post_issue_comment_to_github() {
   fi
   POSTED_COMMENT_ID="${resp%%$'\t'*}"
   POSTED_COMMENT_CREATED="${resp#*$'\t'}"
+}
+
+# Validate an "<id>\t<created_at>" capture from a comment-POST response. A real
+# success has a NUMERIC id. On an API error (e.g. a 422), `gh ... --jq` may print
+# the raw error JSON to stdout, which would otherwise be stored verbatim as the
+# comment_id and poison the metrics row — so require a numeric leading field.
+ai_review::valid_comment_capture() {
+  local resp="$1"
+  [[ -n "$resp" && "$resp" != $'\t' ]] || return 1
+  local id="${resp%%$'\t'*}"
+  [[ "$id" =~ ^[0-9]+$ ]]
 }
 
 # Post ONE classification comment to the PR. Args: PR number, comment body.
@@ -611,10 +663,7 @@ post_comment_to_github() {
   require_gh_cli "--post-comment was specified"
 
   local repo_slug
-  if ! repo_slug="$(gh repo view --json nameWithOwner --jq '.nameWithOwner' 2>/dev/null)"; then
-    echo "ERROR: could not determine repo from gh CLI." >&2
-    exit 1
-  fi
+  repo_slug="$(ai_review::repo_slug)" || exit 1
 
   # Anchor path: a file in the PR diff. Prefer a changed test file if one is
   # present, since the comment is about test failures, but any changed file
@@ -651,7 +700,7 @@ post_comment_to_github() {
           --field commit_id="${commit_id}" \
           --field path="${anchor_path}" \
           --field subject_type=file --jq '"\(.id)\t\(.created_at)"' 2>/dev/null || true)"
-    if [[ -n "$resp" && "$resp" != $'\t' ]]; then
+    if ai_review::valid_comment_capture "$resp"; then
       POSTED_COMMENT_ID="${resp%%$'\t'*}"
       POSTED_COMMENT_CREATED="${resp#*$'\t'}"
       echo "[test-classifier] Review comment posted. Awaiting the developer's 👍/👎 reaction (and a reply reason on a 👎)."
@@ -733,7 +782,7 @@ submit_metrics_row() {
   fi
 
   local repo_slug
-  repo_slug="$(gh repo view --json nameWithOwner --jq '.nameWithOwner' 2>/dev/null || echo "")"
+  repo_slug="$(ai_review::repo_slug 2>/dev/null || echo "")"
 
   # The classifier may emit multiple classifications; the Testing Events row is
   # per-comment, so collapse to one representative verdict by most-actionable
