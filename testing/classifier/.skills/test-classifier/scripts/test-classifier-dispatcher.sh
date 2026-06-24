@@ -755,22 +755,64 @@ submit_metrics_row() {
     return 0
   fi
 
-  # Prompt for the tuning signal. Empty/invalid → skip (don't guess a verdict).
+  # Prompt for the tuning signal, reading from the controlling terminal.
+  #
+  # We MUST read from /dev/tty, not fd 0. During the long OBSERVED run the agent
+  # spawns Bash tool calls and the stream scrolls for many seconds; any keystroke
+  # or stray newline that arrives in that window sits in the TTY's input buffer.
+  # A bare `read -r answer` would consume that buffered line (often empty) instead
+  # of the answer typed AT this prompt — the user types `y`, but `read` already
+  # grabbed a queued blank line and skipped. So:
+  #   1. flush pending type-ahead before prompting (so we only see a fresh keypress);
+  #   2. read from /dev/tty explicitly;
+  #   3. re-prompt on empty/unrecognized input rather than silently skipping — a
+  #      stray keystroke shouldn't discard the row after a full suite run. Enter
+  #      on an empty line (after the flush) is the explicit skip.
   local answer reason="" thumbs_up=0 thumbs_down=0
-  printf '%s' "  Was the classification helpful? [y/n] (enter to skip): " >&2
-  read -r answer
-  case "${answer}" in
-    y|Y|yes|YES) thumbs_up=1 ;;
-    n|N|no|NO)
-      thumbs_down=1
-      printf '%s' "  Optional one-line reason (enter to skip): " >&2
-      read -r reason
-      ;;
-    *)
-      ai_review::info "--submit: no answer — skipping the metrics row (comment still posted)." >&2
-      return 0
-      ;;
-  esac
+  # Open the controlling terminal ONCE on fd 3 and read from that fd throughout,
+  # so successive reads advance through the SAME stream (re-opening /dev/tty per
+  # read would restart it and re-grab the first line). Closed on return.
+  if ! exec 3<>/dev/tty 2>/dev/null; then
+    ai_review::info "--submit: no controlling terminal — skipping the helpfulness prompt + row (comment still posted)." >&2
+    return 0
+  fi
+
+  # Flush any buffered type-ahead so the prompt sees only a fresh keypress, not a
+  # stray newline/char queued during the long suite run (which would otherwise be
+  # consumed as the "answer" and skip the row). read -t 0 succeeds iff input waits.
+  while read -r -t 0 -u 3 _flush 2>/dev/null; do :; done
+
+  local attempt
+  for attempt in 1 2 3; do
+    printf '%s' "  Was the classification helpful? [y/n] (enter to skip): " >&2
+    if ! read -r -u 3 answer; then
+      ai_review::info "--submit: input closed — skipping the metrics row (comment still posted)." >&2
+      exec 3<&- 3>&-; return 0
+    fi
+    case "${answer}" in
+      y|Y|yes|YES) thumbs_up=1; break ;;
+      n|N|no|NO)
+        thumbs_down=1
+        printf '%s' "  Optional one-line reason (enter to skip): " >&2
+        read -r -u 3 reason || reason=""
+        break
+        ;;
+      "")
+        # Deliberate empty Enter = skip.
+        ai_review::info "--submit: skipped (no answer) — comment still posted." >&2
+        exec 3<&- 3>&-; return 0
+        ;;
+      *)
+        # Unrecognized (e.g. a stray char) — re-prompt instead of discarding.
+        ai_review::warn "--submit: please answer y or n (or press enter to skip)." >&2
+        ;;
+    esac
+  done
+  exec 3<&- 3>&-   # close the tty fd
+  if (( thumbs_up == 0 && thumbs_down == 0 )); then
+    ai_review::info "--submit: no valid answer after 3 tries — skipping the row (comment still posted)." >&2
+    return 0
+  fi
 
   local webhook_url="${METRICSAI_WEBHOOK_URL:-}"
   local webhook_key="${METRICSAI_WEBHOOK_KEY:-}"
