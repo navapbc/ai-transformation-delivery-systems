@@ -16,17 +16,20 @@
 #      --post-comment it uses the GitHub REST API (via `gh api`) to post ONE
 #      file-level review comment on the PR with the classification table. It
 #      anchors to a changed file when it can (falling back to an issue comment if
-#      the PR has no diff to anchor to). The comment does NOT ask for a GitHub
-#      👍/👎 reaction — the helpfulness signal is captured locally via --submit.
+#      the PR has no diff to anchor to). On a CI / plain --post-comment run the
+#      comment carries a 👍/👎 reaction ask (the async tuning signal the metricsai
+#      harvester reads off GitHub); on a local --submit run it omits the ask
+#      because the signal is captured by --submit's terminal prompt instead.
 #   3. The classifier is advisory: by default the dispatcher exits 0 even when
 #      tests were classified. The --gate flag flips this to exit 1 when the
 #      result is CLASSIFIED (CI-blocking mode for teams that want it).
 #
 # Behavior: classify the failing tests and post ONE PR comment with the verdicts.
 # Posting requires --post-comment; without it the report/JSON only prints (useful
-# for a local dry view). Nothing is posted when nothing was triaged. The tuning
-# signal (was the classification helpful?) is collected by --submit's terminal
-# prompt at run time and written straight to the Testing Events sheet.
+# for a local dry view). Nothing is posted when nothing was triaged. Two tuning-
+# signal surfaces, both supported: the posted comment's 👍/👎 reaction (read by the
+# metricsai weekly harvest) on CI/--post-comment runs, and --submit's terminal
+# prompt (written straight to the Testing Events sheet) on local runs.
 #
 # Usage:
 #   test-classifier-dispatcher.sh                              # no args → --unpushed (local committed+staged, report-only)
@@ -433,7 +436,8 @@ if (( WANT_HELP == 1 )); then
   read -r -d '' AI_REVIEW_HELP_ADDENDUM <<'HELP_ADDENDUM' || true
 test-classifier options (in addition to the shared options above):
   --pr <number>        Explicit PR number for posting (overrides auto-discovery).
-  --post-comment       Post ONE PR comment with the verdicts (no reaction ask).
+  --post-comment       Post ONE PR comment with the verdicts + a 👍/👎 reaction
+                       ask (omitted when --submit captures the signal locally).
                        Omit for a local report-only run (prints, posts nothing).
   --submit             Implies --post-comment; then (interactive only) prompts
                        "Was this helpful?" and appends one Testing Events row.
@@ -540,8 +544,16 @@ PY
 
 # Render the ONE PR comment body from the classifier JSON. We use python3 because
 # pure-bash JSON handling is brittle.
+#
+# Arg 2 (want_reaction_ask): "1" → append the 👍/👎 reaction ask (the async tuning
+# signal the metricsai harvester reads off GitHub); "0" → omit it. The two posting
+# surfaces differ: a CI run (--post-comment, no --submit) has no local prompt, so
+# the comment MUST carry the ask; a local --submit run already captured the signal
+# via its terminal prompt, so the ask would be redundant noise. Both surfaces stay
+# supported — see the caller in test_classifier::run.
 render_pr_comment_body() {
   local classifier_json="$1"
+  local want_reaction_ask="${2:-1}"   # default: include the ask (CI / plain --post-comment)
 
   if ! command -v python3 &>/dev/null; then
     echo "ERROR: python3 is required to render the PR comment from classifier JSON." >&2
@@ -550,6 +562,7 @@ render_pr_comment_body() {
 
   echo "${classifier_json}" | python3 -c '
 import json, sys
+want_reaction_ask = (sys.argv[1] == "1") if len(sys.argv) > 1 else True
 
 try:
     data = json.load(sys.stdin)
@@ -610,14 +623,22 @@ if classifications:
     lines.append("</details>")
     lines.append("")
 
-# Advisory footer. The helpfulness signal is captured locally at run time via
-# the --submit terminal prompt (written straight to the Testing Events sheet);
-# we deliberately do NOT ask for a GitHub 👍/👎 reaction here — that async signal
-# is being removed in favor of the immediate local prompt.
-lines.append("_Advisory, non-blocking — diagnostic only; the classifier never edits code or tests._")
+# Footer. Two cases:
+#  • want_reaction_ask (CI / plain --post-comment): ask for the 👍/👎 reaction —
+#    this is the async tuning signal the metricsai harvester reads off GitHub, and
+#    the place devs interact on the PR. Posted as a review comment with a Reply
+#    thread so a 👎 can carry a one-line reason the harvester also reads back.
+#  • else (local --submit): the signal was already captured by the terminal
+#    prompt, so just an advisory footer — no redundant reaction ask.
+if want_reaction_ask:
+    lines.append("**React 👍 if right / 👎 if wrong**, and on a 👎 please **reply to this "
+                 "comment with a one-line reason** — that reply is the most useful tuning "
+                 "signal we get. Advisory, non-blocking.")
+else:
+    lines.append("_Advisory, non-blocking — diagnostic only; the classifier never edits code or tests._")
 
 print("\n".join(lines))
-'
+' "${want_reaction_ask}"
 }
 
 # Fallback: post ONE top-level issue comment to the PR. Args: repo slug, PR
@@ -948,10 +969,11 @@ test_classifier::run() {
       ;;
   esac
 
-  # ── Post ONE PR comment with the verdicts (no reaction ask). ──────────────
+  # ── Post ONE PR comment with the verdicts. ────────────────────────────────
   # --post-comment is what CI passes to actually post; omit it for a local dry
   # view (the JSON/report still prints to stdout). Nothing is posted when nothing
-  # was triaged (NO_ACTION). The helpfulness signal comes from --submit's prompt.
+  # was triaged (NO_ACTION). The comment carries the 👍/👎 reaction ask on a
+  # CI/--post-comment run; a local --submit run omits it (signal via the prompt).
   if (( POST_COMMENT == 1 )); then
     if [[ "${result}" == "NO_ACTION" ]]; then
       ai_review::info "Result is NO_ACTION — nothing to triage, so no PR comment is posted."
@@ -969,8 +991,13 @@ test_classifier::run() {
         ai_review::log "      <!-- AI_CLASSIFIER_JSON_END -->"
         exit 1
       fi
+      # Include the 👍/👎 reaction ask UNLESS this is a local --submit run (which
+      # already captures the signal via its terminal prompt). CI / plain
+      # --post-comment → ask (1); --submit → no ask (0). Both surfaces stay alive.
+      local want_reaction_ask=1
+      (( SUBMIT == 1 )) && want_reaction_ask=0
       local comment_body
-      comment_body="$(render_pr_comment_body "${json_block}")"
+      comment_body="$(render_pr_comment_body "${json_block}" "${want_reaction_ask}")"
       post_comment_to_github "${AI_REVIEW_PR_NUMBER}" "${comment_body}"
 
       # --submit: prompt for the helpfulness signal and append a Testing Events

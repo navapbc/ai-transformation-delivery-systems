@@ -524,13 +524,24 @@ test-classifier: AI triage of failing tests
 
 </details>
 
-_Advisory, non-blocking — diagnostic only; the classifier never edits code or tests._
+**React 👍 if right / 👎 if wrong** … (on a CI / --post-comment run)
 ```
 
-The comment does **not** ask for a GitHub 👍/👎 reaction. The helpfulness signal
-is captured locally at run time by `--submit`'s terminal prompt (written straight
-to the Testing Events sheet); the posted comment is the verdict record, not a
-feedback-collection device.
+The **footer depends on how the comment is posted** — two tuning-signal surfaces,
+both supported:
+
+- **CI / plain `--post-comment`:** the comment ends with the **👍/👎 reaction
+  ask** (and, on a 👎, a request to reply with a one-line reason). This is where
+  devs interact on the PR, and the `metricsai` weekly harvest reads those
+  reactions (and reply reasons) off GitHub. Posted as a review comment so it has
+  a Reply thread.
+- **Local `--submit`:** the ask is omitted and replaced with a plain advisory
+  footer (`_Advisory, non-blocking — diagnostic only …_`), because `--submit`
+  already captured the helpfulness signal via its terminal prompt and wrote it
+  straight to the Testing Events sheet.
+
+The dispatcher chooses based on whether `--submit` was passed; the skill emits
+the same JSON either way.
 
 ---
 
