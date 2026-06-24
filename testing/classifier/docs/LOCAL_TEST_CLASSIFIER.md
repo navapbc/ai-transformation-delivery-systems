@@ -24,8 +24,9 @@ and uses the same `--unpushed` scope rule. This is the ergonomics layer over
   while you're still iterating.
 - **It's a local preview, not the gate.** The PR run (Path B) is the recorded
   backstop that feeds the metrics loop. The local run is for the developer's own
-  fast feedback before pushing; it is **report-only** — it never posts a PR
-  comment (there's no PR to post to) and never blocks anything.
+  fast feedback before pushing; it never blocks anything. By default it's
+  **report-only** (prints to your terminal, posts nothing) — but you can opt in
+  to posting against a real PR with `--pr N --post-comment` (see Usage).
 - **OBSERVED on demand.** By default a local run is INFERRED (it predicts from
   the diff — read-only, never touches your machine's toolchain). Opt into
   OBSERVED with `AI_RUN_SUITE=1` to have the agent actually locate, install, and
@@ -60,9 +61,12 @@ it's only needed for the PR-based modes (`--pr` / auto-discovery / `--post-comme
 Paste this block into `~/.zshrc`, then `source ~/.zshrc` (or open a new shell):
 
 ```zsh
-# AI test classifier — local, report-only.
-#   <no arg>  → classify everything not yet pushed (committed + staged)
-#   <ref>     → classify the committed range <ref>..HEAD
+# AI test classifier.
+#   <no arg>   → classify everything not yet pushed (committed + staged); report-only
+#   <ref>      → classify the committed range <ref>..HEAD; report-only
+#   <flags...> → passed straight to the dispatcher. This is how you post to a PR:
+#                test-classifier --pr 42 --post-comment   (or --post-comment to
+#                auto-discover the current branch's PR). Needs gh authed.
 # Prefix with AI_RUN_SUITE=1 to run the suite locally (OBSERVED) instead of
 # inferring from the diff:  AI_RUN_SUITE=1 test-classifier
 test-classifier() {
@@ -72,12 +76,19 @@ test-classifier() {
   disp="$root/testing/classifier/.skills/test-classifier/scripts/test-classifier-dispatcher.sh"
   [ -x "$disp" ] \
     || { echo "✗ test-classifier dispatcher not found/executable: $disp"; return 1; }
-  if [ -n "$1" ]; then
-    echo "▶ test-classifier: ${1}..HEAD (committed range)"
-    "$disp" --against "$1"
-  else
+  if [ "$#" -eq 0 ]; then
+    # No args → classify everything not yet pushed (committed + staged).
     echo "▶ test-classifier: all not-yet-pushed changes (committed + staged)"
     "$disp" --unpushed
+  elif [ "${1#-}" != "$1" ]; then
+    # First arg is a flag (starts with -) → pass everything straight through.
+    # This is how you post to a PR: test-classifier --pr 42 --post-comment
+    "$disp" "$@"
+  else
+    # First arg is a bare ref → --against <ref>; pass any remaining flags too.
+    local ref="$1"; shift
+    echo "▶ test-classifier: ${ref}..HEAD (committed range)"
+    "$disp" --against "$ref" "$@"
   fi
 }
 ```
@@ -89,13 +100,18 @@ What the function does:
    function works from any subdirectory.
 2. **Locates the dispatcher** under `testing/classifier/` and confirms it's
    executable.
-3. **Runs the classifier** by calling the dispatcher directly:
+3. **Runs the classifier** by calling the dispatcher:
    - **no argument** → `--unpushed`: everything not yet pushed (committed +
      staged). The base is your branch's upstream, falling back to the merge-base
      with the remote default branch. If neither can be determined (e.g. a
      brand-new branch with no remote), it errors and asks for an explicit ref
      rather than silently classifying less than you expect.
-   - **a ref** → `--against <ref>`: the committed range `<ref>..HEAD`.
+   - **a bare ref** → `--against <ref>`: the committed range `<ref>..HEAD`.
+   - **anything starting with `-`** → passed straight through to the dispatcher.
+     This is how you post to a PR — `test-classifier --pr 42 --post-comment`
+     (or just `--post-comment` to auto-discover the current branch's PR), plus
+     any other dispatcher flag (`--dry-run`, `--json-only`, …). You can combine a
+     ref with flags too: `test-classifier origin/main --post-comment`.
 
 ---
 
@@ -107,7 +123,72 @@ test-classifier origin/main           # the committed range origin/main..HEAD
 test-classifier HEAD~1                # just the last commit
 
 AI_RUN_SUITE=1 test-classifier        # run the suite locally and triage REAL failures (OBSERVED)
+
+# Post the result as a PR comment (needs an open PR + gh authed):
+test-classifier --post-comment              # auto-discovers the current branch's PR
+test-classifier --pr 42 --post-comment      # explicit PR number
+AI_RUN_SUITE=1 test-classifier --pr 42 --post-comment   # OBSERVED + post
+
+# Streamlined: post AND record the metric in one shot (see --submit below):
+test-classifier --pr 42 --submit
 ```
+
+> **Posting authorship.** A locally-posted comment is authored by **you**, not
+> `github-actions[bot]`. For the comment to be picked up by the weekly metrics
+> harvest, `metricsai` must be told to count your author (`--all-authors` or
+> `METRICSAI_TESTING_GITHUB_AUTHORS`); by default it only counts the CI bot. For
+> just *posting to the PR*, this doesn't matter.
+
+---
+
+## `--submit` — classify, post, and record the metric in one shot
+
+The slow path to metrics is: post a comment → react 👍/👎 on GitHub later → wait
+for the weekly harvest. `--submit` collapses that into the run you're already
+doing. After classifying and posting, it prompts right in the terminal:
+
+```
+  Was the classification helpful? [y/n] (enter to skip):
+```
+
+Your answer is appended **immediately** as one row to the Sheet's **Testing
+Events** tab — verdict, file context, confidence, and your 👍/👎 (with an optional
+one-line reason on a 👎). No GitHub round-trip, no separate harvest.
+
+```bash
+test-classifier --pr 42 --submit                 # classify (INFERRED) → post → ask → record
+AI_RUN_SUITE=1 test-classifier --pr 42 --submit  # OBSERVED → post → ask → record
+test-classifier --submit                         # auto-discovers the current branch's PR
+```
+
+**Requirements:** everything `--post-comment` needs (open PR + `gh` authed),
+**plus** the metricsai webhook creds — two static values, set once in `~/.zshrc`:
+
+```bash
+export METRICSAI_WEBHOOK_URL="https://script.google.com/macros/s/<id>/exec"
+export METRICSAI_WEBHOOK_KEY="<the AI Metrics API key>"
+```
+
+That's the whole setup. `--submit` POSTs the row to the same Google Apps Script
+webhook `metricsai` uses (flat JSON body; the script aligns fields to the sheet
+by header name, so column order never matters). **No gcloud, no service account,
+no token to refresh** — both values are permanent.
+
+The row lands in the **Testing Events** tab by default; override with
+`METRICSAI_WEBHOOK_TAB`.
+
+**Behavior notes:**
+- **Interactive only.** In CI or any non-TTY run, `--submit` posts the comment
+  and **skips** the prompt + row (no human to ask, no hang). CI metrics still
+  come from the central weekly harvest.
+- **No creds → no crash.** If `METRICSAI_WEBHOOK_URL` / `METRICSAI_WEBHOOK_KEY`
+  aren't set, it records your answer to the terminal, warns, and **still posts**
+  the comment.
+- **Writes to Testing Events, not the weekly tabs.** These are per-event rows
+  (one per run), distinct from the `metricsai` weekly aggregate rows in the
+  CXT / DMOD / EMMY / OSRE tabs. The central sweep writes to the same tab — two
+  writers, one tab, deduped by `comment_id`.
+- **Pressing enter skips** the row entirely — no verdict is guessed.
 
 **Scope details.**
 

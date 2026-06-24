@@ -37,7 +37,8 @@ set -euo pipefail
 #      👎 = "classifier called it wrong".
 #
 # For each classifier comment we record:
-#   repo, pr, comment_id, verdict, category, confidence, thumbs_up, thumbs_down
+#   repo, pr, comment_id, comment_created_at, verdict, category, confidence,
+#   thumbs_up, thumbs_down, reason
 #
 # Those rows are the *classifier-precision inputs*: pairing each verdict with
 # its 👍/👎 lets us compute the 👍-rate per verdict bucket over time.
@@ -111,7 +112,7 @@ END_TS="${END_DATE}T23:59:59Z"
 # Google Sheets sink (optional). Static SHEET_ID; short-lived bearer token.
 GOOGLE_SHEETS_TOKEN="${GOOGLE_SHEETS_TOKEN:-}"
 SHEET_ID="${SHEET_ID:-}"
-SHEET_RANGE="${SHEET_RANGE:-Sheet1!A1}"
+SHEET_RANGE="${SHEET_RANGE:-'Testing Events'!A1}"
 
 # --- Diagnostics go to stderr so stdout stays a clean TSV stream. ---
 log() { echo "$@" >&2; }
@@ -154,15 +155,15 @@ fetch_api() {
 # Builds a Sheets values:append payload (a single-row 2D array) and POSTs it.
 # Failures are logged but never abort the run — the TSV is the source of truth.
 sheets_append_row() {
-    local repo="$1" pr="$2" cid="$3" verdict="$4" category="$5" conf="$6" up="$7" down="$8" reason="${9:-}"
+    local repo="$1" pr="$2" cid="$3" created="$4" verdict="$5" category="$6" conf="$7" up="$8" down="$9" reason="${10:-}"
     [ -n "$GOOGLE_SHEETS_TOKEN" ] && [ -n "$SHEET_ID" ] || return 0
 
     local payload
     payload=$(jq -c -n \
-        --arg repo "$repo" --arg pr "$pr" --arg cid "$cid" \
+        --arg repo "$repo" --arg pr "$pr" --arg cid "$cid" --arg created "$created" \
         --arg verdict "$verdict" --arg category "$category" --arg conf "$conf" \
         --arg up "$up" --arg down "$down" --arg reason "$reason" '
-        { values: [[ $repo, $pr, $cid, $verdict, $category, $conf, $up, $down, $reason ]] }
+        { values: [[ $repo, $pr, $cid, $created, $verdict, $category, $conf, $up, $down, $reason ]] }
     ')
 
     local url="https://sheets.googleapis.com/v4/spreadsheets/${SHEET_ID}/values/${SHEET_RANGE}:append?valueInputOption=RAW&insertDataOption=INSERT_ROWS"
@@ -175,7 +176,7 @@ sheets_append_row() {
 }
 
 # --- TSV header (stdout). ---
-printf 'repo\tpr\tcomment_id\tverdict\tcategory\tconfidence\tthumbs_up\tthumbs_down\treason\n'
+printf 'repo\tpr\tcomment_id\tcomment_created_at\tverdict\tcategory\tconfidence\tthumbs_up\tthumbs_down\treason\n'
 
 TOTAL_ROWS=0
 
@@ -265,6 +266,7 @@ for REPO in "${REPOSITORIES[@]}"; do
             | (summarize(extract_verdict(.body // ""))) as $v
             | {
                 comment_id: (.id | tostring),
+                comment_created_at: (.created_at // ""),
                 verdict:    ($v.verdict    // ""),
                 category:   ($v.category   // ""),
                 confidence: (if ($v.confidence == null) then "" else ($v.confidence | tostring) end),
@@ -298,6 +300,7 @@ for REPO in "${REPOSITORIES[@]}"; do
             [ -n "$REC" ] || continue
 
             CID=$(echo "$REC" | jq -r '.comment_id')
+            CREATED=$(echo "$REC" | jq -r '.comment_created_at')
             VERDICT=$(echo "$REC" | jq -r '.verdict')
             CATEGORY=$(echo "$REC" | jq -r '.category')
             CONFIDENCE=$(echo "$REC" | jq -r '.confidence')
@@ -305,10 +308,10 @@ for REPO in "${REPOSITORIES[@]}"; do
             DOWN=$(echo "$REC" | jq -r '.down')
             REASON=$(echo "$REC" | jq -r '.reason')
 
-            printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
-                "$REPO" "$PR_NUM" "$CID" "$VERDICT" "$CATEGORY" "$CONFIDENCE" "$UP" "$DOWN" "$REASON"
+            printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+                "$REPO" "$PR_NUM" "$CID" "$CREATED" "$VERDICT" "$CATEGORY" "$CONFIDENCE" "$UP" "$DOWN" "$REASON"
 
-            sheets_append_row "$REPO" "$PR_NUM" "$CID" "$VERDICT" "$CATEGORY" "$CONFIDENCE" "$UP" "$DOWN" "$REASON"
+            sheets_append_row "$REPO" "$PR_NUM" "$CID" "$CREATED" "$VERDICT" "$CATEGORY" "$CONFIDENCE" "$UP" "$DOWN" "$REASON"
         done
     done < <(echo "$PR_LIST" | jq -r '.[].number')
 done

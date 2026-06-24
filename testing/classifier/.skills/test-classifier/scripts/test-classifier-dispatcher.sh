@@ -29,6 +29,7 @@
 # Usage:
 #   test-classifier-dispatcher.sh                              # auto-discover PR; print only
 #   test-classifier-dispatcher.sh --pr 1234 --post-comment     # post the PR comment
+#   test-classifier-dispatcher.sh --pr 1234 --submit           # post + prompt "helpful?" + append a Testing Events row
 #   test-classifier-dispatcher.sh --against origin/main        # explicit base ref
 #   test-classifier-dispatcher.sh --unpushed                   # local: committed+staged, NO PR (report-only)
 #   test-classifier-dispatcher.sh --json-only                  # emit only the JSON block
@@ -40,6 +41,13 @@
 #
 # Required when --post-comment is used:
 #   gh CLI installed and authenticated; or GH_TOKEN exported
+#
+# Required when --submit posts the metrics row (interactive runs only):
+#   METRICSAI_WEBHOOK_URL + METRICSAI_WEBHOOK_KEY (the metricsai Apps Script
+#   endpoint + the AI Metrics API key — both static, set once). Row posts to the
+#   "Testing Events" tab (override: METRICSAI_WEBHOOK_TAB). Absent → posts the
+#   comment + prompts but skips the row. Same transport metricsai uses; no
+#   service account or gcloud token needed.
 
 set -euo pipefail
 
@@ -72,6 +80,10 @@ SKILL_PATH_CANONICAL=".skills/test-classifier/SKILL.md"
 #
 #   --pr <number>         Explicit PR number (overrides auto-discovery)
 #   --post-comment        Post ONE PR comment via gh api (omit to print only)
+#   --submit              Implies --post-comment; then (interactive only) prompts
+#                         "Was this helpful?" and appends one Testing Events row
+#                         to the Sheet with the verdict + 👍/👎. Non-TTY/CI: posts
+#                         and skips the prompt + row.
 #   --gate                Exit 1 if the result is CLASSIFIED (CI-blocking mode)
 #   --json-only           Print only the JSON block (machine consumption)
 #
@@ -84,6 +96,9 @@ POST_COMMENT=0
 GATE_MODE=0
 JSON_ONLY=0
 WANT_HELP=0
+SUBMIT=0
+POSTED_COMMENT_ID=""        # set by the post functions; consumed by --submit
+POSTED_COMMENT_CREATED=""   # the comment's created_at (ISO-8601) from the API
 REMAINING_FOR_LIB=()
 
 while [[ $# -gt 0 ]]; do
@@ -105,6 +120,14 @@ while [[ $# -gt 0 ]]; do
       shift
       ;;
     --post-comment)
+      POST_COMMENT=1
+      shift
+      ;;
+    --submit)
+      # Streamlined local loop: post the comment AND, when run interactively,
+      # prompt "Was this helpful?" and append the answer as one Testing Events
+      # row to the Sheet. Implies --post-comment (the row needs the comment_id).
+      SUBMIT=1
       POST_COMMENT=1
       shift
       ;;
@@ -489,16 +512,21 @@ post_issue_comment_to_github() {
   local pr_number="$2"
   local body="$3"
 
-  # Pass the body via --field so gh handles JSON escaping for us.
-  if ! gh api \
+  # Pass the body via --field so gh handles JSON escaping for us. Capture id +
+  # created_at (for --submit's metrics row); empty string on failure.
+  local resp=""
+  resp="$(gh api \
         "repos/${repo_slug}/issues/${pr_number}/comments" \
         --method POST \
-        --field body="${body}" >/dev/null; then
+        --field body="${body}" --jq '"\(.id)\t\(.created_at)"' 2>/dev/null || true)"
+  if [[ -z "$resp" || "$resp" == $'\t' ]]; then
     echo "ERROR: 'gh api' issue-comment call failed." >&2
     echo "       Check your gh auth status and that your token has 'pull-requests: write'" >&2
     echo "       (or 'issues: write')." >&2
     return 1
   fi
+  POSTED_COMMENT_ID="${resp%%$'\t'*}"
+  POSTED_COMMENT_CREATED="${resp#*$'\t'}"
 }
 
 # Post ONE classification comment to the PR. Args: PR number, comment body.
@@ -547,13 +575,19 @@ post_comment_to_github() {
 
   if [[ -n "$anchor_path" && -n "$commit_id" ]]; then
     echo "[test-classifier] Posting classification as a review comment on ${repo_slug} PR #${pr_number} (anchored to ${anchor_path})..."
-    if gh api \
+    # Capture id + created_at from the response so --submit can record them.
+    # jq joins them with a tab; empty string on failure.
+    local resp=""
+    resp="$(gh api \
           "repos/${repo_slug}/pulls/${pr_number}/comments" \
           --method POST \
           --field body="${body}" \
           --field commit_id="${commit_id}" \
           --field path="${anchor_path}" \
-          --field subject_type=file >/dev/null 2>&1; then
+          --field subject_type=file --jq '"\(.id)\t\(.created_at)"' 2>/dev/null || true)"
+    if [[ -n "$resp" && "$resp" != $'\t' ]]; then
+      POSTED_COMMENT_ID="${resp%%$'\t'*}"
+      POSTED_COMMENT_CREATED="${resp#*$'\t'}"
       echo "[test-classifier] Review comment posted. Awaiting the developer's 👍/👎 reaction (and a reply reason on a 👎)."
       return 0
     fi
@@ -568,6 +602,121 @@ post_comment_to_github() {
     exit 1
   fi
   echo "[test-classifier] Comment posted (issue comment). Awaiting the developer's 👍/👎 reaction."
+}
+
+# ── --submit: prompt "Was this helpful?" and post one row via the webhook ───
+# Streamlines the manual local loop: instead of (post comment → react 👍/👎 on
+# GitHub → a separate weekly harvest), capture the developer's signal right after
+# the run and POST it to the metricsai Google Apps Script webhook — the SAME
+# transport metricsai uses (flat JSON body, fields aligned by header name, plus
+# reserved `_tab` and `_key`). No service account, no gcloud, no token expiry —
+# just two static env vars the developer sets once.
+#
+# Fields (aligned by header name on the Apps Script side):
+#   repo, pr, comment_id, comment_created_at, verdict, category, confidence,
+#   thumbs_up, thumbs_down, reason   (+ _tab="Testing Events", _key=<api key>)
+#
+# Env:
+#   METRICSAI_WEBHOOK_URL   the Apps Script /exec endpoint        (required)
+#   METRICSAI_WEBHOOK_KEY   the "AI Metrics" API key (body _key)  (required)
+#   METRICSAI_WEBHOOK_TAB   destination tab; defaults to Testing Events
+#
+# Gated: only runs interactively (TTY, not CI) — non-interactive runs post the
+# comment and skip the prompt + POST (no human signal to record, no hang).
+# Missing URL/key → records the answer to the terminal, warns, still posts the
+# comment.
+#
+# Args: PR number, the extracted classifier JSON.
+submit_metrics_row() {
+  local pr_number="$1"
+  local classifier_json="$2"
+
+  if [[ ! -t 0 ]] || [[ "${CI:-}" == "true" ]]; then
+    ai_review::info "--submit: non-interactive run — comment posted; skipping the helpfulness prompt + metrics row." >&2
+    return 0
+  fi
+  if ! command -v python3 &>/dev/null; then
+    ai_review::warn "--submit: python3 not found; cannot build the metrics row — skipping it." >&2
+    return 0
+  fi
+
+  # Prompt for the tuning signal. Empty/invalid → skip (don't guess a verdict).
+  local answer reason="" thumbs_up=0 thumbs_down=0
+  printf '%s' "  Was the classification helpful? [y/n] (enter to skip): " >&2
+  read -r answer
+  case "${answer}" in
+    y|Y|yes|YES) thumbs_up=1 ;;
+    n|N|no|NO)
+      thumbs_down=1
+      printf '%s' "  Optional one-line reason (enter to skip): " >&2
+      read -r reason
+      ;;
+    *)
+      ai_review::info "--submit: no answer — skipping the metrics row (comment still posted)." >&2
+      return 0
+      ;;
+  esac
+
+  local webhook_url="${METRICSAI_WEBHOOK_URL:-}"
+  local webhook_key="${METRICSAI_WEBHOOK_KEY:-}"
+  local webhook_tab="${METRICSAI_WEBHOOK_TAB:-Testing Events}"
+  if [[ -z "${webhook_url}" || -z "${webhook_key}" ]]; then
+    ai_review::warn "--submit: METRICSAI_WEBHOOK_URL / METRICSAI_WEBHOOK_KEY not set — recorded your answer but didn't post a row." >&2
+    ai_review::log  "  Export both (the metricsai webhook URL + the AI Metrics API key) to enable the sink." >&2
+    return 0
+  fi
+
+  local repo_slug
+  repo_slug="$(gh repo view --json nameWithOwner --jq '.nameWithOwner' 2>/dev/null || echo "")"
+
+  # The classifier may emit multiple classifications; the Testing Events row is
+  # per-comment, so collapse to one representative verdict by most-actionable
+  # rank (APPLICATION_BUG > TEST_BUG > FLAKY_FAILURE > ENVIRONMENT_ISSUE) — the
+  # same rule the harvester uses. Returns: verdict<TAB>category<TAB>confidence.
+  local repr
+  repr="$(printf '%s' "${classifier_json}" | python3 -c '
+import json, sys
+RANK = {"APPLICATION_BUG":3,"TEST_BUG":2,"FLAKY_FAILURE":1,"ENVIRONMENT_ISSUE":0}
+try:
+    cls = (json.load(sys.stdin) or {}).get("classifications") or []
+except Exception:
+    cls = []
+if not cls:
+    print("\t\t"); sys.exit(0)
+best = max(cls, key=lambda c: RANK.get(c.get("verdict",""), -1))
+print("\t".join([best.get("verdict","") or "", best.get("category","") or "", best.get("confidence","") or ""]))
+' 2>/dev/null || printf '\t\t')"
+  local verdict category confidence
+  IFS=$'\t' read -r verdict category confidence <<< "${repr}"
+
+  # comment_created_at comes from the comment POST response; fall back to now.
+  local created_at="${POSTED_COMMENT_CREATED:-}"
+  [[ -n "${created_at}" ]] || created_at="$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "")"
+
+  # Flat JSON body: named fields (Apps Script aligns by header) + reserved
+  # _tab / _key. Built with python3 so values are safely JSON-escaped.
+  local body
+  body="$(python3 -c '
+import json, sys
+keys = ["repo","pr","comment_id","comment_created_at","verdict","category",
+        "confidence","thumbs_up","thumbs_down","reason","_tab","_key"]
+print(json.dumps(dict(zip(keys, sys.argv[1:1+len(keys)]))))
+' "${repo_slug}" "${pr_number}" "${POSTED_COMMENT_ID}" "${created_at}" "${verdict}" "${category}" "${confidence}" "${thumbs_up}" "${thumbs_down}" "${reason}" "${webhook_tab}" "${webhook_key}")"
+
+  # The Apps Script writes the row in doPost and answers /exec with a 302 to a
+  # googleusercontent URL. The WRITE has already happened at that 302 — following
+  # it can 405 on the final Drive hop even though the row landed, so we must NOT
+  # use `-f -L` (that reports a false failure). Capture the first-hop status and
+  # treat 200/302 as success; don't follow the redirect.
+  local http_code
+  http_code="$(curl -sS -o /dev/null -w '%{http_code}' -X POST "${webhook_url}" \
+        -H "Content-Type: application/json" \
+        -d "${body}" 2>/dev/null || echo "000")"
+  if [[ "${http_code}" == "200" || "${http_code}" == "302" ]]; then
+    ai_review::ok "--submit: posted a row to the metrics webhook (tab=${webhook_tab}, verdict=${verdict:-?}, $([ "${thumbs_up}" = 1 ] && echo 👍 || echo 👎))."
+  else
+    ai_review::warn "--submit: webhook POST failed (HTTP ${http_code}; your answer was not recorded). Check METRICSAI_WEBHOOK_URL / METRICSAI_WEBHOOK_KEY." >&2
+  fi
 }
 
 # ── Custom run loop (mirrors the security PR dispatcher) ────────────────────
@@ -592,6 +741,7 @@ test_classifier::run() {
     ai_review::log  "  PR number:      ${AI_REVIEW_PR_NUMBER:-(none — using --against directly)}"
     ai_review::log  "  Diff source:    $(ai_review::diff_command_description)"
     ai_review::log  "  Post comment:   ${POST_COMMENT}"
+    ai_review::log  "  Submit metrics: ${SUBMIT}"
     ai_review::log  "  Gate mode:      ${GATE_MODE}"
     ai_review::log  "  Changed files:"
     ai_review::changed_files | sed 's/^/    /'
@@ -679,6 +829,12 @@ test_classifier::run() {
       local comment_body
       comment_body="$(render_pr_comment_body "${json_block}")"
       post_comment_to_github "${AI_REVIEW_PR_NUMBER}" "${comment_body}"
+
+      # --submit: prompt for the helpfulness signal and append a Testing Events
+      # row (interactive only; no-ops cleanly in CI / non-TTY).
+      if (( SUBMIT == 1 )); then
+        submit_metrics_row "${AI_REVIEW_PR_NUMBER}" "${json_block}"
+      fi
     fi
   fi
 
