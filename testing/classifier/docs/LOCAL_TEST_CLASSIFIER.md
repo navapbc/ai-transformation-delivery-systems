@@ -32,6 +32,21 @@ and uses the same `--unpushed` scope rule. This is the ergonomics layer over
   OBSERVED with `AI_RUN_SUITE=1` to have the agent actually locate, install, and
   run your suite and triage the real failures — the same behavior CI uses.
 
+> [!WARNING]
+> **OBSERVED (`AI_RUN_SUITE=1`) runs the change's code on your machine — there
+> is no sandbox.** The agent installs dependencies (running each package's
+> install/postinstall scripts) and executes the test suite **directly in your
+> checkout**, with your shell, your environment, and your credentials. It also
+> leaves build artifacts behind (`node_modules/`, downloaded browsers, etc.).
+>
+> Only use `AI_RUN_SUITE=1` on a branch **you trust** — typically your own
+> work-in-progress. Do **not** point it at an untrusted or unreviewed PR
+> (e.g. `--pr N` for someone else's contribution): installing and running that
+> branch's code is arbitrary code execution on your laptop. For untrusted
+> changes, use the default **INFERRED** mode (omit `AI_RUN_SUITE`), which only
+> reasons over the diff and never executes anything, or let CI run OBSERVED in
+> its disposable runner.
+
 ---
 
 ## Prerequisites
@@ -214,6 +229,7 @@ run (Path B) is still the recorded, metrics-feeding pass; this is your preview.
 | `AI_REVIEW_TOOL … not set` | Export `AI_REVIEW_TOOL=claude` (or `codex`/`copilot`); see `README.md`. |
 | Classification seems to miss recent edits | `--unpushed` excludes *unstaged* changes. `git add` or commit them first. |
 | Everything lands in INFERRED | That's the default. Add `AI_RUN_SUITE=1` to run the suite (OBSERVED). Suites needing services may still fall back to INFERRED, by design. |
+| Posted to / recorded the wrong repo (e.g. the upstream of your fork) | The repo is resolved from your `origin` remote. On a fork whose `origin` isn't the repo the PR lives in, export `AI_REVIEW_REPO=owner/name` to set it explicitly. |
 
 ---
 
