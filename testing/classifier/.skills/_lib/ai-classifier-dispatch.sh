@@ -218,6 +218,11 @@ Exit codes:
   1   Unrecoverable runtime error (or --gate set and result is CLASSIFIED)
   2   Configuration error (AI_REVIEW_TOOL unset / invalid; bad flags)
 EOF
+  # A dispatcher can document its own flags/defaults by setting AI_REVIEW_HELP_ADDENDUM
+  # before calling this. Printed verbatim after the shared help above.
+  if [[ -n "${AI_REVIEW_HELP_ADDENDUM:-}" ]]; then
+    printf '\n%s\n' "${AI_REVIEW_HELP_ADDENDUM}"
+  fi
 }
 
 # ── AI_REVIEW_TOOL validation ───────────────────────────────────────────────

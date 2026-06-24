@@ -61,57 +61,34 @@ it's only needed for the PR-based modes (`--pr` / auto-discovery / `--post-comme
 Paste this block into `~/.zshrc`, then `source ~/.zshrc` (or open a new shell):
 
 ```zsh
-# AI test classifier.
-#   <no arg>   → classify everything not yet pushed (committed + staged); report-only
-#   <ref>      → classify the committed range <ref>..HEAD; report-only
-#   <flags...> → passed straight to the dispatcher. This is how you post to a PR:
-#                test-classifier --pr 42 --post-comment   (or --post-comment to
-#                auto-discover the current branch's PR). Needs gh authed.
-# Prefix with AI_RUN_SUITE=1 to run the suite locally (OBSERVED) instead of
-# inferring from the diff:  AI_RUN_SUITE=1 test-classifier
+# AI test classifier. Run `test-classifier --help` for usage.
 test-classifier() {
-  local root disp
-  root="$(git rev-parse --show-toplevel 2>/dev/null)" \
+  local root; root="$(git rev-parse --show-toplevel 2>/dev/null)" \
     || { echo "✗ not inside a git repository"; return 1; }
-  disp="$root/testing/classifier/.skills/test-classifier/scripts/test-classifier-dispatcher.sh"
-  [ -x "$disp" ] \
-    || { echo "✗ test-classifier dispatcher not found/executable: $disp"; return 1; }
-  if [ "$#" -eq 0 ]; then
-    # No args → classify everything not yet pushed (committed + staged).
-    echo "▶ test-classifier: all not-yet-pushed changes (committed + staged)"
-    "$disp" --unpushed
-  elif [ "${1#-}" != "$1" ]; then
-    # First arg is a flag (starts with -) → pass everything straight through.
-    # This is how you post to a PR: test-classifier --pr 42 --post-comment
-    "$disp" "$@"
-  else
-    # First arg is a bare ref → --against <ref>; pass any remaining flags too.
-    local ref="$1"; shift
-    echo "▶ test-classifier: ${ref}..HEAD (committed range)"
-    "$disp" --against "$ref" "$@"
-  fi
+  "$root/testing/classifier/.skills/test-classifier/scripts/test-classifier-dispatcher.sh" "$@"
 }
 ```
 
-What the function does:
+The function is a thin passthrough: it finds the repo root and forwards every
+argument to the dispatcher. **All argument handling lives in the dispatcher**
+(versioned with the bundle), so the function never goes stale when you re-vendor.
+It forwards args verbatim, and the dispatcher applies these defaults:
 
-1. **Confirms you're in a git repo** — `git rev-parse --show-toplevel` doubles as
-   the repo check (empty → not a repo) and gives the authoritative root, so the
-   function works from any subdirectory.
-2. **Locates the dispatcher** under `testing/classifier/` and confirms it's
-   executable.
-3. **Runs the classifier** by calling the dispatcher:
-   - **no argument** → `--unpushed`: everything not yet pushed (committed +
-     staged). The base is your branch's upstream, falling back to the merge-base
-     with the remote default branch. If neither can be determined (e.g. a
-     brand-new branch with no remote), it errors and asks for an explicit ref
-     rather than silently classifying less than you expect.
-   - **a bare ref** → `--against <ref>`: the committed range `<ref>..HEAD`.
-   - **anything starting with `-`** → passed straight through to the dispatcher.
-     This is how you post to a PR — `test-classifier --pr 42 --post-comment`
-     (or just `--post-comment` to auto-discover the current branch's PR), plus
-     any other dispatcher flag (`--dry-run`, `--json-only`, …). You can combine a
-     ref with flags too: `test-classifier origin/main --post-comment`.
+- **no argument** → `--unpushed`: everything not yet pushed (committed +
+  staged). The base is your branch's upstream, falling back to the merge-base
+  with the remote default branch. If neither can be determined (e.g. a
+  brand-new branch with no remote), it errors and asks for an explicit ref
+  rather than silently classifying less than you expect.
+- **a bare ref** (e.g. `test-classifier origin/main`) → `--against <ref>`: the
+  committed range `<ref>..HEAD`.
+- **any flags** → used directly. This is how you post to a PR —
+  `test-classifier --pr 42 --post-comment` (or just `--post-comment` to
+  auto-discover the current branch's PR), plus any other dispatcher flag
+  (`--dry-run`, `--json-only`, …). You can combine a ref with flags too:
+  `test-classifier origin/main --post-comment`.
+
+Prefix `AI_RUN_SUITE=1` to run the suite locally (OBSERVED) instead of inferring
+from the diff: `AI_RUN_SUITE=1 test-classifier`.
 
 ---
 
@@ -232,7 +209,7 @@ run (Path B) is still the recorded, metrics-feeding pass; this is your preview.
 | Symptom | Cause / fix |
 |---|---|
 | `✗ not inside a git repository` | You're not in a git work tree. `cd` into the repo. |
-| `✗ test-classifier dispatcher not found/executable` | The bundle isn't installed under `testing/classifier/`, or the script lost its `+x` bit. Re-install / `chmod +x`. |
+| `no such file or directory` / `permission denied` on the dispatcher path | The bundle isn't installed under `testing/classifier/`, or the script lost its `+x` bit. Re-install / `chmod +x`. |
 | `--unpushed: couldn't determine what's been pushed` | No upstream and no remote default branch (e.g. brand-new branch, no remote). Pass an explicit base: `test-classifier origin/main`. |
 | `AI_REVIEW_TOOL … not set` | Export `AI_REVIEW_TOOL=claude` (or `codex`/`copilot`); see `README.md`. |
 | Classification seems to miss recent edits | `--unpushed` excludes *unstaged* changes. `git add` or commit them first. |
