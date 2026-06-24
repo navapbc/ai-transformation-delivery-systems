@@ -1,6 +1,10 @@
 # Plan — Sandboxed OBSERVED runs via smolvm
 
-**Status:** Proposed (design doc; no implementation yet).
+**Status:** Phase 1 implemented (`scripts/sandbox-run.sh` + dispatcher routing,
+opt-in `AI_SANDBOX=1`, default off). Phase 0 spikes remain to be validated on a
+real `smolvm` install — see §7 / §8. Host-side logic (staging, env-file,
+allowlist, teardown, routing matrix) is implemented and tested; the in-VM
+execution path is unverified until the spikes run.
 **Problem owner:** testing workstream.
 **Related:** [`LOCAL_TEST_CLASSIFIER.md`](./LOCAL_TEST_CLASSIFIER.md) (the OBSERVED warning this plan resolves), [`SETUP.md`](./SETUP.md).
 
@@ -235,13 +239,18 @@ real checkout. The copied cred dir is likewise shredded/removed.
 
 ## 8. Phased delivery
 
-- **Phase 0 — Spikes (de-risk).** Verify exit-code propagation, env-file
-  sourcing, one AI CLI authenticating from a copied config dir, and a trivial
-  `pnpm test` running in-guest. Output: a throwaway script + findings, no
-  product code. **Gate the rest of the plan on these.**
-- **Phase 1 — Control plane MVP.** `sandbox-run.sh` with stage→run→teardown,
-  env-file + one tool's creds, strict allowlist, full trap-based cleanup.
-  INFERRED and CI untouched. `--sandbox` opt-in, default off.
+- **Phase 0 — Spikes (de-risk).** *(Pending a real smolvm install.)* Verify
+  exit-code propagation, env-file sourcing, one AI CLI authenticating from a
+  copied config dir, and a trivial `pnpm test` running in-guest. The control
+  plane is written to these assumptions; the spikes confirm them on real
+  hardware. **Gate flipping the default (Phase 3) on these.**
+- **Phase 1 — Control plane MVP.** ✅ *Implemented.* `sandbox-run.sh` with
+  stage→run→teardown, ephemeral `0600` env-file + the resolved tool's copied
+  config dir, strict `--allow-host` allowlist, trap-based cleanup with secret
+  shredding. Dispatcher routes OBSERVED+`AI_SANDBOX=1` through it (recursion-
+  guarded via `AI_SANDBOX_ACTIVE`). INFERRED and CI untouched; opt-in, default
+  off. Host-side behavior tested (routing matrix, staging layout, env-file
+  contents, teardown); preflight fails closed when `smolvm` is absent.
 - **Phase 2 — Hardening + ergonomics.** Prewarmed deps, browser-mode support,
   allowlist override config, `shred` fallbacks, clear platform-detection errors.
 - **Phase 3 — Make it the default.** Flip `AI_RUN_SUITE=1` to imply `--sandbox`

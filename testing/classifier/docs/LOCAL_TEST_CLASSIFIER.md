@@ -45,7 +45,35 @@ and uses the same `--unpushed` scope rule. This is the ergonomics layer over
 > branch's code is arbitrary code execution on your laptop. For untrusted
 > changes, use the default **INFERRED** mode (omit `AI_RUN_SUITE`), which only
 > reasons over the diff and never executes anything, or let CI run OBSERVED in
-> its disposable runner.
+> its disposable runner — **or run OBSERVED sandboxed (below).**
+
+### Sandboxed OBSERVED (`AI_SANDBOX=1`)
+
+To get the OBSERVED signal **without** running the change's code on your host,
+set `AI_SANDBOX=1` alongside `AI_RUN_SUITE=1`:
+
+```bash
+AI_SANDBOX=1 AI_RUN_SUITE=1 test-classifier --pr 42 --submit
+```
+
+This routes the run through a disposable on-device [smolvm](https://github.com/smol-machines/smolvm)
+VM (the **control plane**, `scripts/sandbox-run.sh`):
+
+- The change's deps install and the suite runs **inside the VM**, against a
+  **staged copy** of the repo — never your real checkout. All artifacts
+  (`node_modules/`, browsers, caches) live in an ephemeral dir that is removed
+  on exit, so **nothing is left behind**.
+- The VM gets **only** the credentials the classifier needs — forwarded via an
+  ephemeral `0600` env-file plus a copied per-tool CLI config dir — not your
+  whole environment.
+- Network egress is a **strict allowlist** (GitHub API, the AI provider, the
+  metricsai webhook, package registries); override with `AI_SANDBOX_ALLOW_HOSTS`.
+
+**Requirements:** `smolvm` installed (macOS Apple Silicon or Linux with KVM). If
+it's missing, the run **fails closed** with an install hint rather than silently
+falling back to an unsandboxed host run. INFERRED runs are never sandboxed
+(they execute nothing). See [`SANDBOXED_OBSERVED.md`](./SANDBOXED_OBSERVED.md)
+for the full design, tunables, and known gaps still being de-risked.
 
 ---
 
