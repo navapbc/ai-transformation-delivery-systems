@@ -162,34 +162,28 @@ test-classifier --submit                         # auto-discovers the current br
 ```
 
 **Requirements:** everything `--post-comment` needs (open PR + `gh` authed),
-**plus** the Sheet id and a way to authenticate to Sheets. The simplest setup —
-one line in your `~/.zshrc`:
+**plus** the metricsai webhook creds — two static values, set once in `~/.zshrc`:
 
 ```bash
-export SHEET_ID="18UdYlRlt0iCBRi-UzuvO35J6xi8gC9n3SqU7Z78sIwM"   # the pilot DelEng sheet
+export METRICSAI_WEBHOOK_URL="https://script.google.com/macros/s/<id>/exec"
+export METRICSAI_WEBHOOK_KEY="<the AI Metrics API key>"
 ```
 
-That's it for the steady state. `--submit` **auto-mints** a short-lived Sheets
-token via `gcloud` on each run by impersonating the pilot's metrics service
-account (`metrics-sheets-writer@nava-labs.iam.gserviceaccount.com`, the same SA
-the central sweep uses) — so there's no token to manage. You need:
+That's the whole setup. `--submit` POSTs the row to the same Google Apps Script
+webhook `metricsai` uses (flat JSON body; the script aligns fields to the sheet
+by header name, so column order never matters). **No gcloud, no service account,
+no token to refresh** — both values are permanent.
 
-- `gcloud` installed and `gcloud auth login` done, and
-- permission to impersonate that SA (`roles/iam.serviceAccountTokenCreator`).
-
-Overrides, if you need them:
-- `METRICSAI_SA_EMAIL` — impersonate a different SA.
-- `GOOGLE_SHEETS_TOKEN` — supply your own bearer token; skips the auto-mint
-  entirely (this is what CI does).
-- `SHEET_RANGE` — defaults to `'Testing Events'!A1`.
+The row lands in the **Testing Events** tab by default; override with
+`METRICSAI_WEBHOOK_TAB`.
 
 **Behavior notes:**
 - **Interactive only.** In CI or any non-TTY run, `--submit` posts the comment
   and **skips** the prompt + row (no human to ask, no hang). CI metrics still
   come from the central weekly harvest.
-- **No creds → no crash.** If the token can't be obtained (no `gcloud`, no
-  impersonation rights, no `GOOGLE_SHEETS_TOKEN`) or `SHEET_ID` is unset, it
-  records your answer to the terminal, warns, and **still posts** the comment.
+- **No creds → no crash.** If `METRICSAI_WEBHOOK_URL` / `METRICSAI_WEBHOOK_KEY`
+  aren't set, it records your answer to the terminal, warns, and **still posts**
+  the comment.
 - **Writes to Testing Events, not the weekly tabs.** These are per-event rows
   (one per run), distinct from the `metricsai` weekly aggregate rows in the
   CXT / DMOD / EMMY / OSRE tabs. The central sweep writes to the same tab — two

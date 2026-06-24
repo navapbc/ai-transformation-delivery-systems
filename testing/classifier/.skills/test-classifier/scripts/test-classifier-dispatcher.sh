@@ -42,12 +42,12 @@
 # Required when --post-comment is used:
 #   gh CLI installed and authenticated; or GH_TOKEN exported
 #
-# Required when --submit writes to the sheet (interactive runs only):
-#   SHEET_ID (the spreadsheet id; permanent), plus a Sheets bearer token —
-#   EITHER export GOOGLE_SHEETS_TOKEN yourself, OR set METRICSAI_SA_EMAIL=<sa>
-#   and --submit auto-mints a short-lived token via gcloud each run (no manual
-#   token juggling). Absent → posts + prompts but skips the append. Row goes to
-#   the Testing Events tab (override: SHEET_RANGE).
+# Required when --submit posts the metrics row (interactive runs only):
+#   METRICSAI_WEBHOOK_URL + METRICSAI_WEBHOOK_KEY (the metricsai Apps Script
+#   endpoint + the AI Metrics API key — both static, set once). Row posts to the
+#   "Testing Events" tab (override: METRICSAI_WEBHOOK_TAB). Absent → posts the
+#   comment + prompts but skips the row. Same transport metricsai uses; no
+#   service account or gcloud token needed.
 
 set -euo pipefail
 
@@ -604,18 +604,27 @@ post_comment_to_github() {
   echo "[test-classifier] Comment posted (issue comment). Awaiting the developer's 👍/👎 reaction."
 }
 
-# ── --submit: prompt "Was this helpful?" and append one Testing Events row ──
+# ── --submit: prompt "Was this helpful?" and post one row via the webhook ───
 # Streamlines the manual local loop: instead of (post comment → react 👍/👎 on
 # GitHub → a separate weekly harvest), capture the developer's signal right after
-# the run and append it straight to the Sheet's "Testing Events" tab — the same
-# per-comment row shape testing/metrics/test_classifier_comments.sh writes:
+# the run and POST it to the metricsai Google Apps Script webhook — the SAME
+# transport metricsai uses (flat JSON body, fields aligned by header name, plus
+# reserved `_tab` and `_key`). No service account, no gcloud, no token expiry —
+# just two static env vars the developer sets once.
+#
+# Fields (aligned by header name on the Apps Script side):
 #   repo, pr, comment_id, comment_created_at, verdict, category, confidence,
-#   thumbs_up, thumbs_down, reason
+#   thumbs_up, thumbs_down, reason   (+ _tab="Testing Events", _key=<api key>)
+#
+# Env:
+#   METRICSAI_WEBHOOK_URL   the Apps Script /exec endpoint        (required)
+#   METRICSAI_WEBHOOK_KEY   the "AI Metrics" API key (body _key)  (required)
+#   METRICSAI_WEBHOOK_TAB   destination tab; defaults to Testing Events
 #
 # Gated: only runs interactively (TTY, not CI) — non-interactive runs post the
-# comment and skip the prompt + row (no human signal to record, no hang). Needs
-# GOOGLE_SHEETS_TOKEN + SHEET_ID in the env (same creds the harvester uses);
-# absent → we say so and skip the append (the comment is still posted).
+# comment and skip the prompt + POST (no human signal to record, no hang).
+# Missing URL/key → records the answer to the terminal, warns, still posts the
+# comment.
 #
 # Args: PR number, the extracted classifier JSON.
 submit_metrics_row() {
@@ -627,7 +636,7 @@ submit_metrics_row() {
     return 0
   fi
   if ! command -v python3 &>/dev/null; then
-    ai_review::warn "--submit: python3 not found; cannot read the verdict JSON — skipping the metrics row." >&2
+    ai_review::warn "--submit: python3 not found; cannot build the metrics row — skipping it." >&2
     return 0
   fi
 
@@ -648,34 +657,12 @@ submit_metrics_row() {
       ;;
   esac
 
-  # Resolve the Sheets bearer token. The token is short-lived (~1h), so rather
-  # than make a developer re-mint it every session, auto-mint it via gcloud by
-  # impersonating the pilot's metrics service account. An explicitly-set
-  # GOOGLE_SHEETS_TOKEN always wins (CI / advanced users); otherwise we mint for
-  # METRICSAI_SA_EMAIL, which defaults to the pilot SA the central sweep uses.
-  local sa_email="${METRICSAI_SA_EMAIL:-metrics-sheets-writer@nava-labs.iam.gserviceaccount.com}"
-  local sheets_token="${GOOGLE_SHEETS_TOKEN:-}"
-  if [[ -z "${sheets_token}" ]]; then
-    if command -v gcloud &>/dev/null; then
-      ai_review::info "--submit: minting a short-lived Sheets token for ${sa_email} via gcloud…" >&2
-      sheets_token="$(gcloud auth print-access-token \
-        --impersonate-service-account="${sa_email}" \
-        --scopes=https://www.googleapis.com/auth/spreadsheets 2>/dev/null || true)"
-      if [[ -z "${sheets_token}" ]]; then
-        ai_review::warn "--submit: gcloud could not mint a token for ${sa_email}." >&2
-        ai_review::log  "  Run 'gcloud auth login' and confirm you have roles/iam.serviceAccountTokenCreator" >&2
-        ai_review::log  "  on that SA — or export GOOGLE_SHEETS_TOKEN yourself." >&2
-      fi
-    else
-      ai_review::warn "--submit: no GOOGLE_SHEETS_TOKEN and gcloud isn't installed — can't get a Sheets token." >&2
-      ai_review::log  "  Install gcloud (and 'gcloud auth login'), or export GOOGLE_SHEETS_TOKEN yourself." >&2
-    fi
-  fi
-
-  if [[ -z "${sheets_token}" || -z "${SHEET_ID:-}" ]]; then
-    ai_review::warn "--submit: no Sheets sink configured — recorded your answer but didn't write a row." >&2
-    ai_review::log  "  Set SHEET_ID, then EITHER export GOOGLE_SHEETS_TOKEN yourself OR set" >&2
-    ai_review::log  "  METRICSAI_SA_EMAIL=<service-account> to auto-mint it via gcloud each run." >&2
+  local webhook_url="${METRICSAI_WEBHOOK_URL:-}"
+  local webhook_key="${METRICSAI_WEBHOOK_KEY:-}"
+  local webhook_tab="${METRICSAI_WEBHOOK_TAB:-Testing Events}"
+  if [[ -z "${webhook_url}" || -z "${webhook_key}" ]]; then
+    ai_review::warn "--submit: METRICSAI_WEBHOOK_URL / METRICSAI_WEBHOOK_KEY not set — recorded your answer but didn't post a row." >&2
+    ai_review::log  "  Export both (the metricsai webhook URL + the AI Metrics API key) to enable the sink." >&2
     return 0
   fi
 
@@ -702,32 +689,33 @@ print("\t".join([best.get("verdict","") or "", best.get("category","") or "", be
   local verdict category confidence
   IFS=$'\t' read -r verdict category confidence <<< "${repr}"
 
-  # Range targets the Testing Events tab (NOT the weekly CXT/DMOD/… aggregate
-  # tabs). Overridable, but defaults to the per-event tab. The sheet name has a
-  # space, so it must be single-quoted in A1 notation: 'Testing Events'!A1 — the
-  # central sweep uses the same form.
-  local range="${SHEET_RANGE:-'Testing Events'!A1}"
-  # Row columns (match the Testing Events tab header):
-  #   repo, pr, comment_id, comment_created_at, verdict, category, confidence,
-  #   thumbs_up, thumbs_down, reason
-  # created_at comes from the comment POST response; fall back to now (UTC).
+  # comment_created_at comes from the comment POST response; fall back to now.
   local created_at="${POSTED_COMMENT_CREATED:-}"
   [[ -n "${created_at}" ]] || created_at="$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "")"
-  local payload url
-  payload="$(python3 -c '
-import json, sys
-vals = sys.argv[1:11]
-print(json.dumps({"values": [vals]}))
-' "${repo_slug}" "${pr_number}" "${POSTED_COMMENT_ID}" "${created_at}" "${verdict}" "${category}" "${confidence}" "${thumbs_up}" "${thumbs_down}" "${reason}")"
-  url="https://sheets.googleapis.com/v4/spreadsheets/${SHEET_ID}/values/$(python3 -c 'import urllib.parse,sys;print(urllib.parse.quote(sys.argv[1]))' "${range}"):append?valueInputOption=RAW&insertDataOption=INSERT_ROWS"
 
-  if curl -sS -f -X POST "${url}" \
-        -H "Authorization: Bearer ${sheets_token}" \
+  # Flat JSON body: named fields (Apps Script aligns by header) + reserved
+  # _tab / _key. Built with python3 so values are safely JSON-escaped.
+  local body
+  body="$(python3 -c '
+import json, sys
+keys = ["repo","pr","comment_id","comment_created_at","verdict","category",
+        "confidence","thumbs_up","thumbs_down","reason","_tab","_key"]
+print(json.dumps(dict(zip(keys, sys.argv[1:1+len(keys)]))))
+' "${repo_slug}" "${pr_number}" "${POSTED_COMMENT_ID}" "${created_at}" "${verdict}" "${category}" "${confidence}" "${thumbs_up}" "${thumbs_down}" "${reason}" "${webhook_tab}" "${webhook_key}")"
+
+  # The Apps Script writes the row in doPost and answers /exec with a 302 to a
+  # googleusercontent URL. The WRITE has already happened at that 302 — following
+  # it can 405 on the final Drive hop even though the row landed, so we must NOT
+  # use `-f -L` (that reports a false failure). Capture the first-hop status and
+  # treat 200/302 as success; don't follow the redirect.
+  local http_code
+  http_code="$(curl -sS -o /dev/null -w '%{http_code}' -X POST "${webhook_url}" \
         -H "Content-Type: application/json" \
-        -d "${payload}" >/dev/null 2>&1; then
-    ai_review::ok "--submit: appended a row to the Testing Events sheet (verdict=${verdict:-?}, $([ "${thumbs_up}" = 1 ] && echo 👍 || echo 👎))."
+        -d "${body}" 2>/dev/null || echo "000")"
+  if [[ "${http_code}" == "200" || "${http_code}" == "302" ]]; then
+    ai_review::ok "--submit: posted a row to the metrics webhook (tab=${webhook_tab}, verdict=${verdict:-?}, $([ "${thumbs_up}" = 1 ] && echo 👍 || echo 👎))."
   else
-    ai_review::warn "--submit: Sheets append failed (your answer was not recorded). Check the token's scope and that the SA has edit access to the sheet." >&2
+    ai_review::warn "--submit: webhook POST failed (HTTP ${http_code}; your answer was not recorded). Check METRICSAI_WEBHOOK_URL / METRICSAI_WEBHOOK_KEY." >&2
   fi
 }
 
