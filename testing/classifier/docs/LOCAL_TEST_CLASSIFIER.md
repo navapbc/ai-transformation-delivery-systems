@@ -136,8 +136,11 @@ test-classifier --pr 42 --submit
 ## `--submit` — classify, post, and record the metric in one shot
 
 `--submit` captures the helpfulness signal **at run time, in the terminal** —
-there is no GitHub 👍/👎 reaction to leave and no waiting on a harvest. After
-classifying and posting the comment, it prompts right in the terminal:
+so on a `--submit` run you don't need to leave a GitHub 👍/👎 reaction or wait on
+the weekly harvest. (A plain CI / `--post-comment` run, with no `--submit`, still
+posts the comment **with** the 👍/👎 ask — that reaction is the signal the
+`metricsai` harvest reads. The two paths coexist.) After classifying and posting
+the comment, `--submit` prompts right in the terminal:
 
 ```
   Was the classification helpful? [y/n] (enter to skip):
