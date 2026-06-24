@@ -2,8 +2,9 @@
 # .skills/test-classifier/scripts/test-classifier-dispatcher.sh
 #
 # Test-classifier dispatcher. Runs the test-classifier skill on the change
-# under test and posts ONE PR comment with the verdicts and a mandatory 👍/👎
-# reaction.
+# under test and posts ONE PR comment with the verdicts. The helpfulness signal
+# is captured locally at run time via the --submit terminal prompt (not a GitHub
+# 👍/👎 reaction).
 #
 # This dispatcher is the testing-workstream sibling of the security
 # workstream's pr-review-dispatcher.sh and intentionally mirrors its shape.
@@ -13,18 +14,19 @@
 #      git index. Auto-discovery uses `gh pr view`; manual override via --pr.
 #   2. It parses a JSON intermediate format from the AI's response. With
 #      --post-comment it uses the GitHub REST API (via `gh api`) to post ONE
-#      file-level review comment on the PR with the classification table and the
-#      👍/👎 ask. A review comment (not an issue comment) so it has a Reply
-#      thread: a 👎 can carry a one-line reason that the metrics harvester reads
-#      back. Falls back to an issue comment if the PR has no diff to anchor to.
+#      file-level review comment on the PR with the classification table. It
+#      anchors to a changed file when it can (falling back to an issue comment if
+#      the PR has no diff to anchor to). The comment does NOT ask for a GitHub
+#      👍/👎 reaction — the helpfulness signal is captured locally via --submit.
 #   3. The classifier is advisory: by default the dispatcher exits 0 even when
 #      tests were classified. The --gate flag flips this to exit 1 when the
 #      result is CLASSIFIED (CI-blocking mode for teams that want it).
 #
-# Behavior: classify the failing tests and post ONE PR comment with the verdicts
-# + a mandatory 👍/👎 ask (the tuning signal). Posting requires --post-comment;
-# without it the report/JSON only prints (useful for a local dry view). Nothing
-# is posted when nothing was triaged.
+# Behavior: classify the failing tests and post ONE PR comment with the verdicts.
+# Posting requires --post-comment; without it the report/JSON only prints (useful
+# for a local dry view). Nothing is posted when nothing was triaged. The tuning
+# signal (was the classification helpful?) is collected by --submit's terminal
+# prompt at run time and written straight to the Testing Events sheet.
 #
 # Usage:
 #   test-classifier-dispatcher.sh                              # no args → --unpushed (local committed+staged, report-only)
@@ -424,7 +426,7 @@ if (( WANT_HELP == 1 )); then
   read -r -d '' AI_REVIEW_HELP_ADDENDUM <<'HELP_ADDENDUM' || true
 test-classifier options (in addition to the shared options above):
   --pr <number>        Explicit PR number for posting (overrides auto-discovery).
-  --post-comment       Post ONE PR comment with the verdicts + a 👍/👎 ask.
+  --post-comment       Post ONE PR comment with the verdicts (no reaction ask).
                        Omit for a local report-only run (prints, posts nothing).
   --submit             Implies --post-comment; then (interactive only) prompts
                        "Was this helpful?" and appends one Testing Events row.
@@ -529,8 +531,8 @@ for c in cls:
 PY
 }
 
-# Render the ONE PR comment body from the classifier JSON, including the
-# mandatory 👍/👎 ask. We use python3 because pure-bash JSON handling is brittle.
+# Render the ONE PR comment body from the classifier JSON. We use python3 because
+# pure-bash JSON handling is brittle.
 render_pr_comment_body() {
   local classifier_json="$1"
 
@@ -597,13 +599,11 @@ if classifications:
     lines.append("</details>")
     lines.append("")
 
-# Tuning ask. The 👍/👎 reaction is the primary signal the metrics loop
-# measures; because this is posted as a PR *review* comment it has a native
-# Reply box, so a 👎 can now carry a one-line reason that the harvester picks
-# up off the reply thread.
-lines.append("**React 👍 if right / 👎 if wrong**, and on a 👎 please **reply to this "
-             "comment with a one-line reason** — that reply is the most useful tuning "
-             "signal we get. Advisory, non-blocking.")
+# Advisory footer. The helpfulness signal is captured locally at run time via
+# the --submit terminal prompt (written straight to the Testing Events sheet);
+# we deliberately do NOT ask for a GitHub 👍/👎 reaction here — that async signal
+# is being removed in favor of the immediate local prompt.
+lines.append("_Advisory, non-blocking — diagnostic only; the classifier never edits code or tests._")
 
 print("\n".join(lines))
 '
@@ -703,7 +703,7 @@ post_comment_to_github() {
     if ai_review::valid_comment_capture "$resp"; then
       POSTED_COMMENT_ID="${resp%%$'\t'*}"
       POSTED_COMMENT_CREATED="${resp#*$'\t'}"
-      echo "[test-classifier] Review comment posted. Awaiting the developer's 👍/👎 reaction (and a reply reason on a 👎)."
+      echo "[test-classifier] Review comment posted."
       return 0
     fi
     echo "[test-classifier] Review-comment POST failed; falling back to a plain issue comment." >&2
@@ -716,7 +716,7 @@ post_comment_to_github() {
   if ! post_issue_comment_to_github "${repo_slug}" "${pr_number}" "${body}"; then
     exit 1
   fi
-  echo "[test-classifier] Comment posted (issue comment). Awaiting the developer's 👍/👎 reaction."
+  echo "[test-classifier] Comment posted (issue comment)."
 }
 
 # ── --submit: prompt "Was this helpful?" and post one row via the webhook ───
@@ -765,62 +765,29 @@ submit_metrics_row() {
 
   # Prompt for the tuning signal, reading from the controlling terminal.
   #
-  # We MUST read from /dev/tty, not fd 0. During the long OBSERVED run the agent
-  # spawns Bash tool calls and the stream scrolls for many seconds; any keystroke
-  # or stray newline that arrives in that window sits in the TTY's input buffer.
-  # A bare `read -r answer` would consume that buffered line (often empty) instead
-  # of the answer typed AT this prompt — the user types `y`, but `read` already
-  # grabbed a queued blank line and skipped. So:
-  #   1. flush pending type-ahead before prompting (so we only see a fresh keypress);
-  #   2. read from /dev/tty explicitly;
-  #   3. re-prompt on empty/unrecognized input rather than silently skipping — a
-  #      stray keystroke shouldn't discard the row after a full suite run. Enter
-  #      on an empty line (after the flush) is the explicit skip.
-  local answer reason="" thumbs_up=0 thumbs_down=0
-  # Open the controlling terminal ONCE on fd 3 and read from that fd throughout,
-  # so successive reads advance through the SAME stream (re-opening /dev/tty per
-  # read would restart it and re-grab the first line). Closed on return.
-  if ! exec 3<>/dev/tty 2>/dev/null; then
-    ai_review::info "--submit: no controlling terminal — skipping the helpfulness prompt + row (comment still posted)." >&2
-    return 0
-  fi
-
-  # Flush any buffered type-ahead so the prompt sees only a fresh keypress, not a
-  # stray newline/char queued during the long suite run (which would otherwise be
-  # consumed as the "answer" and skip the row). read -t 0 succeeds iff input waits.
-  while read -r -t 0 -u 3 _flush 2>/dev/null; do :; done
-
-  local attempt
-  for attempt in 1 2 3; do
-    printf '%s' "  Was the classification helpful? [y/n] (enter to skip): " >&2
-    if ! read -r -u 3 answer; then
-      ai_review::info "--submit: input closed — skipping the metrics row (comment still posted)." >&2
-      exec 3<&- 3>&-; return 0
-    fi
-    case "${answer}" in
-      y|Y|yes|YES) thumbs_up=1; break ;;
-      n|N|no|NO)
-        thumbs_down=1
-        printf '%s' "  Optional one-line reason (enter to skip): " >&2
-        read -r -u 3 reason || reason=""
-        break
-        ;;
-      "")
-        # Deliberate empty Enter = skip.
-        ai_review::info "--submit: skipped (no answer) — comment still posted." >&2
-        exec 3<&- 3>&-; return 0
-        ;;
-      *)
-        # Unrecognized (e.g. a stray char) — re-prompt instead of discarding.
-        ai_review::warn "--submit: please answer y or n (or press enter to skip)." >&2
-        ;;
-    esac
-  done
-  exec 3<&- 3>&-   # close the tty fd
-  if (( thumbs_up == 0 && thumbs_down == 0 )); then
-    ai_review::info "--submit: no valid answer after 3 tries — skipping the row (comment still posted)." >&2
-    return 0
-  fi
+  # Read DIRECTLY from /dev/tty (open it fresh per read), NOT fd 0 and NOT a
+  # persistent fd we manage. After a long OBSERVED run the agent's `claude` /
+  # browser subprocesses can leave fd 0 consumed and the terminal in an odd
+  # state; an earlier version kept /dev/tty open on fd 3 and drained type-ahead
+  # with `read -t 0` in a loop — that loop could spin/block on the post-run
+  # terminal and the prompt never appeared. A plain blocking `read … < /dev/tty`
+  # is the robust, well-understood pattern: it waits for a real line of input.
+  local answer="" reason="" thumbs_up=0 thumbs_down=0
+  printf '%s' "  Was the classification helpful? [y/n] (enter to skip): " >&2
+  IFS= read -r answer < /dev/tty || answer=""
+  case "${answer}" in
+    y|Y|yes|YES) thumbs_up=1 ;;
+    n|N|no|NO)
+      thumbs_down=1
+      printf '%s' "  Optional one-line reason (enter to skip): " >&2
+      IFS= read -r reason < /dev/tty || reason=""
+      ;;
+    *)
+      # Empty Enter or anything unrecognized = skip (don't guess a verdict).
+      ai_review::info "--submit: skipped (no y/n answer) — comment still posted." >&2
+      return 0
+      ;;
+  esac
 
   local webhook_url="${METRICSAI_WEBHOOK_URL:-}"
   local webhook_key="${METRICSAI_WEBHOOK_KEY:-}"
@@ -970,10 +937,10 @@ test_classifier::run() {
       ;;
   esac
 
-  # ── Post ONE PR comment requesting a mandatory 👍/👎 reaction. ────────────
-  # This is the default behavior. --post-comment is what CI passes to actually
-  # post; omit it for a local dry view (the JSON/report still prints to stdout).
-  # Nothing is posted when nothing was triaged (NO_ACTION).
+  # ── Post ONE PR comment with the verdicts (no reaction ask). ──────────────
+  # --post-comment is what CI passes to actually post; omit it for a local dry
+  # view (the JSON/report still prints to stdout). Nothing is posted when nothing
+  # was triaged (NO_ACTION). The helpfulness signal comes from --submit's prompt.
   if (( POST_COMMENT == 1 )); then
     if [[ "${result}" == "NO_ACTION" ]]; then
       ai_review::info "Result is NO_ACTION — nothing to triage, so no PR comment is posted."
