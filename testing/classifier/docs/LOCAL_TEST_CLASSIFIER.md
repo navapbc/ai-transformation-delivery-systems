@@ -135,9 +135,9 @@ test-classifier --pr 42 --submit
 
 ## `--submit` — classify, post, and record the metric in one shot
 
-The slow path to metrics is: post a comment → react 👍/👎 on GitHub later → wait
-for the weekly harvest. `--submit` collapses that into the run you're already
-doing. After classifying and posting, it prompts right in the terminal:
+`--submit` captures the helpfulness signal **at run time, in the terminal** —
+there is no GitHub 👍/👎 reaction to leave and no waiting on a harvest. After
+classifying and posting the comment, it prompts right in the terminal:
 
 ```
   Was the classification helpful? [y/n] (enter to skip):
