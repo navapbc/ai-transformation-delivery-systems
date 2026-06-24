@@ -162,27 +162,38 @@ test-classifier --submit                         # auto-discovers the current br
 ```
 
 **Requirements:** everything `--post-comment` needs (open PR + `gh` authed),
-**plus** the Sheets sink in your environment:
+**plus** the Sheet id and a way to authenticate to Sheets. The simplest setup —
+one line in your `~/.zshrc`:
 
 ```bash
-export SHEET_ID="<spreadsheet id from its URL>"
-export GOOGLE_SHEETS_TOKEN="$(gcloud auth print-access-token --impersonate-service-account=<sa>)"
-# Row goes to the "Testing Events" tab by default; override with SHEET_RANGE.
+export SHEET_ID="18UdYlRlt0iCBRi-UzuvO35J6xi8gC9n3SqU7Z78sIwM"   # the pilot DelEng sheet
 ```
 
-The service account needs Editor access to the sheet (`spreadsheets` scope) —
-same setup as the harvester (`testing/metrics/test_classifier_comments.sh`).
+That's it for the steady state. `--submit` **auto-mints** a short-lived Sheets
+token via `gcloud` on each run by impersonating the pilot's metrics service
+account (`metrics-sheets-writer@nava-labs.iam.gserviceaccount.com`, the same SA
+the central sweep uses) — so there's no token to manage. You need:
+
+- `gcloud` installed and `gcloud auth login` done, and
+- permission to impersonate that SA (`roles/iam.serviceAccountTokenCreator`).
+
+Overrides, if you need them:
+- `METRICSAI_SA_EMAIL` — impersonate a different SA.
+- `GOOGLE_SHEETS_TOKEN` — supply your own bearer token; skips the auto-mint
+  entirely (this is what CI does).
+- `SHEET_RANGE` — defaults to `'Testing Events'!A1`.
 
 **Behavior notes:**
 - **Interactive only.** In CI or any non-TTY run, `--submit` posts the comment
   and **skips** the prompt + row (no human to ask, no hang). CI metrics still
   come from the central weekly harvest.
-- **No creds → no crash.** If `GOOGLE_SHEETS_TOKEN` / `SHEET_ID` aren't set, it
-  records your answer to the terminal and warns that there's no sink — the
-  comment is still posted.
+- **No creds → no crash.** If the token can't be obtained (no `gcloud`, no
+  impersonation rights, no `GOOGLE_SHEETS_TOKEN`) or `SHEET_ID` is unset, it
+  records your answer to the terminal, warns, and **still posts** the comment.
 - **Writes to Testing Events, not the weekly tabs.** These are per-event rows
   (one per run), distinct from the `metricsai` weekly aggregate rows in the
-  CXT / DMOD / EMMY / OSRE tabs.
+  CXT / DMOD / EMMY / OSRE tabs. The central sweep writes to the same tab — two
+  writers, one tab, deduped by `comment_id`.
 - **Pressing enter skips** the row entirely — no verdict is guessed.
 
 **Scope details.**

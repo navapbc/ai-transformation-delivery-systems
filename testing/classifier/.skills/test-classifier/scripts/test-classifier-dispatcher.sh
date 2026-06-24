@@ -43,9 +43,11 @@
 #   gh CLI installed and authenticated; or GH_TOKEN exported
 #
 # Required when --submit writes to the sheet (interactive runs only):
-#   GOOGLE_SHEETS_TOKEN + SHEET_ID (same creds as
-#   testing/metrics/test_classifier_comments.sh). Absent → posts + prompts but
-#   skips the append. Row goes to the Testing Events tab (override: SHEET_RANGE).
+#   SHEET_ID (the spreadsheet id; permanent), plus a Sheets bearer token —
+#   EITHER export GOOGLE_SHEETS_TOKEN yourself, OR set METRICSAI_SA_EMAIL=<sa>
+#   and --submit auto-mints a short-lived token via gcloud each run (no manual
+#   token juggling). Absent → posts + prompts but skips the append. Row goes to
+#   the Testing Events tab (override: SHEET_RANGE).
 
 set -euo pipefail
 
@@ -95,7 +97,8 @@ GATE_MODE=0
 JSON_ONLY=0
 WANT_HELP=0
 SUBMIT=0
-POSTED_COMMENT_ID=""   # set by the post functions; consumed by --submit
+POSTED_COMMENT_ID=""        # set by the post functions; consumed by --submit
+POSTED_COMMENT_CREATED=""   # the comment's created_at (ISO-8601) from the API
 REMAINING_FOR_LIB=()
 
 while [[ $# -gt 0 ]]; do
@@ -509,20 +512,21 @@ post_issue_comment_to_github() {
   local pr_number="$2"
   local body="$3"
 
-  # Pass the body via --field so gh handles JSON escaping for us. Capture the
-  # new comment id (for --submit's metrics row); --jq '.id' is empty on failure.
-  local resp_id=""
-  resp_id="$(gh api \
+  # Pass the body via --field so gh handles JSON escaping for us. Capture id +
+  # created_at (for --submit's metrics row); empty string on failure.
+  local resp=""
+  resp="$(gh api \
         "repos/${repo_slug}/issues/${pr_number}/comments" \
         --method POST \
-        --field body="${body}" --jq '.id' 2>/dev/null || true)"
-  if [[ -z "$resp_id" ]]; then
+        --field body="${body}" --jq '"\(.id)\t\(.created_at)"' 2>/dev/null || true)"
+  if [[ -z "$resp" || "$resp" == $'\t' ]]; then
     echo "ERROR: 'gh api' issue-comment call failed." >&2
     echo "       Check your gh auth status and that your token has 'pull-requests: write'" >&2
     echo "       (or 'issues: write')." >&2
     return 1
   fi
-  POSTED_COMMENT_ID="$resp_id"
+  POSTED_COMMENT_ID="${resp%%$'\t'*}"
+  POSTED_COMMENT_CREATED="${resp#*$'\t'}"
 }
 
 # Post ONE classification comment to the PR. Args: PR number, comment body.
@@ -571,18 +575,19 @@ post_comment_to_github() {
 
   if [[ -n "$anchor_path" && -n "$commit_id" ]]; then
     echo "[test-classifier] Posting classification as a review comment on ${repo_slug} PR #${pr_number} (anchored to ${anchor_path})..."
-    # Capture the response so --submit can record the new comment's id in the
-    # metrics row. --jq '.id' prints the id on success; empty on failure.
-    local resp_id=""
-    resp_id="$(gh api \
+    # Capture id + created_at from the response so --submit can record them.
+    # jq joins them with a tab; empty string on failure.
+    local resp=""
+    resp="$(gh api \
           "repos/${repo_slug}/pulls/${pr_number}/comments" \
           --method POST \
           --field body="${body}" \
           --field commit_id="${commit_id}" \
           --field path="${anchor_path}" \
-          --field subject_type=file --jq '.id' 2>/dev/null || true)"
-    if [[ -n "$resp_id" ]]; then
-      POSTED_COMMENT_ID="$resp_id"
+          --field subject_type=file --jq '"\(.id)\t\(.created_at)"' 2>/dev/null || true)"
+    if [[ -n "$resp" && "$resp" != $'\t' ]]; then
+      POSTED_COMMENT_ID="${resp%%$'\t'*}"
+      POSTED_COMMENT_CREATED="${resp#*$'\t'}"
       echo "[test-classifier] Review comment posted. Awaiting the developer's 👍/👎 reaction (and a reply reason on a 👎)."
       return 0
     fi
@@ -604,7 +609,8 @@ post_comment_to_github() {
 # GitHub → a separate weekly harvest), capture the developer's signal right after
 # the run and append it straight to the Sheet's "Testing Events" tab — the same
 # per-comment row shape testing/metrics/test_classifier_comments.sh writes:
-#   repo, pr, comment_id, verdict, category, confidence, thumbs_up, thumbs_down, reason
+#   repo, pr, comment_id, comment_created_at, verdict, category, confidence,
+#   thumbs_up, thumbs_down, reason
 #
 # Gated: only runs interactively (TTY, not CI) — non-interactive runs post the
 # comment and skip the prompt + row (no human signal to record, no hang). Needs
@@ -642,9 +648,34 @@ submit_metrics_row() {
       ;;
   esac
 
-  if [[ -z "${GOOGLE_SHEETS_TOKEN:-}" || -z "${SHEET_ID:-}" ]]; then
-    ai_review::warn "--submit: GOOGLE_SHEETS_TOKEN / SHEET_ID not set — recorded your answer but no Sheet to write to." >&2
-    ai_review::log  "  Set both (see testing/metrics/test_classifier_comments.sh header) to enable the sink." >&2
+  # Resolve the Sheets bearer token. The token is short-lived (~1h), so rather
+  # than make a developer re-mint it every session, auto-mint it via gcloud by
+  # impersonating the pilot's metrics service account. An explicitly-set
+  # GOOGLE_SHEETS_TOKEN always wins (CI / advanced users); otherwise we mint for
+  # METRICSAI_SA_EMAIL, which defaults to the pilot SA the central sweep uses.
+  local sa_email="${METRICSAI_SA_EMAIL:-metrics-sheets-writer@nava-labs.iam.gserviceaccount.com}"
+  local sheets_token="${GOOGLE_SHEETS_TOKEN:-}"
+  if [[ -z "${sheets_token}" ]]; then
+    if command -v gcloud &>/dev/null; then
+      ai_review::info "--submit: minting a short-lived Sheets token for ${sa_email} via gcloud…" >&2
+      sheets_token="$(gcloud auth print-access-token \
+        --impersonate-service-account="${sa_email}" \
+        --scopes=https://www.googleapis.com/auth/spreadsheets 2>/dev/null || true)"
+      if [[ -z "${sheets_token}" ]]; then
+        ai_review::warn "--submit: gcloud could not mint a token for ${sa_email}." >&2
+        ai_review::log  "  Run 'gcloud auth login' and confirm you have roles/iam.serviceAccountTokenCreator" >&2
+        ai_review::log  "  on that SA — or export GOOGLE_SHEETS_TOKEN yourself." >&2
+      fi
+    else
+      ai_review::warn "--submit: no GOOGLE_SHEETS_TOKEN and gcloud isn't installed — can't get a Sheets token." >&2
+      ai_review::log  "  Install gcloud (and 'gcloud auth login'), or export GOOGLE_SHEETS_TOKEN yourself." >&2
+    fi
+  fi
+
+  if [[ -z "${sheets_token}" || -z "${SHEET_ID:-}" ]]; then
+    ai_review::warn "--submit: no Sheets sink configured — recorded your answer but didn't write a row." >&2
+    ai_review::log  "  Set SHEET_ID, then EITHER export GOOGLE_SHEETS_TOKEN yourself OR set" >&2
+    ai_review::log  "  METRICSAI_SA_EMAIL=<service-account> to auto-mint it via gcloud each run." >&2
     return 0
   fi
 
@@ -672,23 +703,31 @@ print("\t".join([best.get("verdict","") or "", best.get("category","") or "", be
   IFS=$'\t' read -r verdict category confidence <<< "${repr}"
 
   # Range targets the Testing Events tab (NOT the weekly CXT/DMOD/… aggregate
-  # tabs). Overridable, but defaults here to the per-event tab.
-  local range="${SHEET_RANGE:-Testing Events!A1}"
+  # tabs). Overridable, but defaults to the per-event tab. The sheet name has a
+  # space, so it must be single-quoted in A1 notation: 'Testing Events'!A1 — the
+  # central sweep uses the same form.
+  local range="${SHEET_RANGE:-'Testing Events'!A1}"
+  # Row columns (match the Testing Events tab header):
+  #   repo, pr, comment_id, comment_created_at, verdict, category, confidence,
+  #   thumbs_up, thumbs_down, reason
+  # created_at comes from the comment POST response; fall back to now (UTC).
+  local created_at="${POSTED_COMMENT_CREATED:-}"
+  [[ -n "${created_at}" ]] || created_at="$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "")"
   local payload url
   payload="$(python3 -c '
 import json, sys
-vals = sys.argv[1:10]
+vals = sys.argv[1:11]
 print(json.dumps({"values": [vals]}))
-' "${repo_slug}" "${pr_number}" "${POSTED_COMMENT_ID}" "${verdict}" "${category}" "${confidence}" "${thumbs_up}" "${thumbs_down}" "${reason}")"
+' "${repo_slug}" "${pr_number}" "${POSTED_COMMENT_ID}" "${created_at}" "${verdict}" "${category}" "${confidence}" "${thumbs_up}" "${thumbs_down}" "${reason}")"
   url="https://sheets.googleapis.com/v4/spreadsheets/${SHEET_ID}/values/$(python3 -c 'import urllib.parse,sys;print(urllib.parse.quote(sys.argv[1]))' "${range}"):append?valueInputOption=RAW&insertDataOption=INSERT_ROWS"
 
   if curl -sS -f -X POST "${url}" \
-        -H "Authorization: Bearer ${GOOGLE_SHEETS_TOKEN}" \
+        -H "Authorization: Bearer ${sheets_token}" \
         -H "Content-Type: application/json" \
         -d "${payload}" >/dev/null 2>&1; then
     ai_review::ok "--submit: appended a row to the Testing Events sheet (verdict=${verdict:-?}, $([ "${thumbs_up}" = 1 ] && echo 👍 || echo 👎))."
   else
-    ai_review::warn "--submit: Sheets append failed (your answer was not recorded). Check GOOGLE_SHEETS_TOKEN scope and that the SA has edit access to the sheet." >&2
+    ai_review::warn "--submit: Sheets append failed (your answer was not recorded). Check the token's scope and that the SA has edit access to the sheet." >&2
   fi
 }
 
