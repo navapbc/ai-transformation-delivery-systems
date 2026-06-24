@@ -27,7 +27,8 @@
 # is posted when nothing was triaged.
 #
 # Usage:
-#   test-classifier-dispatcher.sh                              # auto-discover PR; print only
+#   test-classifier-dispatcher.sh                              # no args → --unpushed (local committed+staged, report-only)
+#   test-classifier-dispatcher.sh origin/main                  # bare ref → --against origin/main
 #   test-classifier-dispatcher.sh --pr 1234 --post-comment     # post the PR comment
 #   test-classifier-dispatcher.sh --pr 1234 --submit           # post + prompt "helpful?" + append a Testing Events row
 #   test-classifier-dispatcher.sh --against origin/main        # explicit base ref
@@ -153,6 +154,49 @@ while [[ $# -gt 0 ]]; do
       ;;
   esac
 done
+
+# ── Convenience defaulting (so callers/wrappers stay dumb) ──────────────────
+# The shell wrapper that fronts this dispatcher is a one-line passthrough; the
+# ergonomic defaults live HERE so they're versioned with the bundle and never
+# drift out of a hand-pasted ~/.zshrc function. Applied only when the caller
+# gave no diff-range/PR selector (--against / --unpushed / --pr) of its own:
+#
+#   • a bare ref (e.g. `origin/main`) → --against <ref>  (classify <ref>..HEAD)
+#   • otherwise                       → --unpushed       (committed + staged,
+#                                        local report-only backstop)
+#
+# Other flags (--dry-run, --json-only, --post-comment, …) pass through unchanged.
+#
+# We detect "did the caller already choose a range/PR?" by scanning the args
+# bound for the lib for --against/--unpushed, plus our own --pr. If any is
+# present we add nothing. This runs BEFORE discover_pr_context, which inspects
+# REMAINING_FOR_LIB for --against/--unpushed to decide whether to skip PR lookup.
+ai_classifier::has_range_selector() {
+  [[ -n "${PR_NUMBER}" ]] && return 0
+  local a
+  for a in "${REMAINING_FOR_LIB[@]+"${REMAINING_FOR_LIB[@]}"}"; do
+    case "$a" in
+      --against|--against=*|--unpushed) return 0 ;;
+    esac
+  done
+  return 1
+}
+
+if ! ai_classifier::has_range_selector; then
+  # A bare positional (doesn't start with '-') is a base ref; the lib would
+  # otherwise drop it into AI_REVIEW_REMAINING and ignore it. Rewrite it to
+  # --against and keep any other flags (--dry-run, --json-only, …) intact.
+  bare_ref="" rest=()
+  for a in "${REMAINING_FOR_LIB[@]+"${REMAINING_FOR_LIB[@]}"}"; do
+    if [[ -z "${bare_ref}" && "${a#-}" == "${a}" ]]; then bare_ref="$a"; else rest+=("$a"); fi
+  done
+  if [[ -n "${bare_ref}" ]]; then
+    REMAINING_FOR_LIB=("--against" "${bare_ref}" "${rest[@]+"${rest[@]}"}")
+  else
+    # No range/PR/ref anywhere → default to the local unpushed backstop.
+    REMAINING_FOR_LIB+=("--unpushed")
+  fi
+fi
 
 # ── PR / base-ref discovery (mirrors the security dispatcher) ───────────────
 require_gh_cli() {
