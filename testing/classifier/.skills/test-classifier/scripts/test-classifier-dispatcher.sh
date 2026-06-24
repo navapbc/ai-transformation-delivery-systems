@@ -746,8 +746,16 @@ submit_metrics_row() {
   local pr_number="$1"
   local classifier_json="$2"
 
-  if [[ ! -t 0 ]] || [[ "${CI:-}" == "true" ]]; then
-    ai_review::info "--submit: non-interactive run — comment posted; skipping the helpfulness prompt + metrics row." >&2
+  # Interactivity check: probe the CONTROLLING TERMINAL (/dev/tty), NOT fd 0.
+  # The OBSERVED agent runs Bash tool subprocesses (pnpm install, vitest, …) with
+  # the dispatcher's fd 0 as their stdin; those can consume it to EOF or leave it
+  # non-TTY by the time we get here. Testing `[[ ! -t 0 ]]` then wrongly reports
+  # "non-interactive" and silently skips the prompt — even though /dev/tty is
+  # available and we could ask. The prompt below reads from /dev/tty, so the guard
+  # must gate on the SAME thing: can we open /dev/tty? In CI / a real non-TTY run
+  # there is no controlling terminal, so this still skips correctly.
+  if [[ "${CI:-}" == "true" ]] || ! { : <>/dev/tty; } 2>/dev/null; then
+    ai_review::info "--submit: non-interactive run (no controlling terminal) — comment posted; skipping the helpfulness prompt + metrics row." >&2
     return 0
   fi
   if ! command -v python3 &>/dev/null; then
