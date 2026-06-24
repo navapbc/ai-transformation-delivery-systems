@@ -75,7 +75,12 @@ SKILL_HUMAN_NAME="AI Test Classifier (application-bug / test-bug / flaky / envir
 # Skill text lives in-repo and is the canonical source of truth (this bundle owns
 # its skill — no external fetch).
 BUNDLE_ROOT="$(cd "${SKILLS_ROOT}/.." && pwd)"   # .skills → classifier (bundle root)
-SKILL_PATH_CANONICAL=".skills/test-classifier/SKILL.md"
+# Absolute path to the skill file. MUST be absolute: the agent's CWD is the repo
+# root, but the bundle lives under testing/classifier/ (and can be vendored at any
+# depth), so a path relative to the bundle root would not resolve from the agent's
+# CWD — it would 404 on the first Read and force a recovery `find`. Absolute always
+# resolves regardless of where the bundle sits or where the agent is invoked.
+SKILL_PATH_CANONICAL="${SKILLS_ROOT}/test-classifier/SKILL.md"
 
 # ── Classifier-specific arg parsing ────────────────────────────────────────
 # We intercept our own flags first, then pass the remainder to the shared
@@ -369,7 +374,7 @@ the AI_REVIEW_DIFF_RANGE env var (base→HEAD normally; base→index, i.e. commi
   git diff \$AI_REVIEW_DIFF_RANGE --unified=5
   git diff \$AI_REVIEW_DIFF_RANGE --name-only
 
-Follow the skill instructions in test-classifier/SKILL.md exactly:
+Follow the skill instructions in that SKILL.md file (path above) exactly:
 
 ${SIGNAL_STEP}
   2. Collect the change-under-test diff (above).
