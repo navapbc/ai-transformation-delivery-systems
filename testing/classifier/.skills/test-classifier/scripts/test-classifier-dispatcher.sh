@@ -377,7 +377,29 @@ source "${LIB_PATH}"
 
 # --help was requested during arg parsing above; the lib (which defines the help
 # text) is now loaded, so emit it and exit before any PR discovery / AI call.
+# Document the dispatcher's own flags + defaulting via the lib's addendum hook —
+# the shared --against/--unpushed/--dry-run/etc. are already covered by the lib.
 if (( WANT_HELP == 1 )); then
+  read -r -d '' AI_REVIEW_HELP_ADDENDUM <<'HELP_ADDENDUM' || true
+test-classifier options (in addition to the shared options above):
+  --pr <number>        Explicit PR number for posting (overrides auto-discovery).
+  --post-comment       Post ONE PR comment with the verdicts + a 👍/👎 ask.
+                       Omit for a local report-only run (prints, posts nothing).
+  --submit             Implies --post-comment; then (interactive only) prompts
+                       "Was this helpful?" and appends one Testing Events row.
+  --gate               Exit 1 when the result is CLASSIFIED (CI-blocking mode).
+  --json-only          Print only the machine-readable JSON block.
+
+Defaults when no diff-range/PR selector is given:
+  (no arguments)       → --unpushed (committed + staged; local, report-only).
+  a bare ref           → --against <ref>, e.g.  test-classifier origin/main
+
+Environment:
+  AI_RUN_SUITE=1       Run the suite (OBSERVED) instead of inferring from the
+                       diff. Prefix it:  AI_RUN_SUITE=1 test-classifier --pr 42
+  METRICSAI_WEBHOOK_URL / METRICSAI_WEBHOOK_KEY
+                       Required only by --submit to append the Testing Events row.
+HELP_ADDENDUM
   ai_review::print_help
   exit 0
 fi
