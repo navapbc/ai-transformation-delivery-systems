@@ -29,6 +29,7 @@
 # Usage:
 #   test-classifier-dispatcher.sh                              # auto-discover PR; print only
 #   test-classifier-dispatcher.sh --pr 1234 --post-comment     # post the PR comment
+#   test-classifier-dispatcher.sh --pr 1234 --submit           # post + prompt "helpful?" + append a Testing Events row
 #   test-classifier-dispatcher.sh --against origin/main        # explicit base ref
 #   test-classifier-dispatcher.sh --unpushed                   # local: committed+staged, NO PR (report-only)
 #   test-classifier-dispatcher.sh --json-only                  # emit only the JSON block
@@ -40,6 +41,11 @@
 #
 # Required when --post-comment is used:
 #   gh CLI installed and authenticated; or GH_TOKEN exported
+#
+# Required when --submit writes to the sheet (interactive runs only):
+#   GOOGLE_SHEETS_TOKEN + SHEET_ID (same creds as
+#   testing/metrics/test_classifier_comments.sh). Absent → posts + prompts but
+#   skips the append. Row goes to the Testing Events tab (override: SHEET_RANGE).
 
 set -euo pipefail
 
@@ -72,6 +78,10 @@ SKILL_PATH_CANONICAL=".skills/test-classifier/SKILL.md"
 #
 #   --pr <number>         Explicit PR number (overrides auto-discovery)
 #   --post-comment        Post ONE PR comment via gh api (omit to print only)
+#   --submit              Implies --post-comment; then (interactive only) prompts
+#                         "Was this helpful?" and appends one Testing Events row
+#                         to the Sheet with the verdict + 👍/👎. Non-TTY/CI: posts
+#                         and skips the prompt + row.
 #   --gate                Exit 1 if the result is CLASSIFIED (CI-blocking mode)
 #   --json-only           Print only the JSON block (machine consumption)
 #
@@ -84,6 +94,8 @@ POST_COMMENT=0
 GATE_MODE=0
 JSON_ONLY=0
 WANT_HELP=0
+SUBMIT=0
+POSTED_COMMENT_ID=""   # set by the post functions; consumed by --submit
 REMAINING_FOR_LIB=()
 
 while [[ $# -gt 0 ]]; do
@@ -105,6 +117,14 @@ while [[ $# -gt 0 ]]; do
       shift
       ;;
     --post-comment)
+      POST_COMMENT=1
+      shift
+      ;;
+    --submit)
+      # Streamlined local loop: post the comment AND, when run interactively,
+      # prompt "Was this helpful?" and append the answer as one Testing Events
+      # row to the Sheet. Implies --post-comment (the row needs the comment_id).
+      SUBMIT=1
       POST_COMMENT=1
       shift
       ;;
@@ -489,16 +509,20 @@ post_issue_comment_to_github() {
   local pr_number="$2"
   local body="$3"
 
-  # Pass the body via --field so gh handles JSON escaping for us.
-  if ! gh api \
+  # Pass the body via --field so gh handles JSON escaping for us. Capture the
+  # new comment id (for --submit's metrics row); --jq '.id' is empty on failure.
+  local resp_id=""
+  resp_id="$(gh api \
         "repos/${repo_slug}/issues/${pr_number}/comments" \
         --method POST \
-        --field body="${body}" >/dev/null; then
+        --field body="${body}" --jq '.id' 2>/dev/null || true)"
+  if [[ -z "$resp_id" ]]; then
     echo "ERROR: 'gh api' issue-comment call failed." >&2
     echo "       Check your gh auth status and that your token has 'pull-requests: write'" >&2
     echo "       (or 'issues: write')." >&2
     return 1
   fi
+  POSTED_COMMENT_ID="$resp_id"
 }
 
 # Post ONE classification comment to the PR. Args: PR number, comment body.
@@ -547,13 +571,18 @@ post_comment_to_github() {
 
   if [[ -n "$anchor_path" && -n "$commit_id" ]]; then
     echo "[test-classifier] Posting classification as a review comment on ${repo_slug} PR #${pr_number} (anchored to ${anchor_path})..."
-    if gh api \
+    # Capture the response so --submit can record the new comment's id in the
+    # metrics row. --jq '.id' prints the id on success; empty on failure.
+    local resp_id=""
+    resp_id="$(gh api \
           "repos/${repo_slug}/pulls/${pr_number}/comments" \
           --method POST \
           --field body="${body}" \
           --field commit_id="${commit_id}" \
           --field path="${anchor_path}" \
-          --field subject_type=file >/dev/null 2>&1; then
+          --field subject_type=file --jq '.id' 2>/dev/null || true)"
+    if [[ -n "$resp_id" ]]; then
+      POSTED_COMMENT_ID="$resp_id"
       echo "[test-classifier] Review comment posted. Awaiting the developer's 👍/👎 reaction (and a reply reason on a 👎)."
       return 0
     fi
@@ -568,6 +597,99 @@ post_comment_to_github() {
     exit 1
   fi
   echo "[test-classifier] Comment posted (issue comment). Awaiting the developer's 👍/👎 reaction."
+}
+
+# ── --submit: prompt "Was this helpful?" and append one Testing Events row ──
+# Streamlines the manual local loop: instead of (post comment → react 👍/👎 on
+# GitHub → a separate weekly harvest), capture the developer's signal right after
+# the run and append it straight to the Sheet's "Testing Events" tab — the same
+# per-comment row shape testing/metrics/test_classifier_comments.sh writes:
+#   repo, pr, comment_id, verdict, category, confidence, thumbs_up, thumbs_down, reason
+#
+# Gated: only runs interactively (TTY, not CI) — non-interactive runs post the
+# comment and skip the prompt + row (no human signal to record, no hang). Needs
+# GOOGLE_SHEETS_TOKEN + SHEET_ID in the env (same creds the harvester uses);
+# absent → we say so and skip the append (the comment is still posted).
+#
+# Args: PR number, the extracted classifier JSON.
+submit_metrics_row() {
+  local pr_number="$1"
+  local classifier_json="$2"
+
+  if [[ ! -t 0 ]] || [[ "${CI:-}" == "true" ]]; then
+    ai_review::info "--submit: non-interactive run — comment posted; skipping the helpfulness prompt + metrics row." >&2
+    return 0
+  fi
+  if ! command -v python3 &>/dev/null; then
+    ai_review::warn "--submit: python3 not found; cannot read the verdict JSON — skipping the metrics row." >&2
+    return 0
+  fi
+
+  # Prompt for the tuning signal. Empty/invalid → skip (don't guess a verdict).
+  local answer reason="" thumbs_up=0 thumbs_down=0
+  printf '%s' "  Was the classification helpful? [y/n] (enter to skip): " >&2
+  read -r answer
+  case "${answer}" in
+    y|Y|yes|YES) thumbs_up=1 ;;
+    n|N|no|NO)
+      thumbs_down=1
+      printf '%s' "  Optional one-line reason (enter to skip): " >&2
+      read -r reason
+      ;;
+    *)
+      ai_review::info "--submit: no answer — skipping the metrics row (comment still posted)." >&2
+      return 0
+      ;;
+  esac
+
+  if [[ -z "${GOOGLE_SHEETS_TOKEN:-}" || -z "${SHEET_ID:-}" ]]; then
+    ai_review::warn "--submit: GOOGLE_SHEETS_TOKEN / SHEET_ID not set — recorded your answer but no Sheet to write to." >&2
+    ai_review::log  "  Set both (see testing/metrics/test_classifier_comments.sh header) to enable the sink." >&2
+    return 0
+  fi
+
+  local repo_slug
+  repo_slug="$(gh repo view --json nameWithOwner --jq '.nameWithOwner' 2>/dev/null || echo "")"
+
+  # The classifier may emit multiple classifications; the Testing Events row is
+  # per-comment, so collapse to one representative verdict by most-actionable
+  # rank (APPLICATION_BUG > TEST_BUG > FLAKY_FAILURE > ENVIRONMENT_ISSUE) — the
+  # same rule the harvester uses. Returns: verdict<TAB>category<TAB>confidence.
+  local repr
+  repr="$(printf '%s' "${classifier_json}" | python3 -c '
+import json, sys
+RANK = {"APPLICATION_BUG":3,"TEST_BUG":2,"FLAKY_FAILURE":1,"ENVIRONMENT_ISSUE":0}
+try:
+    cls = (json.load(sys.stdin) or {}).get("classifications") or []
+except Exception:
+    cls = []
+if not cls:
+    print("\t\t"); sys.exit(0)
+best = max(cls, key=lambda c: RANK.get(c.get("verdict",""), -1))
+print("\t".join([best.get("verdict","") or "", best.get("category","") or "", best.get("confidence","") or ""]))
+' 2>/dev/null || printf '\t\t')"
+  local verdict category confidence
+  IFS=$'\t' read -r verdict category confidence <<< "${repr}"
+
+  # Range targets the Testing Events tab (NOT the weekly CXT/DMOD/… aggregate
+  # tabs). Overridable, but defaults here to the per-event tab.
+  local range="${SHEET_RANGE:-Testing Events!A1}"
+  local payload url
+  payload="$(python3 -c '
+import json, sys
+vals = sys.argv[1:10]
+print(json.dumps({"values": [vals]}))
+' "${repo_slug}" "${pr_number}" "${POSTED_COMMENT_ID}" "${verdict}" "${category}" "${confidence}" "${thumbs_up}" "${thumbs_down}" "${reason}")"
+  url="https://sheets.googleapis.com/v4/spreadsheets/${SHEET_ID}/values/$(python3 -c 'import urllib.parse,sys;print(urllib.parse.quote(sys.argv[1]))' "${range}"):append?valueInputOption=RAW&insertDataOption=INSERT_ROWS"
+
+  if curl -sS -f -X POST "${url}" \
+        -H "Authorization: Bearer ${GOOGLE_SHEETS_TOKEN}" \
+        -H "Content-Type: application/json" \
+        -d "${payload}" >/dev/null 2>&1; then
+    ai_review::ok "--submit: appended a row to the Testing Events sheet (verdict=${verdict:-?}, $([ "${thumbs_up}" = 1 ] && echo 👍 || echo 👎))."
+  else
+    ai_review::warn "--submit: Sheets append failed (your answer was not recorded). Check GOOGLE_SHEETS_TOKEN scope and that the SA has edit access to the sheet." >&2
+  fi
 }
 
 # ── Custom run loop (mirrors the security PR dispatcher) ────────────────────
@@ -592,6 +714,7 @@ test_classifier::run() {
     ai_review::log  "  PR number:      ${AI_REVIEW_PR_NUMBER:-(none — using --against directly)}"
     ai_review::log  "  Diff source:    $(ai_review::diff_command_description)"
     ai_review::log  "  Post comment:   ${POST_COMMENT}"
+    ai_review::log  "  Submit metrics: ${SUBMIT}"
     ai_review::log  "  Gate mode:      ${GATE_MODE}"
     ai_review::log  "  Changed files:"
     ai_review::changed_files | sed 's/^/    /'
@@ -679,6 +802,12 @@ test_classifier::run() {
       local comment_body
       comment_body="$(render_pr_comment_body "${json_block}")"
       post_comment_to_github "${AI_REVIEW_PR_NUMBER}" "${comment_body}"
+
+      # --submit: prompt for the helpfulness signal and append a Testing Events
+      # row (interactive only; no-ops cleanly in CI / non-TTY).
+      if (( SUBMIT == 1 )); then
+        submit_metrics_row "${AI_REVIEW_PR_NUMBER}" "${json_block}"
+      fi
     fi
   fi
 

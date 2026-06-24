@@ -128,6 +128,9 @@ AI_RUN_SUITE=1 test-classifier        # run the suite locally and triage REAL fa
 test-classifier --post-comment              # auto-discovers the current branch's PR
 test-classifier --pr 42 --post-comment      # explicit PR number
 AI_RUN_SUITE=1 test-classifier --pr 42 --post-comment   # OBSERVED + post
+
+# Streamlined: post AND record the metric in one shot (see --submit below):
+test-classifier --pr 42 --submit
 ```
 
 > **Posting authorship.** A locally-posted comment is authored by **you**, not
@@ -135,6 +138,52 @@ AI_RUN_SUITE=1 test-classifier --pr 42 --post-comment   # OBSERVED + post
 > harvest, `metricsai` must be told to count your author (`--all-authors` or
 > `METRICSAI_TESTING_GITHUB_AUTHORS`); by default it only counts the CI bot. For
 > just *posting to the PR*, this doesn't matter.
+
+---
+
+## `--submit` — classify, post, and record the metric in one shot
+
+The slow path to metrics is: post a comment → react 👍/👎 on GitHub later → wait
+for the weekly harvest. `--submit` collapses that into the run you're already
+doing. After classifying and posting, it prompts right in the terminal:
+
+```
+  Was the classification helpful? [y/n] (enter to skip):
+```
+
+Your answer is appended **immediately** as one row to the Sheet's **Testing
+Events** tab — verdict, file context, confidence, and your 👍/👎 (with an optional
+one-line reason on a 👎). No GitHub round-trip, no separate harvest.
+
+```bash
+test-classifier --pr 42 --submit                 # classify (INFERRED) → post → ask → record
+AI_RUN_SUITE=1 test-classifier --pr 42 --submit  # OBSERVED → post → ask → record
+test-classifier --submit                         # auto-discovers the current branch's PR
+```
+
+**Requirements:** everything `--post-comment` needs (open PR + `gh` authed),
+**plus** the Sheets sink in your environment:
+
+```bash
+export SHEET_ID="<spreadsheet id from its URL>"
+export GOOGLE_SHEETS_TOKEN="$(gcloud auth print-access-token --impersonate-service-account=<sa>)"
+# Row goes to the "Testing Events" tab by default; override with SHEET_RANGE.
+```
+
+The service account needs Editor access to the sheet (`spreadsheets` scope) —
+same setup as the harvester (`testing/metrics/test_classifier_comments.sh`).
+
+**Behavior notes:**
+- **Interactive only.** In CI or any non-TTY run, `--submit` posts the comment
+  and **skips** the prompt + row (no human to ask, no hang). CI metrics still
+  come from the central weekly harvest.
+- **No creds → no crash.** If `GOOGLE_SHEETS_TOKEN` / `SHEET_ID` aren't set, it
+  records your answer to the terminal and warns that there's no sink — the
+  comment is still posted.
+- **Writes to Testing Events, not the weekly tabs.** These are per-event rows
+  (one per run), distinct from the `metricsai` weekly aggregate rows in the
+  CXT / DMOD / EMMY / OSRE tabs.
+- **Pressing enter skips** the row entirely — no verdict is guessed.
 
 **Scope details.**
 
