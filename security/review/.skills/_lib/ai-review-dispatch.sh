@@ -452,20 +452,26 @@ ai_review::invoke_ai() {
 
 # ── Result marker parsing ───────────────────────────────────────────────────
 # The canonical marker is:  <<<AI_REVIEW_RESULT:PASS|WARN|BLOCK>>>
-# We grep for the structured form first; if absent we fall through to a safety
-# BLOCK because the AI must produce a marker and its absence indicates an error.
+# The AI emits its verdict as the LAST marker in its response. We must take the
+# last occurrence, not the first match, because the captured output can contain
+# earlier *echoes* of the marker list: the dispatcher's own prompt shows all
+# three markers, and CLIs that stream the full agent transcript (e.g. `codex
+# exec`) replay the SKILL.md "Exit Behavior" section the agent reads — which also
+# lists all three. A naive `grep BLOCK first` therefore matched the instructions,
+# not the verdict, and forced BLOCK on every run. If no marker is present we fall
+# through to a safety BLOCK because the AI must produce one and its absence
+# indicates an error.
 ai_review::parse_result() {
   local output="$1"
+  local marker
+  marker="$(grep -oE '<<<AI_REVIEW_RESULT:(PASS|WARN|BLOCK)>>>' <<< "${output}" | tail -n 1)"
 
-  if   grep -q '<<<AI_REVIEW_RESULT:BLOCK>>>' <<< "${output}"; then
-    echo "BLOCK"
-  elif grep -q '<<<AI_REVIEW_RESULT:WARN>>>'  <<< "${output}"; then
-    echo "WARN"
-  elif grep -q '<<<AI_REVIEW_RESULT:PASS>>>'  <<< "${output}"; then
-    echo "PASS"
-  else
-    echo "UNPARSEABLE"
-  fi
+  case "${marker}" in
+    *BLOCK*) echo "BLOCK" ;;
+    *WARN*)  echo "WARN" ;;
+    *PASS*)  echo "PASS" ;;
+    *)       echo "UNPARSEABLE" ;;
+  esac
 }
 
 # ── Adjudication: false-positive reduction ──────────────────────────────────
