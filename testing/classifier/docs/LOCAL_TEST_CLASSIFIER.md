@@ -211,6 +211,15 @@ The row lands in the **Testing Events** tab by default; override with
   unchanged. To silence the step stream (just wait for the report), set
   `AI_REVIEW_STREAM=0`. In CI the run is always silent until it finishes.
 
+  Streaming works for **all three tools**, by the means each CLI provides:
+  `claude` via `--output-format stream-json`; `codex` via `codex exec --json`;
+  and `copilot` via a `preToolUse` hook (the Copilot CLI has no structured
+  output mode yet — see [github/copilot-cli#52](https://github.com/github/copilot-cli/issues/52) —
+  so the dispatcher installs a temporary hook under a throwaway `COPILOT_HOME`
+  that narrates each tool call, and removes it when the run ends). Streaming
+  needs `python3` on PATH and a real terminal; without either, the run falls
+  back to quiet mode and prints only the final report.
+
 ---
 
 ## When to run

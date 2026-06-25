@@ -410,6 +410,54 @@ sys.stdout.write(final)
 '
 }
 
+# Reads `codex exec --json` JSONL events on stdin. Same contract as stream_split:
+# narrate steps to STDERR, emit ONLY the final agent message to STDOUT (markers +
+# JSON intact) for the dispatcher to parse. Codex item types we surface:
+#   command_execution → ⏎  (a shell/tool call)
+#   agent_message / reasoning → ⏺  (the model's text/thinking)
+# The final answer is the last agent_message item (codex does not emit a single
+# "result" event; the concluding agent_message IS the answer).
+ai_review::codex_stream_split() {
+  python3 -c '
+import sys, json
+def w(s):
+    sys.stderr.write(s + "\n"); sys.stderr.flush()
+final = ""
+for line in sys.stdin:
+    line = line.strip()
+    if not line:
+        continue
+    try:
+        e = json.loads(line)
+    except Exception:
+        continue
+    # Codex nests the work unit under "item" on item.* events.
+    item = e.get("item") or e
+    it = item.get("item_type") or item.get("type") or e.get("type") or ""
+    if it in ("agent_message", "assistant_message", "message"):
+        txt = (item.get("text") or item.get("message") or "").strip()
+        if txt:
+            w("  ⏺ " + (txt if len(txt) <= 200 else txt[:197] + "..."))
+            final = txt  # the latest agent message is the running final answer
+    elif it == "reasoning":
+        txt = (item.get("text") or "").strip()
+        if txt:
+            w("  ⏺ " + (txt if len(txt) <= 200 else txt[:197] + "..."))
+    elif it in ("command_execution", "command", "exec"):
+        cmd = (item.get("command") or item.get("cmd") or "").replace("\n", " ")
+        if len(cmd) > 80:
+            cmd = cmd[:77] + "..."
+        if cmd:
+            w("  ⏎ command  " + cmd)
+    elif it == "file_change":
+        path = item.get("path") or item.get("file") or ""
+        if path:
+            w("  ⏎ file_change  " + str(path))
+# emit the final agent message on stdout for the dispatcher to parse
+sys.stdout.write(final)
+'
+}
+
 ai_review::invoke_claude() {
   ai_review::require_cli "claude" \
     "Install Claude Code:  npm install -g @anthropic-ai/claude-code"
@@ -478,10 +526,26 @@ ai_review::invoke_codex() {
   # read-only mode: filesystem read access only (git diff / file reads), no
   # writes or network — the triage-only default.
   # suite mode: workspace-write so it can install deps and run tests.
-  if (( AI_RUN_SUITE == 1 )); then
-    $(ai_review::timeout_prefix) codex exec --sandbox workspace-write --skip-git-repo-check "${SKILL_PROMPT}" 2>&1
+  #
+  # Streaming: `codex exec --json` makes stdout a JSONL event stream; we pipe it
+  # through codex_stream_split, which narrates steps to STDERR and emits ONLY the
+  # final agent message to STDOUT — so the captured stdout stays parseable, same
+  # contract as the plain path. Without streaming we omit --json so stdout is the
+  # plain final message directly (no splitter needed). NOTE: no 2>&1 in the
+  # streaming branch — codex's own stderr stays on the terminal and must not be
+  # folded into the captured stdout that gets parsed.
+  local stream="${AI_REVIEW_DO_STREAM:-0}"
+  local sandbox="read-only"
+  (( AI_RUN_SUITE == 1 )) && sandbox="workspace-write"
+
+  if (( stream == 1 )); then
+    ai_review::info "Streaming the agent's steps below (set AI_REVIEW_STREAM=0 to silence)…" >&2
+    $(ai_review::timeout_prefix) codex exec --json --sandbox "${sandbox}" \
+      --skip-git-repo-check "${SKILL_PROMPT}" \
+      | ai_review::codex_stream_split
   else
-    codex exec --sandbox read-only --skip-git-repo-check "${SKILL_PROMPT}" 2>&1
+    $(ai_review::timeout_prefix) codex exec --sandbox "${sandbox}" \
+      --skip-git-repo-check "${SKILL_PROMPT}" 2>&1
   fi
 }
 
@@ -493,10 +557,77 @@ ai_review::invoke_copilot() {
   # suite mode: --allow-all-tools lets it run install/test commands headlessly;
   # -s suppresses stats/decoration for clean scriptable output. Copilot has no
   # built-in turn/timeout cap, so the timeout wrapper is the only bound.
-  if (( AI_RUN_SUITE == 1 )); then
-    $(ai_review::timeout_prefix) copilot -p "${SKILL_PROMPT}" --allow-all-tools -s 2>&1
+  #
+  # Streaming: the Copilot CLI has NO structured/JSON event output for -p mode
+  # (github/copilot-cli#52, still open), so we can't split its stdout the way we
+  # do for claude/codex. Instead we use the SUPPORTED hooks API: a preToolUse
+  # hook fires before each tool call in -p mode and receives the call as JSON on
+  # stdin ({timestamp,cwd,toolName,toolArgs}). Our hook echoes that to STDERR
+  # (live ⏎ narration) and returns "{}" on stdout so copilot proceeds unchanged.
+  # Hooks are configured globally under $COPILOT_HOME/hooks/, so we point
+  # COPILOT_HOME at a throwaway dir for this run and remove it after — nothing is
+  # left in the user's real ~/.copilot.
+  local stream="${AI_REVIEW_DO_STREAM:-0}"
+  local copilot_flags=()
+  (( AI_RUN_SUITE == 1 )) && copilot_flags+=(--allow-all-tools)
+
+  if (( stream == 1 )); then
+    ai_review::info "Streaming the agent's steps below (set AI_REVIEW_STREAM=0 to silence)…" >&2
+    # Throwaway COPILOT_HOME so the streaming hook is scoped to this run only.
+    local cphome
+    cphome="$(mktemp -d "${TMPDIR:-/tmp}/tc-copilot-home.XXXXXX")"
+    mkdir -p "${cphome}/hooks"
+    # The hook script: read the preToolUse payload on stdin, narrate to stderr,
+    # return an empty object so copilot runs the tool unchanged.
+    cat > "${cphome}/hooks/stream.sh" <<'HOOK'
+#!/usr/bin/env bash
+# preToolUse hook: copilot pipes the call payload on stdin; we narrate it to the
+# terminal (stderr) and return {} on stdout so copilot runs the tool unchanged.
+# Do NOT redirect python's stderr — that IS where the narration goes. All errors
+# are swallowed INSIDE python so a parse failure can't break the run.
+payload="$(cat)"
+python3 -c '
+import sys, json
+try:
+    e = json.loads(sys.argv[1] or "{}")
+    name = e.get("toolName") or "tool"
+    args = e.get("toolArgs") or ""
+    if not isinstance(args, str):
+        args = json.dumps(args)
+    args = args.replace("\n", " ")
+    if len(args) > 80:
+        args = args[:77] + "..."
+    sys.stderr.write("  ⏎ " + str(name) + (("  " + args) if args else "") + "\n")
+    sys.stderr.flush()
+except Exception:
+    pass
+' "$payload" || true
+printf '{}'
+HOOK
+    chmod +x "${cphome}/hooks/stream.sh"
+    # Register the preToolUse command hook.
+    cat > "${cphome}/hooks/hooks.json" <<HOOKCFG
+{
+  "preToolUse": [
+    { "type": "command", "bash": "${cphome}/hooks/stream.sh", "timeoutSec": 10 }
+  ]
+}
+HOOKCFG
+    # Run copilot with COPILOT_HOME pointed at the throwaway dir; clean up after.
+    # NO 2>&1 here: the hook narrates to STDERR (which must flow to the terminal,
+    # not into the captured stdout we parse). -s keeps stdout to the clean final
+    # answer. The hook's ⏎ lines + copilot's own stderr stay on the terminal.
+    COPILOT_HOME="${cphome}" $(ai_review::timeout_prefix) \
+      copilot -p "${SKILL_PROMPT}" "${copilot_flags[@]+"${copilot_flags[@]}"}" -s
+    local rc=$?
+    rm -rf "${cphome}"
+    return $rc
   else
-    copilot -p "${SKILL_PROMPT}" 2>&1
+    if (( AI_RUN_SUITE == 1 )); then
+      $(ai_review::timeout_prefix) copilot -p "${SKILL_PROMPT}" --allow-all-tools -s 2>&1
+    else
+      copilot -p "${SKILL_PROMPT}" 2>&1
+    fi
   fi
 }
 
