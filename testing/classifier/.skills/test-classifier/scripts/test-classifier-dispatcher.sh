@@ -285,15 +285,46 @@ ai_review::discover_pr_context() {
   done
 
   # If --pr was given, look up that PR's base ref.
+  #
+  # Works for OPEN, CLOSED, and MERGED PRs — `gh pr view` returns baseRefName for
+  # any state (PR state does not gate this). The one real failure mode is repo
+  # mismatch: we pin to origin's slug (the #64 fork fix), but if the PR actually
+  # lives on a DIFFERENT repo than origin (e.g. the PR is on the upstream/parent,
+  # or the user relies on `gh repo set-default`), the origin-pinned lookup finds
+  # nothing. So: try origin first, then fall back to gh's OWN default resolution
+  # (no -R), and adopt whichever repo actually resolved so posting + the metrics
+  # row target the right place. AI_REVIEW_REPO overrides everything.
   if [[ -n "${PR_NUMBER}" ]]; then
     require_gh_cli "PR number was specified via --pr"
-    local repo_slug
+    local repo_slug base resolved_slug=""
     repo_slug="$(ai_review::repo_slug)" || exit 1
-    local base
+
+    # 1) origin-pinned lookup (the common/fork case).
     base="$(gh pr view "${PR_NUMBER}" -R "${repo_slug}" --json baseRefName --jq '.baseRefName' 2>/dev/null || true)"
+    if [[ -n "${base}" ]]; then
+      resolved_slug="${repo_slug}"
+    elif [[ -z "${AI_REVIEW_REPO:-}" ]]; then
+      # 2) Fall back to gh's own repo resolution (no -R) — handles a PR that lives
+      #    on a repo other than origin (upstream, or a gh default). Skipped when
+      #    AI_REVIEW_REPO was set explicitly (the caller pinned it on purpose).
+      base="$(gh pr view "${PR_NUMBER}" --json baseRefName --jq '.baseRefName' 2>/dev/null || true)"
+      if [[ -n "${base}" ]]; then
+        resolved_slug="$(gh pr view "${PR_NUMBER}" --json headRepositoryOwner,headRepository \
+                          --jq '.headRepositoryOwner.login + "/" + .headRepository.name' 2>/dev/null || true)"
+        [[ -z "${resolved_slug}" ]] && resolved_slug="$(gh repo view --json nameWithOwner --jq '.nameWithOwner' 2>/dev/null || true)"
+        if [[ -n "${resolved_slug}" ]]; then
+          echo "[test-classifier] PR #${PR_NUMBER} not found on origin (${repo_slug}); using ${resolved_slug} (gh's resolution)." >&2
+          AI_REVIEW_REPO_SLUG="${resolved_slug}"   # adopt it for posting + metrics
+        fi
+      fi
+    fi
+
     if [[ -z "${base}" ]]; then
-      echo "ERROR: could not look up PR #${PR_NUMBER} via gh CLI." >&2
-      echo "       Verify the PR number exists and you have access to it." >&2
+      echo "ERROR: could not look up PR #${PR_NUMBER}." >&2
+      echo "       It was not found on '${repo_slug}' (from your 'origin' remote)$([ -z "${AI_REVIEW_REPO:-}" ] && echo " or via gh's default repo")." >&2
+      echo "       PR state (open/closed/merged) does NOT matter — this is a repo/access issue:" >&2
+      echo "         • If the PR lives on a different repo, set it: AI_REVIEW_REPO=owner/name test-classifier --pr ${PR_NUMBER} …" >&2
+      echo "         • Or check 'gh pr view ${PR_NUMBER}' works and your token has access to that repo." >&2
       exit 1
     fi
     REMAINING_FOR_LIB+=("--against" "origin/${base}")
