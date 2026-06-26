@@ -72,6 +72,18 @@ if [[ ! -f "${LIB_PATH}" ]]; then
   exit 1
 fi
 
+# ── Sandbox routing (opt-in) ────────────────────────────────────────────────
+# When AI_SANDBOX=1 and this is an OBSERVED run (AI_RUN_SUITE=1), hand the whole
+# run to the sandbox control plane, which re-invokes THIS dispatcher inside a
+# disposable smolvm VM. The control plane sets AI_SANDBOX_ACTIVE=1 in the VM's
+# env, so the in-VM invocation falls through and runs normally (no recursion).
+# Sandboxing only matters for OBSERVED (which executes code); INFERRED is
+# read-only and never routed. See docs/SANDBOXED_OBSERVED.md.
+if [[ "${AI_SANDBOX:-0}" == "1" && "${AI_RUN_SUITE:-0}" == "1" \
+      && "${AI_SANDBOX_ACTIVE:-0}" != "1" ]]; then
+  exec "${SCRIPT_DIR}/sandbox-run.sh" -- "$@"
+fi
+
 # ── Skill identity ──────────────────────────────────────────────────────────
 SKILL_NAME="test-classifier"
 SKILL_HUMAN_NAME="AI Test Classifier (application-bug / test-bug / flaky / environment)"
