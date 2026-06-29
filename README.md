@@ -44,20 +44,22 @@ Canonical classification logic lives in the skill:
 ### How data is gathered
 
 ```
-  INNER LOOP (local, pre-push)          OUTER LOOP (CI, on every PR)
-    test-classifier --submit              Actions (Emmy) / Jenkins
-          │ terminal y/n                          │ runs suite (OBSERVED)
-          │                                       ▼
-          │                            ONE PR comment + 👍/👎 ──(devs react)
-          │                                       │
-          │                                       ▼
-          │                              metricsai weekly run
-          ▼                                       │
-     "Testing Events" tab ─────► Google Sheet ◄───┘
+  INNER LOOP (local)                    OUTER LOOP (CI, on every PR)
+    test-classifier --pr N --submit       Actions / Jenkins
+          │                                     │ runs suite (OBSERVED)
+          │ posts                               ▼
+          ├───────────────────────────► ONE PR comment + 👍/👎 ──(devs react)
+          │                                     │   (either loop posts it)
+          │ + writes a row                      ▼
+          ▼                             metricsai weekly run
+     "Testing Events" tab                       │
+          └─────────► Google Sheet ◄────────────┘
 ```
 
-Two writers, one sheet: CI 👍/👎 reactions (harvested weekly by `metricsai`) and
-local `--submit` events (written immediately to the *Testing Events* tab).
+Two writers reach the sheet: CI 👍/👎 reactions (harvested weekly by `metricsai`)
+and local `--submit` rows (written immediately to the *Testing Events* tab). A
+local `--submit` (or `--post-comment`) run **also posts the same PR comment** — so
+the inner loop surfaces the verdict on the PR *and* records a metric row.
 
 ### Options to run (inner loop and outer loop)
 - **Outer loop (CI, on every PR)** — the designed path. It triggers on every PR,
@@ -65,13 +67,10 @@ local `--submit` events (written immediately to the *Testing Events* tab).
   Actions consumers reference a reusable workflow (no files copied); Jenkins
   consumers vendor the bundle and add a pipeline stage. Feedback is the 👍/👎 on
   the comment, harvested into the team's weekly metrics row.
-- **Inner loop (local, pre-push)** — a `test-classifier` shell function classifies
-  unpushed changes before a PR exists. Diff-only (INFERRED) by default, or runs
-  the suite (OBSERVED) on demand; `--submit` records the developer's y/n straight
-  to the sheet. A fast preview, not a substitute for the CI pass.
+- **Inner loop (local)** — a `test-classifier` shell function runs on your unpushed changes (no PR needed) or against an existing PR. For local, we recommend running in OBSERVED mode with command `AI_RUN_SUITE=1 test-classifier --pr <PR> --submit`. That posts the one PR comment, prompts "helpful? y/n" in the terminal, and writes to the metrics spreadsheet (Alternatively, `--post-comment` posts the comment only).
 
-A team runs the **outer loop when its CI can host it**; the **inner loop is the
-fallback** when CI can't — and a preview for everyone else.
+In summary, run the **outer loop when your CI can host it**. Otherwise, the **inner loop is the
+fallback** when CI isn't available.
 
 ## Security
 **Problem solved:** stop secrets, PII/PHI, and security or compliance defects from
