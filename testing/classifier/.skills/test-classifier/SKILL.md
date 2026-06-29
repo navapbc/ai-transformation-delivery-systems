@@ -196,14 +196,23 @@ marker, and stop. Passing tests are never listed.
 
 ## Step 2 — Collect the Diff
 
-The dispatcher passes the change-under-test base ref via the
-`AI_REVIEW_AGAINST` environment variable. If unset, the dispatcher will have
-refused to run.
+The dispatcher passes a **candidate** range via `AI_REVIEW_DIFF_RANGE` (and the
+base ref via `AI_REVIEW_AGAINST`). Start there:
 
 ```bash
-git diff "$AI_REVIEW_AGAINST" HEAD --unified=5      # full content of the change
-git diff "$AI_REVIEW_AGAINST" HEAD --name-only      # list of changed paths
+git diff $AI_REVIEW_DIFF_RANGE --name-only          # list of changed paths
+git diff $AI_REVIEW_DIFF_RANGE --unified=5          # full content of the change
 ```
+
+**Verify it reflects the real change under test — it is a starting point, not
+gospel.** The precomputed base (often `origin/<base>`) can be wrong or empty when
+the PR lives on a different repo than the local `origin`, on a fork or enterprise
+host, or when `origin/<base>` is stale/absent. If the name-only diff is empty or
+clearly not this PR's change, re-resolve the base yourself before concluding
+there is nothing to classify: for a PR run use `AI_REVIEW_PR_NUMBER` /
+`AI_REVIEW_REPO_SLUG` / `AI_REVIEW_PR_BASE` to fetch the base from the PR's own
+repo and diff `FETCH_HEAD HEAD`; for a local `--unpushed` run fall back to the
+merge-base with the remote default branch. Note in the summary if you re-resolved.
 
 The diff is your evidence for the central question: did this change *intend* to
 alter the behavior the failing test asserts on? An intended behavior change that

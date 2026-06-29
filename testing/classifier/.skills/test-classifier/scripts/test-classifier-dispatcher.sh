@@ -401,12 +401,35 @@ in this repository at:
 
 Follow the file at the path above.
 
-Classify the failing tests for the change under test. The exact git range is in
-the AI_REVIEW_DIFF_RANGE env var (base→HEAD normally; base→index, i.e. committed
-+ staged, for a local --unpushed run). Use it verbatim:
+Classify the failing tests for the change under test. The dispatcher precomputed
+a candidate git range in the AI_REVIEW_DIFF_RANGE env var (base→HEAD normally;
+base→index for a local --unpushed run). START there:
 
-  git diff \$AI_REVIEW_DIFF_RANGE --unified=5
   git diff \$AI_REVIEW_DIFF_RANGE --name-only
+  git diff \$AI_REVIEW_DIFF_RANGE --unified=5
+
+IMPORTANT — verify the range actually reflects the change under test; do NOT
+treat AI_REVIEW_DIFF_RANGE as gospel. The precomputed base (often \`origin/<base>\`)
+can be WRONG or empty when the PR lives on a different repo than the local
+\`origin\`, on a fork, or on an enterprise host (e.g. github.cms.gov), or when
+\`origin/<base>\` is stale or absent. If \`git diff \$AI_REVIEW_DIFF_RANGE --name-only\`
+is EMPTY or obviously not this PR's change, RE-RESOLVE the base yourself before
+concluding there is nothing to classify:
+
+  • This is a PR run when AI_REVIEW_PR_NUMBER is set; its repo is in
+    AI_REVIEW_REPO_SLUG and its base branch in AI_REVIEW_PR_BASE.
+  • Fetch the PR's base from its own repo and diff HEAD against what you fetched:
+      gh pr view "\$AI_REVIEW_PR_NUMBER" -R "\$AI_REVIEW_REPO_SLUG" --json baseRefName,headRefOid
+      # fetch the base ref from the PR's repo (works across remotes/hosts):
+      url="\$(gh repo view -R "\$AI_REVIEW_REPO_SLUG" --json url --jq .url)"
+      git fetch "\$url" "\$AI_REVIEW_PR_BASE"
+      git diff FETCH_HEAD HEAD --name-only
+      git diff FETCH_HEAD HEAD --unified=5
+  • For a local --unpushed run (no PR number), fall back to the merge-base with
+    the remote default branch, or the last pushed commit, as the base.
+
+Use whichever range genuinely captures the change under test. State in the JSON
+"summary" which base you used if you had to re-resolve it.
 
 Follow the skill instructions in that SKILL.md file (path above) exactly:
 
@@ -947,10 +970,18 @@ test_classifier::run() {
   ai_review::log  "────────────────────────────────────────────────────────────"
 
   export AI_REVIEW_AGAINST
+  # Export the PR context so the agent can re-resolve the diff itself when the
+  # precomputed range below is empty/wrong (forks, enterprise hosts, stale
+  # origin/<base>). These may be empty for a local --unpushed run.
+  export AI_REVIEW_PR_NUMBER="${AI_REVIEW_PR_NUMBER:-}"
+  export AI_REVIEW_PR_BASE="${AI_REVIEW_PR_BASE:-}"
+  export AI_REVIEW_REPO_SLUG="${AI_REVIEW_REPO_SLUG:-}"
 
   # The git range the AI should diff, matching the dispatcher's own accounting:
   #   --unpushed (INCLUDE_STAGED) → `--cached <base>`  (committed + staged)
   #   otherwise                   → `<base> HEAD`      (committed range)
+  # This is a STARTING POINT, not gospel — the prompt authorizes the agent to
+  # re-resolve locally if it doesn't reflect the real change under test.
   if [[ "${AI_REVIEW_INCLUDE_STAGED:-0}" == "1" ]]; then
     AI_REVIEW_DIFF_RANGE="--cached ${AI_REVIEW_AGAINST}"
   else
