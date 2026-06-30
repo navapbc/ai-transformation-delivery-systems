@@ -110,11 +110,12 @@ out of current scope.
 The classifier needs to know *what failed and why it says it failed*. There are
 two ways to get that signal, and which one you use determines the result `mode`:
 
-### OBSERVED — run the suite yourself (when `AI_RUN_SUITE=1`)
+### OBSERVED — run the suite yourself (the default, unless `AI_RUN_SUITE=0`)
 
-When the environment variable `AI_RUN_SUITE=1` is set (the CI workflows set it,
-and you have been granted shell execution), **locate and run the repo's test
-suite yourself**, then classify the failures you actually observe:
+This is the default mode. Unless `AI_RUN_SUITE=0` is set (the `--no-run-suite`
+opt-out, for triaging an untrusted diff without executing it), you have been
+granted shell execution: **locate and run the repo's test suite yourself**, then
+classify the failures you actually observe:
 
 1. **Locate the test command.** Inspect the checked-out repo: `package.json`
    `scripts.test`, a `Makefile` `test:` target, `pytest.ini`/`tox.ini`/
@@ -165,17 +166,18 @@ suite yourself**, then classify the failures you actually observe:
 
 ### INFERRED — predict from the diff (fallback)
 
-If `AI_RUN_SUITE` is not set, **or** you cannot locate / install / run the suite
-(no test command found, missing toolchain, the suite needs services like a
-database, it times out, **or it would apply real infrastructure with no
-guaranteed teardown** — see the IaC ladder above), do **not** fabricate a run.
+If `AI_RUN_SUITE=0` is set (the explicit `--no-run-suite` opt-out), **or** you
+cannot locate / install / run the suite (no test command found, missing
+toolchain, the suite needs services like a database, it times out, **or it would
+apply real infrastructure with no guaranteed teardown** — see the IaC ladder
+above), do **not** fabricate a run.
 Instead reason
 statically over the diff (Step 2) and PREDICT which tests the change would cause
 to fail and why. Then:
 
 - Set the result `mode` to `"INFERRED"`.
 - State the reason you fell back in the `summary` (e.g. "no test script found",
-  "deps failed to install", "suite timed out", "AI_RUN_SUITE not set") so the
+  "deps failed to install", "suite timed out", "AI_RUN_SUITE=0 set") so the
   reviewer sees why this is a prediction, not an observation.
 - Prefer lower confidence, and remember `FLAKY_FAILURE`/`ENVIRONMENT_ISSUE` are
   generally NOT determinable from a diff alone — only assert them with explicit

@@ -27,23 +27,25 @@ and uses the same `--unpushed` scope rule. This is the ergonomics layer over
   fast feedback before pushing; it never blocks anything. By default it's
   **report-only** (prints to your terminal, posts nothing) — but you can opt in
   to posting against a real PR with `--pr N --post-comment` (see Usage).
-- **OBSERVED on demand.** By default a local run is INFERRED (it predicts from
-  the diff — read-only, never touches your machine's toolchain). Opt into
-  OBSERVED with `AI_RUN_SUITE=1` to have the agent actually locate, install, and
-  run your suite and triage the real failures — the same behavior CI uses.
+- **OBSERVED by default.** When your repo has a suite, a local run is OBSERVED:
+  the agent locates, installs, and runs your suite and triages the *real*
+  failures — the same behavior CI uses, and the high-signal path. It falls back
+  to INFERRED on its own when there's no suite to run. To force a read-only
+  INFERRED pass (predict from the diff, never touch your toolchain), pass
+  `--no-run-suite` or set `AI_RUN_SUITE=0`.
 
 > [!WARNING]
-> **OBSERVED (`AI_RUN_SUITE=1`) runs the change's code on your machine — there
-> is no sandbox.** The agent installs dependencies (running each package's
+> **OBSERVED (the default) runs the change's code on your machine — there is no
+> sandbox.** The agent installs dependencies (running each package's
 > install/postinstall scripts) and executes the test suite **directly in your
 > checkout**, with your shell, your environment, and your credentials. It also
 > leaves build artifacts behind (`node_modules/`, downloaded browsers, etc.).
 >
-> Only use `AI_RUN_SUITE=1` on a branch **you trust** — typically your own
-> work-in-progress. Do **not** point it at an untrusted or unreviewed PR
-> (e.g. `--pr N` for someone else's contribution): installing and running that
-> branch's code is arbitrary code execution on your laptop. For untrusted
-> changes, use the default **INFERRED** mode (omit `AI_RUN_SUITE`), which only
+> This is fine on a branch **you trust** — typically your own work-in-progress.
+> Do **not** run it against an untrusted or unreviewed PR (e.g. `--pr N` for
+> someone else's contribution): installing and running that branch's code is
+> arbitrary code execution on your laptop. For untrusted changes, opt out with
+> `--no-run-suite` (or `AI_RUN_SUITE=0`) for the **INFERRED** mode, which only
 > reasons over the diff and never executes anything, or let CI run OBSERVED in
 > its disposable runner.
 
@@ -102,24 +104,25 @@ It forwards args verbatim, and the dispatcher applies these defaults:
   (`--dry-run`, `--json-only`, …). You can combine a ref with flags too:
   `test-classifier origin/main --post-comment`.
 
-Prefix `AI_RUN_SUITE=1` to run the suite locally (OBSERVED) instead of inferring
-from the diff: `AI_RUN_SUITE=1 test-classifier`.
+By default a local run is OBSERVED — it runs your suite and triages the real
+failures. Pass `--no-run-suite` (or `AI_RUN_SUITE=0`) for a read-only INFERRED
+pass that only reasons over the diff: `test-classifier --no-run-suite`.
 
 ---
 
 ## Usage
 
 ```bash
-test-classifier                       # everything unpushed: committed + staged (INFERRED)
+test-classifier                       # everything unpushed: runs the suite, triages REAL failures (OBSERVED)
 test-classifier origin/main           # the committed range origin/main..HEAD
 test-classifier HEAD~1                # just the last commit
 
-AI_RUN_SUITE=1 test-classifier        # run the suite locally and triage REAL failures (OBSERVED)
+test-classifier --no-run-suite        # read-only: predict from the diff, don't run the suite (INFERRED)
 
 # Post the result as a PR comment (needs an open PR + gh authed):
 test-classifier --post-comment              # auto-discovers the current branch's PR
 test-classifier --pr 42 --post-comment      # explicit PR number
-AI_RUN_SUITE=1 test-classifier --pr 42 --post-comment   # OBSERVED + post
+test-classifier --pr 42 --no-run-suite --post-comment   # INFERRED + post
 
 # Streamlined: post AND record the metric in one shot (see --submit below):
 test-classifier --pr 42 --submit
@@ -151,8 +154,8 @@ Events** tab — verdict, file context, confidence, and your 👍/👎 (with an 
 one-line reason on a 👎). No GitHub round-trip, no separate harvest.
 
 ```bash
-test-classifier --pr 42 --submit                 # classify (INFERRED) → post → ask → record
-AI_RUN_SUITE=1 test-classifier --pr 42 --submit  # OBSERVED → post → ask → record
+test-classifier --pr 42 --submit                 # classify (OBSERVED) → post → ask → record
+test-classifier --pr 42 --no-run-suite --submit  # INFERRED → post → ask → record
 test-classifier --submit                         # auto-discovers the current branch's PR
 ```
 
@@ -200,11 +203,11 @@ The row lands in the **Testing Events** tab by default; override with
   `→ Fix the CODE`, `→ Re-run / deflake`, `→ Fix the ENV`). That's the punchline:
   the classifier is **diagnostic** — it tells you which side to fix, never writes
   the patch. Read the summary, then make the change yourself.
-- **INFERRED vs OBSERVED.** Without `AI_RUN_SUITE=1` the agent predicts failures
-  from the diff (INFERRED) and never touches your toolchain. With it, the agent
-  runs your suite (OBSERVED) — the only mode in which `FLAKY_FAILURE` /
-  `ENVIRONMENT_ISSUE` are reliably reachable, since you can't see a timeout or
-  non-determinism from a diff.
+- **OBSERVED vs INFERRED.** By default the agent runs your suite (OBSERVED) —
+  the only mode in which `FLAKY_FAILURE` / `ENVIRONMENT_ISSUE` are reliably
+  reachable, since you can't see a timeout or non-determinism from a diff. With
+  `--no-run-suite` (`AI_RUN_SUITE=0`) it predicts failures from the diff
+  (INFERRED) and never touches your toolchain.
 - **Live progress.** On a local interactive run the dispatcher streams the
   agent's steps (each `⏺` reasoning line and `⏎` tool call) to your terminal as
   they happen, so it isn't a blinking cursor while it works. The final report is
@@ -240,7 +243,7 @@ run (Path B) is still the recorded, metrics-feeding pass; this is your preview.
 | `--unpushed: couldn't determine what's been pushed` | No upstream and no remote default branch (e.g. brand-new branch, no remote). Pass an explicit base: `test-classifier origin/main`. |
 | `AI_REVIEW_TOOL … not set` | Export `AI_REVIEW_TOOL=claude` (or `codex`/`copilot`); see `README.md`. |
 | Classification seems to miss recent edits | `--unpushed` excludes *unstaged* changes. `git add` or commit them first. |
-| Everything lands in INFERRED | That's the default. Add `AI_RUN_SUITE=1` to run the suite (OBSERVED). Suites needing services may still fall back to INFERRED, by design. |
+| Expected OBSERVED but got INFERRED | OBSERVED is the default, but the agent falls back to INFERRED when it can't run the suite — no test command found, missing toolchain, suite needs services (DB), it times out, or it would apply real infra with no teardown. Check the `summary`, which states the reason. (And confirm you didn't pass `--no-run-suite` / set `AI_RUN_SUITE=0`.) |
 | Posted to / recorded the wrong repo (e.g. the upstream of your fork) | The repo is resolved from your `origin` remote. On a fork whose `origin` isn't the repo the PR lives in, export `AI_REVIEW_REPO=owner/name` to set it explicitly. |
 
 ---

@@ -97,6 +97,10 @@ SKILL_PATH_CANONICAL="${SKILLS_ROOT}/test-classifier/SKILL.md"
 #                         and skips the prompt + row.
 #   --gate                Exit 1 if the result is CLASSIFIED (CI-blocking mode)
 #   --json-only           Print only the JSON block (machine consumption)
+#   --no-run-suite        Read-only INFERRED pass: do NOT run the repo's suite
+#                         (predict from the diff). The default is OBSERVED (run
+#                         the suite); use this to triage an UNTRUSTED diff
+#                         without executing its code. Same as AI_RUN_SUITE=0.
 #
 # All other flags (--dry-run, --no-block, --against, --unpushed) fall through to
 # the lib. --unpushed classifies the local committed+staged diff with NO PR —
@@ -140,6 +144,12 @@ while [[ $# -gt 0 ]]; do
       # row to the Sheet. Implies --post-comment (the row needs the comment_id).
       SUBMIT=1
       POST_COMMENT=1
+      shift
+      ;;
+    --no-run-suite)
+      # Opt out of the OBSERVED default: read-only, predict from the diff
+      # (INFERRED). Exported so the sourced lib and the agent see it.
+      export AI_RUN_SUITE=0
       shift
       ;;
     --gate)
@@ -370,10 +380,12 @@ ai_review::discover_pr_context() {
 # We instruct the AI to emit BOTH a human-readable report AND a fenced JSON
 # block. The dispatcher extracts the JSON block to render the PR comment.
 #
-# Step 1 (the failing-test signal) is mode-dependent: with AI_RUN_SUITE=1 the
-# agent has shell execution and must locate + run the suite (OBSERVED); otherwise
-# it predicts from the diff (INFERRED). See SKILL.md Step 1 for the full procedure.
-if [[ "${AI_RUN_SUITE:-0}" == "1" ]]; then
+# Step 1 (the failing-test signal) is mode-dependent: with AI_RUN_SUITE=1 (the
+# default) the agent has shell execution and must locate + run the suite
+# (OBSERVED); with AI_RUN_SUITE=0 (--no-run-suite) it predicts from the diff
+# (INFERRED). See SKILL.md Step 1 for the full procedure. This default must match
+# the lib's (ai-classifier-dispatch.sh) — both default to 1 (OBSERVED).
+if [[ "${AI_RUN_SUITE:-1}" == "1" ]]; then
   read -r -d '' SIGNAL_STEP <<'SIGNAL' || true
   1. Collect the failing-test signal in OBSERVED mode (AI_RUN_SUITE=1 — you have
      shell execution): LOCATE this repo's test command (package.json scripts,
@@ -497,14 +509,18 @@ test-classifier options (in addition to the shared options above):
                        "Was this helpful?" and appends one Testing Events row.
   --gate               Exit 1 when the result is CLASSIFIED (CI-blocking mode).
   --json-only          Print only the machine-readable JSON block.
+  --no-run-suite       Read-only INFERRED pass: predict from the diff instead of
+                       running the suite (the default). Use it on an UNTRUSTED
+                       diff you don't want to execute. Same as AI_RUN_SUITE=0.
 
 Defaults when no diff-range/PR selector is given:
   (no arguments)       → --unpushed (committed + staged; local, report-only).
   a bare ref           → --against <ref>, e.g.  test-classifier origin/main
 
 Environment:
-  AI_RUN_SUITE=1       Run the suite (OBSERVED) instead of inferring from the
-                       diff. Prefix it:  AI_RUN_SUITE=1 test-classifier --pr 42
+  AI_RUN_SUITE         Run the suite (OBSERVED, default) vs. infer from the diff.
+                       OBSERVED is the default; set AI_RUN_SUITE=0 (or pass
+                       --no-run-suite) for a read-only INFERRED pass.
   METRICSAI_WEBHOOK_URL / METRICSAI_WEBHOOK_KEY
                        Required only by --submit to append the Testing Events row.
 HELP_ADDENDUM

@@ -53,13 +53,18 @@ fi
 _AI_CLASSIFIER_DISPATCH_LOADED=1
 
 # ── Suite-running mode ──────────────────────────────────────────────────────
-# By default the classifier is read-only: it triages whatever failing-test
-# signal already exists and never executes the repo's suite. When AI_RUN_SUITE=1
-# (the CI workflows set it) the agent is granted execution so it can locate,
-# install, and RUN the repo's tests, then classify the OBSERVED failures. This
-# gate keeps a local Path-B run safe — a developer's machine won't auto-install
-# deps or run tests unless they opt in with AI_RUN_SUITE=1.
-AI_RUN_SUITE="${AI_RUN_SUITE:-0}"
+# By default the classifier is OBSERVED: the agent locates, installs, and RUNS
+# the repo's suite, then classifies the failures it actually observes. Running
+# the suite when one exists is the high-signal path, so it is the default for
+# every run (local, CI, Jenkins). The skill still falls back to INFERRED on its
+# own when there is no suite to run, the toolchain is missing, or it would apply
+# real infrastructure with no guaranteed teardown.
+#
+# OBSERVED executes the change's code on the current machine. That is fine on a
+# branch you trust (your own work, CI's checkout). To triage an UNTRUSTED diff
+# without executing it, opt out with AI_RUN_SUITE=0 (or --no-run-suite) for a
+# read-only, INFERRED-only pass.
+AI_RUN_SUITE="${AI_RUN_SUITE:-1}"
 
 # Bounds for the agent loop when it is running the suite, so a runaway
 # install/test cycle can't hang the job. The timeout wraps the whole CLI call;
