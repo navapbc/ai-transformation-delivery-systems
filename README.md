@@ -114,18 +114,20 @@ PR comments (👍/👎) and the AWS Security Hub count feed `metricsai`.
 - **Outer loop (CI, on every PR)** — the recorded path, with **two shipped
   options**: a **vendored GitHub Actions workflow** (`ai-pr-review.yml`, copied
   into the repo — security has no point-at-it reusable workflow), or **GitHub
-  Copilot auto-review** (a GitHub app, nothing copied, but needs a Copilot
-  Enterprise / Business + Code-Review license). Either posts inline
+  Copilot auto-review** (needs a Copilot Enterprise / Business + Code-Review
+  license, and you copy its instruction files — `copilot-instructions.md` plus
+  `.github/instructions/*.md` — to align it with the bundle). Either posts inline
   `security(...)` / `compliance(...)` comments; the 👍/👎 plus an AWS Security Hub
   count feed the weekly metrics row. **There is no Jenkins integration for
   security** (testing has one) — the dispatcher is CI-agnostic so a team could
-  wire it into Jenkins by hand, but that path isn't shipped. A periodic
-  **`codebase-audit`** can also run in CI for a full-repo baseline.
+  wire it into Jenkins by hand, but that path isn't shipped.
 - **Inner loop (local, pre-commit/pre-push)** — the `code-security` /
   `iac-compliance` shell functions (and a local `pr-review`) scan unpushed
   changes on demand and return a **PASS / WARN / BLOCK** result in the terminal.
   Report-only: it catches secrets/PII before they leave the laptop, but doesn't
-  feed the sheet.
+  feed the sheet. A full-repo **`codebase-audit`** also lives here (primarily a
+  local tool); it *can* run in CI, but needs an API key and can incur high token
+  cost.
 
 A team runs the **outer loop when its CI can host it**; the **inner loop is the
 local backstop** that keeps secrets and PII out before code is ever pushed.
