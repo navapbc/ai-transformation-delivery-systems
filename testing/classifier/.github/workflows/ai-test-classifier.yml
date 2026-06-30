@@ -169,7 +169,8 @@ jobs:
           AI_REVIEW_TOOL: ${{ vars.AI_REVIEW_TOOL }}
           CI: 'true'
           # Grant the agent execution so it runs the repo's suite for OBSERVED
-          # verdicts (safe on the ephemeral runner; read-only by default locally).
+          # verdicts (safe on the ephemeral runner). OBSERVED is the default;
+          # set explicitly here so CI's behavior is pinned and self-documenting.
           AI_RUN_SUITE: '1'
           # Pass through whichever API key matches the chosen tool. Each secret
           # is set only if the team uses that tool — unused ones stay blank.

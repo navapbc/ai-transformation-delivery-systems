@@ -123,16 +123,17 @@ testing/classifier/.skills/test-classifier/scripts/test-classifier-dispatcher.sh
 testing/classifier/.skills/test-classifier/scripts/test-classifier-dispatcher.sh \
   --dry-run
 
-# Opt in to running the suite locally (OBSERVED). OFF by default for the local
-# path so a run never auto-installs deps or executes tests on your machine:
-AI_RUN_SUITE=1 \
+# Read-only INFERRED pass — predict from the diff, don't run the suite. Use on
+# an untrusted diff you don't want to install deps for / execute on your machine:
 testing/classifier/.skills/test-classifier/scripts/test-classifier-dispatcher.sh \
-  --post-comment
+  --no-run-suite --post-comment
 ```
 
-By default a **local** run is read-only and INFERRED (predicts from the diff) —
-it will not install deps or run your suite. Set `AI_RUN_SUITE=1` to let the agent
-run the suite locally (the same OBSERVED behavior CI uses). CI sets this for you.
+By default a run is OBSERVED (the same behavior CI uses): when the repo has a
+suite, the agent installs deps and runs it to triage the real failures. Pass
+`--no-run-suite` (or set `AI_RUN_SUITE=0`) for a read-only INFERRED pass that
+predicts from the diff and never touches your toolchain — use it on a branch you
+don't trust enough to execute.
 
 By default the dispatcher prints the classification report to the terminal
 only. Add `--post-comment` to also post the PR comment.
@@ -256,8 +257,10 @@ The full report is also uploaded as a CI artifact, and the run is non-blocking.
 
 #### OBSERVED vs INFERRED — what the classifier actually sees
 
-In CI the workflow sets `AI_RUN_SUITE=1`, which grants the agent shell execution
-so it **runs your suite itself**: it locates your test command (package.json,
+OBSERVED is the default everywhere; the CI workflow still sets `AI_RUN_SUITE=1`
+explicitly (self-documenting, and pins it regardless of the default). That grants
+the agent shell execution so it **runs your suite itself**: it locates your test
+command (package.json,
 Makefile, pytest/tox, go.mod, Cargo.toml, or your CI's test step), installs deps
 from your lockfile best-effort, runs the tests, and triages the **real**
 failures. That comment is marked **Observed**.
