@@ -28,14 +28,17 @@
 # Posting requires --post-comment; without it the report/JSON only prints (useful
 # for a local dry view). Nothing is posted when nothing was triaged. Two tuning-
 # signal surfaces, both supported: the posted comment's 👍/👎 reaction (read by the
-# metricsai weekly harvest) on CI/--post-comment runs, and --submit's terminal
-# prompt (written straight to the Testing Events sheet) on local runs.
+# metricsai weekly harvest) on CI/--post-comment runs, and a terminal "helpful?"
+# prompt written straight to the Testing Events sheet on local runs. That prompt
+# fires BY DEFAULT on any interactive run when METRICSAI_WEBHOOK_URL/_KEY are set
+# — no --submit needed; --submit just forces it explicitly. A failed sheet write
+# is surfaced loudly but is non-fatal (the run still exits 0).
 #
 # Usage:
 #   test-classifier-dispatcher.sh                              # no args → --unpushed (local committed+staged, report-only)
 #   test-classifier-dispatcher.sh origin/main                  # bare ref → --against origin/main
 #   test-classifier-dispatcher.sh --pr 1234 --post-comment     # post the PR comment
-#   test-classifier-dispatcher.sh --pr 1234 --submit           # post + prompt "helpful?" + append a Testing Events row
+#   test-classifier-dispatcher.sh --pr 1234 --submit           # force the "helpful?" prompt + row (auto when webhook env is set)
 #   test-classifier-dispatcher.sh --against origin/main        # explicit base ref
 #   test-classifier-dispatcher.sh --unpushed                   # local: committed+staged, NO PR (report-only)
 #   test-classifier-dispatcher.sh --json-only                  # emit only the JSON block
@@ -91,10 +94,12 @@ SKILL_PATH_CANONICAL="${SKILLS_ROOT}/test-classifier/SKILL.md"
 #
 #   --pr <number>         Explicit PR number (overrides auto-discovery)
 #   --post-comment        Post ONE PR comment via gh api (omit to print only)
-#   --submit              Implies --post-comment; then (interactive only) prompts
-#                         "Was this helpful?" and appends one Testing Events row
-#                         to the Sheet with the verdict + 👍/👎. Non-TTY/CI: posts
-#                         and skips the prompt + row.
+#   --submit              Explicitly force the "Was this helpful?" prompt + the
+#                         Testing Events row, and (for back-compat) implies
+#                         --post-comment. NOTE: the prompt + row already happen
+#                         BY DEFAULT on any interactive run when the webhook env
+#                         vars are set — so --submit is only needed to also post
+#                         the comment, or to be explicit. Non-TTY/CI: skipped.
 #   --gate                Exit 1 if the result is CLASSIFIED (CI-blocking mode)
 #   --json-only           Print only the JSON block (machine consumption)
 #   --no-run-suite        Read-only INFERRED pass: do NOT run the repo's suite
@@ -503,10 +508,12 @@ if (( WANT_HELP == 1 )); then
 test-classifier options (in addition to the shared options above):
   --pr <number>        Explicit PR number for posting (overrides auto-discovery).
   --post-comment       Post ONE PR comment with the verdicts + a 👍/👎 reaction
-                       ask (omitted when --submit captures the signal locally).
-                       Omit for a local report-only run (prints, posts nothing).
-  --submit             Implies --post-comment; then (interactive only) prompts
-                       "Was this helpful?" and appends one Testing Events row.
+                       ask (omitted when the local "helpful?" prompt captures the
+                       signal). Omit for a report-only run (prints, posts nothing).
+  --submit             Force the "Was this helpful?" prompt + Testing Events row,
+                       and (back-compat) imply --post-comment. NOT usually needed:
+                       the prompt + row already fire by default on an interactive
+                       run when the webhook env vars are set (see below).
   --gate               Exit 1 when the result is CLASSIFIED (CI-blocking mode).
   --json-only          Print only the machine-readable JSON block.
   --no-run-suite       Read-only INFERRED pass: predict from the diff instead of
@@ -522,7 +529,9 @@ Environment:
                        OBSERVED is the default; set AI_RUN_SUITE=0 (or pass
                        --no-run-suite) for a read-only INFERRED pass.
   METRICSAI_WEBHOOK_URL / METRICSAI_WEBHOOK_KEY
-                       Required only by --submit to append the Testing Events row.
+                       When BOTH are set, an interactive run prompts "helpful?"
+                       and writes a Testing Events row automatically (no --submit
+                       needed). A failed write is surfaced but non-fatal.
 HELP_ADDENDUM
   ai_review::print_help
   exit 0
@@ -821,13 +830,18 @@ post_comment_to_github() {
   echo "[test-classifier] Comment posted (issue comment)."
 }
 
-# ── --submit: prompt "Was this helpful?" and post one row via the webhook ───
+# ── Prompt "Was this helpful?" and post one Testing Events row via the webhook ─
 # Streamlines the manual local loop: instead of (post comment → react 👍/👎 on
 # GitHub → a separate weekly harvest), capture the developer's signal right after
 # the run and POST it to the metricsai Google Apps Script webhook — the SAME
 # transport metricsai uses (flat JSON body, fields aligned by header name, plus
 # reserved `_tab` and `_key`). No service account, no gcloud, no token expiry —
 # just two static env vars the developer sets once.
+#
+# This runs by DEFAULT on any interactive run when the webhook env vars are set
+# (see the auto_submit logic in test_classifier::run) — the developer no longer
+# needs to pass --submit. The explicit --submit flag remains as an opt-in and is
+# a no-op when auto-submit already applies.
 #
 # Fields (aligned by header name on the Apps Script side):
 #   repo, pr, comment_id, comment_created_at, verdict, category, confidence,
@@ -838,10 +852,11 @@ post_comment_to_github() {
 #   METRICSAI_WEBHOOK_KEY   the "AI Metrics" API key (body _key)  (required)
 #   METRICSAI_WEBHOOK_TAB   destination tab; defaults to Testing Events
 #
-# Gated: only runs interactively (TTY, not CI) — non-interactive runs post the
-# comment and skip the prompt + POST (no human signal to record, no hang).
-# Missing URL/key → records the answer to the terminal, warns, still posts the
-# comment.
+# Gated: only runs interactively (TTY, not CI) — non-interactive runs skip the
+# prompt + POST (no human signal to record, no hang). Missing URL/key → captures
+# the answer in the terminal and warns, but writes no row. A failed POST is
+# surfaced loudly (HTTP code + response body) but is NON-FATAL: the run exits 0
+# because the classification itself succeeded.
 #
 # Args: PR number, the extracted classifier JSON.
 submit_metrics_row() {
@@ -857,11 +872,11 @@ submit_metrics_row() {
   # must gate on the SAME thing: can we open /dev/tty? In CI / a real non-TTY run
   # there is no controlling terminal, so this still skips correctly.
   if [[ "${CI:-}" == "true" ]] || ! { : <>/dev/tty; } 2>/dev/null; then
-    ai_review::info "--submit: non-interactive run (no controlling terminal) — comment posted; skipping the helpfulness prompt + metrics row." >&2
+    ai_review::info "metrics: non-interactive run (no controlling terminal) — skipping the helpfulness prompt + Testing Events row." >&2
     return 0
   fi
   if ! command -v python3 &>/dev/null; then
-    ai_review::warn "--submit: python3 not found; cannot build the metrics row — skipping it." >&2
+    ai_review::warn "metrics: python3 not found; cannot build the Testing Events row — skipping it." >&2
     return 0
   fi
 
@@ -886,7 +901,7 @@ submit_metrics_row() {
       ;;
     *)
       # Empty Enter or anything unrecognized = skip (don't guess a verdict).
-      ai_review::info "--submit: skipped (no y/n answer) — comment still posted." >&2
+      ai_review::info "metrics: skipped (no y/n answer) — nothing recorded to the sheet." >&2
       return 0
       ;;
   esac
@@ -895,7 +910,7 @@ submit_metrics_row() {
   local webhook_key="${METRICSAI_WEBHOOK_KEY:-}"
   local webhook_tab="${METRICSAI_WEBHOOK_TAB:-Testing Events}"
   if [[ -z "${webhook_url}" || -z "${webhook_key}" ]]; then
-    ai_review::warn "--submit: METRICSAI_WEBHOOK_URL / METRICSAI_WEBHOOK_KEY not set — recorded your answer but didn't post a row." >&2
+    ai_review::warn "metrics: METRICSAI_WEBHOOK_URL / METRICSAI_WEBHOOK_KEY not set — captured your answer but didn't post a row." >&2
     ai_review::log  "  Export both (the metricsai webhook URL + the AI Metrics API key) to enable the sink." >&2
     return 0
   fi
@@ -942,14 +957,28 @@ print(json.dumps(dict(zip(keys, sys.argv[1:1+len(keys)]))))
   # it can 405 on the final Drive hop even though the row landed, so we must NOT
   # use `-f -L` (that reports a false failure). Capture the first-hop status and
   # treat 200/302 as success; don't follow the redirect.
-  local http_code
-  http_code="$(curl -sS -o /dev/null -w '%{http_code}' -X POST "${webhook_url}" \
+  # Capture BOTH the response body and the first-hop status so a real failure
+  # (e.g. the Apps Script denying access to the sheet, an auth error, a 4xx/5xx)
+  # is surfaced verbatim rather than reduced to a bare code. Body and status are
+  # split on a trailing sentinel line we ask curl to append via -w.
+  local resp http_code
+  resp="$(curl -sS -X POST "${webhook_url}" \
         -H "Content-Type: application/json" \
-        -d "${body}" 2>/dev/null || echo "000")"
+        -d "${body}" -w $'\n__HTTP_CODE__:%{http_code}' 2>&1 || true)"
+  http_code="$(printf '%s' "${resp}" | sed -n 's/.*__HTTP_CODE__:\([0-9]*\).*/\1/p' | tail -1)"
+  [[ -n "${http_code}" ]] || http_code="000"
+  local resp_body
+  resp_body="$(printf '%s' "${resp}" | sed 's/__HTTP_CODE__:[0-9]*$//' | sed '/^$/d')"
   if [[ "${http_code}" == "200" || "${http_code}" == "302" ]]; then
-    ai_review::ok "--submit: posted a row to the metrics webhook (tab=${webhook_tab}, verdict=${verdict:-?}, $([ "${thumbs_up}" = 1 ] && echo 👍 || echo 👎))."
+    ai_review::ok "Recorded a Testing Events row (tab=${webhook_tab}, verdict=${verdict:-?}, $([ "${thumbs_up}" = 1 ] && echo 👍 || echo 👎))."
   else
-    ai_review::warn "--submit: webhook POST failed (HTTP ${http_code}; your answer was not recorded). Check METRICSAI_WEBHOOK_URL / METRICSAI_WEBHOOK_KEY." >&2
+    # Loud, but non-fatal: the classification itself succeeded, so we still
+    # exit 0. Surface the HTTP code AND the response body so the user can see
+    # WHY it failed (e.g. no access to the sheet) — don't swallow it.
+    ai_review::warn "Testing Events row was NOT recorded — webhook POST failed (HTTP ${http_code})." >&2
+    ai_review::warn "  Your y/n answer was captured locally but did not reach the sheet." >&2
+    [[ -n "${resp_body}" ]] && ai_review::warn "  Webhook response: ${resp_body}" >&2
+    ai_review::warn "  Check METRICSAI_WEBHOOK_URL / METRICSAI_WEBHOOK_KEY and that you have access to the target sheet." >&2
   fi
 }
 
@@ -1047,11 +1076,30 @@ test_classifier::run() {
       ;;
   esac
 
+  # ── Decide whether to capture the helpfulness signal (the Testing Events row).
+  # Historically this required the explicit --submit flag. Now it is the DEFAULT
+  # on any interactive run when the metricsai webhook is configured: if both
+  # METRICSAI_WEBHOOK_URL and METRICSAI_WEBHOOK_KEY are set AND we have a
+  # controlling terminal AND tests were actually classified, we prompt y/n and
+  # write the row — no --submit needed. --submit stays as an explicit opt-in
+  # (and is a harmless no-op when auto-submit already applies). CI / non-TTY runs
+  # never prompt (submit_metrics_row itself guards on /dev/tty). A failed write
+  # is surfaced loudly but never fails the run — the classification still stands.
+  local auto_submit=0
+  if [[ -n "${METRICSAI_WEBHOOK_URL:-}" && -n "${METRICSAI_WEBHOOK_KEY:-}" ]] \
+     && [[ "${CI:-}" != "true" ]] && { : <>/dev/tty; } 2>/dev/null \
+     && [[ "${result}" == "CLASSIFIED" ]]; then
+    auto_submit=1
+  fi
+  local do_submit=0
+  (( SUBMIT == 1 || auto_submit == 1 )) && do_submit=1
+
   # ── Post ONE PR comment with the verdicts. ────────────────────────────────
   # --post-comment is what CI passes to actually post; omit it for a local dry
   # view (the JSON/report still prints to stdout). Nothing is posted when nothing
   # was triaged (NO_ACTION). The comment carries the 👍/👎 reaction ask on a
-  # CI/--post-comment run; a local --submit run omits it (signal via the prompt).
+  # CI/--post-comment run; when we capture the signal via the terminal prompt
+  # (--submit or auto-submit) the ask is omitted (the prompt is the signal).
   if (( POST_COMMENT == 1 )); then
     if [[ "${result}" == "NO_ACTION" ]]; then
       ai_review::info "Result is NO_ACTION — nothing to triage, so no PR comment is posted."
@@ -1069,20 +1117,26 @@ test_classifier::run() {
         ai_review::log "      <!-- AI_CLASSIFIER_JSON_END -->"
         exit 1
       fi
-      # Include the 👍/👎 reaction ask UNLESS this is a local --submit run (which
-      # already captures the signal via its terminal prompt). CI / plain
-      # --post-comment → ask (1); --submit → no ask (0). Both surfaces stay alive.
+      # Include the 👍/👎 reaction ask UNLESS we're capturing the signal via the
+      # terminal prompt (--submit or auto-submit). CI / plain --post-comment →
+      # ask (1); prompt-capturing run → no ask (0). Both surfaces stay alive.
       local want_reaction_ask=1
-      (( SUBMIT == 1 )) && want_reaction_ask=0
+      (( do_submit == 1 )) && want_reaction_ask=0
       local comment_body
       comment_body="$(render_pr_comment_body "${json_block}" "${want_reaction_ask}")"
       post_comment_to_github "${AI_REVIEW_PR_NUMBER}" "${comment_body}"
+    fi
+  fi
 
-      # --submit: prompt for the helpfulness signal and append a Testing Events
-      # row (interactive only; no-ops cleanly in CI / non-TTY).
-      if (( SUBMIT == 1 )); then
-        submit_metrics_row "${AI_REVIEW_PR_NUMBER}" "${json_block}"
-      fi
+  # ── Capture the helpfulness signal + write the Testing Events row. ─────────
+  # Runs on --submit OR auto-submit, INDEPENDENT of whether a comment was posted:
+  # a local report-only run with no PR still prompts and writes a row (with empty
+  # comment fields). Guarded internally on TTY + CLASSIFIED; no-ops in CI.
+  if (( do_submit == 1 )) && [[ "${result}" == "CLASSIFIED" ]]; then
+    local json_block_submit
+    json_block_submit="$(extract_classifier_json "${classifier_output}")"
+    if [[ -n "${json_block_submit}" ]]; then
+      submit_metrics_row "${AI_REVIEW_PR_NUMBER:-}" "${json_block_submit}"
     fi
   fi
 

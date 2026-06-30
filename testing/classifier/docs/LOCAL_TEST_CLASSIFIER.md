@@ -124,8 +124,10 @@ test-classifier --post-comment              # auto-discovers the current branch'
 test-classifier --pr 42 --post-comment      # explicit PR number
 test-classifier --pr 42 --no-run-suite --post-comment   # INFERRED + post
 
-# Streamlined: post AND record the metric in one shot (see --submit below):
-test-classifier --pr 42 --submit
+# Recording a Testing Events row happens automatically on any interactive run
+# when the webhook env vars are set (see "Recording the metric" below) — a plain
+# `test-classifier` already prompts "helpful?" and writes the row. Add
+# --post-comment to also post the PR comment and tie the row to it.
 ```
 
 > **Posting authorship.** A locally-posted comment is authored by **you**, not
@@ -136,14 +138,12 @@ test-classifier --pr 42 --submit
 
 ---
 
-## `--submit` — classify, post, and record the metric in one shot
+## Recording the metric — automatic when the webhook is configured
 
-`--submit` captures the helpfulness signal **at run time, in the terminal** —
-so on a `--submit` run you don't need to leave a GitHub 👍/👎 reaction or wait on
-the weekly harvest. (A plain CI / `--post-comment` run, with no `--submit`, still
-posts the comment **with** the 👍/👎 ask — that reaction is the signal the
-`metricsai` harvest reads. The two paths coexist.) After classifying and posting
-the comment, `--submit` prompts right in the terminal:
+By default, **any interactive run records a Testing Events row** — you no longer
+need a flag. When `METRICSAI_WEBHOOK_URL` and `METRICSAI_WEBHOOK_KEY` are both
+set and tests were classified, the dispatcher captures the helpfulness signal
+right in the terminal:
 
 ```
   Was the classification helpful? [y/n] (enter to skip):
@@ -151,37 +151,54 @@ the comment, `--submit` prompts right in the terminal:
 
 Your answer is appended **immediately** as one row to the Sheet's **Testing
 Events** tab — verdict, file context, confidence, and your 👍/👎 (with an optional
-one-line reason on a 👎). No GitHub round-trip, no separate harvest.
+one-line reason on a 👎). No GitHub round-trip, no separate harvest. (A plain
+CI / `--post-comment` run still posts the comment **with** the 👍/👎 ask instead —
+that reaction is the signal the `metricsai` harvest reads. The two paths coexist;
+the local prompt simply replaces the ask when it's the one capturing the signal.)
 
 ```bash
-test-classifier --pr 42 --submit                 # classify (OBSERVED) → post → ask → record
-test-classifier --pr 42 --no-run-suite --submit  # INFERRED → post → ask → record
-test-classifier --submit                         # auto-discovers the current branch's PR
+test-classifier                            # classify (OBSERVED) → ask → record  (no PR needed)
+test-classifier --pr 42 --post-comment     # also post the comment, then ask → record
+test-classifier --pr 42 --no-run-suite     # INFERRED → ask → record
 ```
 
-**Requirements:** everything `--post-comment` needs (open PR + `gh` authed),
-**plus** the metricsai webhook creds — two static values, set once in `~/.zshrc`:
+This works **with or without a PR**: a plain local run records a row (with empty
+comment fields); adding `--post-comment` also posts the PR comment and ties the
+row to it.
+
+`--submit` still exists as an explicit opt-in — it forces the prompt + row and
+(for back-compat) also posts the comment — but you rarely need it now that the
+prompt is the default.
+
+**Requirements:** just the metricsai webhook creds — two static values, set once
+in `~/.zshrc` (posting a comment additionally needs an open PR + `gh` authed, but
+recording a row does not):
 
 ```bash
 export METRICSAI_WEBHOOK_URL="https://script.google.com/macros/s/<id>/exec"
 export METRICSAI_WEBHOOK_KEY="<the AI Metrics API key>"
 ```
 
-That's the whole setup. `--submit` POSTs the row to the same Google Apps Script
-webhook `metricsai` uses (flat JSON body; the script aligns fields to the sheet
-by header name, so column order never matters). **No gcloud, no service account,
-no token to refresh** — both values are permanent.
+That's the whole setup. The row is POSTed to the same Google Apps Script webhook
+`metricsai` uses (flat JSON body; the script aligns fields to the sheet by header
+name, so column order never matters). **No gcloud, no service account, no token
+to refresh** — both values are permanent.
 
 The row lands in the **Testing Events** tab by default; override with
 `METRICSAI_WEBHOOK_TAB`.
 
 **Behavior notes:**
-- **Interactive only.** In CI or any non-TTY run, `--submit` posts the comment
-  and **skips** the prompt + row (no human to ask, no hang). CI metrics still
-  come from the central weekly harvest.
-- **No creds → no crash.** If `METRICSAI_WEBHOOK_URL` / `METRICSAI_WEBHOOK_KEY`
-  aren't set, it records your answer to the terminal, warns, and **still posts**
-  the comment.
+- **Interactive only.** In CI or any non-TTY run, the prompt + row are **skipped**
+  (no human to ask, no hang). CI metrics still come from the central weekly
+  harvest of the 👍/👎 reactions.
+- **No creds → no prompt.** If `METRICSAI_WEBHOOK_URL` / `METRICSAI_WEBHOOK_KEY`
+  aren't both set, there's no sink, so the run skips the prompt entirely (it just
+  prints the report, and posts the comment if you asked for one).
+- **Write failures are loud but non-fatal.** If the POST fails — no access to the
+  sheet, an auth error, a network blip — the dispatcher prints the HTTP status
+  **and** the webhook's response body so you can see why, but the run still
+  **exits 0** (the classification itself succeeded). Your y/n was captured; only
+  the sheet write missed.
 - **Writes to Testing Events, not the weekly tabs.** These are per-event rows
   (one per run), distinct from the `metricsai` weekly aggregate rows in the
   CXT / DMOD / EMMY / OSRE tabs. The central sweep writes to the same tab — two
