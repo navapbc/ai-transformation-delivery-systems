@@ -129,6 +129,30 @@ classify the failures you actually observe:
    your OBSERVED signal.
 4. Set the result `mode` to `"OBSERVED"` in the JSON.
 
+> **Spend your turn budget on classification, not on rediscovering the
+> environment.** You have a bounded number of agentic turns
+> (`AI_SUITE_MAX_TURNS`), and a turn is one assistant iteration, not one tool
+> call — batch independent calls into one turn. Trial-and-error bootstrap on a
+> cold runner can burn the whole budget before you emit a verdict, so:
+>
+> - **Reuse the repo's own setup.** Prefer its bootstrap entry point
+>   (`bin/setup`, `script/bootstrap`, a Makefile `setup` target); otherwise
+>   reproduce the CI workflow (`.github/workflows/*.yml` — setup steps, service
+>   containers, version pins, test command) rather than guessing. If CI
+>   precompiles assets, do that too (a suite that skips it fails with an
+>   `ENVIRONMENT_ISSUE`, not an app bug).
+> - **Batch.** Chain setup steps with `&&` in one command (shell state doesn't
+>   persist across calls); issue independent read-only lookups together.
+> - **Run the suite once, blocking** — don't background it and poll with
+>   `sleep`/`pgrep`.
+> - **Delegate large-diff discovery to a subagent if you have one** (Claude
+>   Code's `Task`/`Agent`): its whole exploration costs the parent ONE turn.
+>   Give it the paths/questions it needs (it can't see your history). Codex and
+>   Copilot have none — keep discovery serial but batched.
+> - **Degrade before you overflow.** Near the cap, emit your best verdict from
+>   what you've observed (`confidence: low` beats no output); if bootstrap can't
+>   finish, fall back to `INFERRED` and say so.
+
 > **Infrastructure-as-code tests need a teardown guarantee — never strand real
 > resources.** Some repos (Terraform/OpenTofu modules, Pulumi, CloudFormation)
 > have a "test suite" that **applies real cloud resources**. That is fine to run

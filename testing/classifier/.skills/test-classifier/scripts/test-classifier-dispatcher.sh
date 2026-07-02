@@ -400,6 +400,17 @@ if [[ "${AI_RUN_SUITE:-1}" == "1" ]]; then
      cannot locate/install/run it (no suite, missing toolchain, needs services,
      times out), fall back to predicting from the diff, set "mode":"INFERRED",
      and state the reason in "summary".
+
+     BUDGET DISCIPLINE — you have a bounded number of agentic turns; a turn is
+     one assistant iteration, not one tool call, so batch independent lookups
+     and chain setup steps with && into one command. Derive the bootstrap from
+     the repo FIRST (its own setup entry point, else its CI workflow) instead
+     of guessing package managers by trial and error. Run the suite ONCE as a
+     blocking command — don't poll with sleep/pgrep. For a LARGE diff, if you
+     have a subagent tool (Claude Code Task/Agent), delegate discovery to it
+     (one parent turn; give it the paths/questions — it can't see your
+     history); codex/copilot have none, so keep discovery serial but batched.
+     Near the budget, STOP and emit your best verdict rather than overflowing.
 SIGNAL
 else
   read -r -d '' SIGNAL_STEP <<'SIGNAL' || true
@@ -1048,6 +1059,14 @@ test_classifier::run() {
   fi
 
   if (( invoke_rc != 0 )); then
+    # Turn-budget overflow is a soft outcome: no verdict, but exit 0 so the PR
+    # check stays green-advisory rather than failing red. Bump AI_SUITE_MAX_TURNS
+    # or set AI_RUN_SUITE=0 for a diff-only (INFERRED) pass.
+    if ai_review::is_max_turns "${classifier_output}"; then
+      ai_review::warn "AI Test Classifier: agent hit the turn budget (AI_SUITE_MAX_TURNS=${AI_SUITE_MAX_TURNS}) before emitting a verdict — no classification this run (non-blocking)."
+      ai_review::warn "  Bump AI_SUITE_MAX_TURNS for more headroom, or set AI_RUN_SUITE=0 (--no-run-suite) for a fast diff-only (INFERRED) pass."
+      exit 0
+    fi
     ai_review::err "AI CLI (${AI_REVIEW_TOOL_RESOLVED}) exited with code ${invoke_rc}."
     exit 1
   fi
