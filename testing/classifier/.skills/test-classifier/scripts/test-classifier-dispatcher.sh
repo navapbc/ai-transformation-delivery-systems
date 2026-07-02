@@ -400,6 +400,27 @@ if [[ "${AI_RUN_SUITE:-1}" == "1" ]]; then
      cannot locate/install/run it (no suite, missing toolchain, needs services,
      times out), fall back to predicting from the diff, set "mode":"INFERRED",
      and state the reason in "summary".
+
+     BUDGET DISCIPLINE — you have a bounded number of agentic turns; spend them
+     on classification, NOT on rediscovering the environment by trial and error.
+     A turn is one assistant iteration, not one tool call: batch independent
+     read-only lookups together in one turn, and chain independent setup shell
+     steps with && into a single command instead of one tool call each. Derive
+     the exact bootstrap from the repo itself FIRST: use its own setup entry
+     point if present (bin/setup, script/bootstrap, a Makefile setup target),
+     otherwise reproduce its CI workflow (.github/workflows/*.yml — setup
+     steps, service containers, version pins, and the test command are the
+     ground truth for toolchain, DB setup, and asset precompile). Do not guess
+     package managers or hunt for interpreter paths one command at a time. Run
+     the suite ONCE as a single blocking command and read its output — do not
+     poll with repeated sleep/pgrep turns. For a LARGE diff, if your harness
+     has a subagent tool (Claude Code Task/Agent), delegate diff/code discovery
+     to it — a subagent's whole exploration costs your loop ONE turn and
+     returns only its conclusion (include the paths/questions it needs in its
+     prompt; it cannot see your history). No subagent tool (codex/copilot):
+     keep discovery serial but batched. If you approach the turn budget, STOP
+     exploring and emit your best verdict from what you already observed rather
+     than running out mid-investigation.
 SIGNAL
 else
   read -r -d '' SIGNAL_STEP <<'SIGNAL' || true
@@ -1048,6 +1069,19 @@ test_classifier::run() {
   fi
 
   if (( invoke_rc != 0 )); then
+    # Turn-budget overflow (the agent ran out of agentic iterations before it
+    # could emit a verdict — usually a cold-runner suite bootstrap ate the
+    # budget) is a SOFT outcome, not a job failure. The SDK models this as the
+    # resumable error_max_turns state; here we degrade gracefully: say so and
+    # exit 0 so the PR check stays green-advisory rather than failing red. The
+    # real fix is bootstrapping efficiently (see SKILL Step 1) so runs rarely
+    # approach the cap; AI_SUITE_MAX_TURNS gives headroom, AI_RUN_SUITE=0 skips
+    # the suite entirely for a fast INFERRED-only pass.
+    if ai_review::is_max_turns "${classifier_output}"; then
+      ai_review::warn "AI Test Classifier: agent hit the turn budget (AI_SUITE_MAX_TURNS=${AI_SUITE_MAX_TURNS}) before emitting a verdict — no classification this run (non-blocking)."
+      ai_review::warn "  Bump AI_SUITE_MAX_TURNS for more headroom, or set AI_RUN_SUITE=0 (--no-run-suite) for a fast diff-only (INFERRED) pass."
+      exit 0
+    fi
     ai_review::err "AI CLI (${AI_REVIEW_TOOL_RESOLVED}) exited with code ${invoke_rc}."
     exit 1
   fi

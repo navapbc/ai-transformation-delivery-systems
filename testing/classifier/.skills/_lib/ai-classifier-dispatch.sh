@@ -69,8 +69,17 @@ AI_RUN_SUITE="${AI_RUN_SUITE:-1}"
 # Bounds for the agent loop when it is running the suite, so a runaway
 # install/test cycle can't hang the job. The timeout wraps the whole CLI call;
 # --max-turns (claude) caps agentic iterations.
+#
+# The turn budget must cover BOTH the from-scratch environment bootstrap (Ruby +
+# bundle, Postgres, asset precompile on a cold runner can be 10-20 serial shell
+# turns) AND the actual classification. 40 turns was empirically too low: cold
+# CI runs spent the whole budget bootstrapping and hit "Reached max turns"
+# before emitting a verdict. 80 gives headroom; the real fix is teaching the
+# agent to bootstrap efficiently (see the SKILL's OBSERVED step) so it rarely
+# gets near the cap. Overflow is now a soft outcome (ai_review::is_max_turns),
+# not a hard job failure.
 AI_SUITE_TIMEOUT_SECS="${AI_SUITE_TIMEOUT_SECS:-1500}"   # 25 min hard ceiling
-AI_SUITE_MAX_TURNS="${AI_SUITE_MAX_TURNS:-40}"
+AI_SUITE_MAX_TURNS="${AI_SUITE_MAX_TURNS:-80}"
 
 # ── Color helpers (suppressed in CI / non-TTY) ──────────────────────────────
 if [[ -t 1 ]] && [[ "${CI:-}" != "true" ]] && [[ "${NO_COLOR:-}" == "" ]]; then
@@ -494,6 +503,22 @@ ai_review::invoke_claude() {
     # this flag set is required for suite-running, not optional. --allowedTools
     # scopes it to exactly what the task needs; --max-turns bounds the loop.
     #
+    # Tool set and the turn budget interact — this list is chosen to make the
+    # budget go further, not just to permit actions:
+    #   Grep,Glob    — native search is token-efficient AND read-only tools
+    #                  batched in one assistant message execute in PARALLEL
+    #                  within a single turn; a serial chain of `bash grep`
+    #                  calls burns one turn each.
+    #   Task,Agent   — the subagent tool (named Task on older CLI versions,
+    #                  Agent on newer; listing both is harmless). --max-turns
+    #                  counts PARENT assistant iterations only: a subagent's
+    #                  entire multi-step exploration costs the parent ONE turn,
+    #                  so delegating diff/code discovery to a subagent is turn-
+    #                  budget compression. The SKILL's OBSERVED step tells the
+    #                  agent to use this for large diffs.
+    # Deliberately NOT granted: WebSearch/WebFetch (data-minimization posture —
+    # see SKILL.md; nothing off-repo is needed for a verdict).
+    #
     # NOTE: no 2>&1 — keep the agent's stderr diagnostics OUT of the captured
     # stdout so they can't corrupt the JSON/marker parse. stderr still flows to
     # the terminal / CI log.
@@ -503,14 +528,14 @@ ai_review::invoke_claude() {
       # there is no stdin to read.
       $(ai_review::timeout_prefix) claude -p "${SKILL_PROMPT}" \
         --permission-mode bypassPermissions \
-        --allowedTools "Bash,Read,Edit" \
+        --allowedTools "Bash,Read,Edit,Grep,Glob,Task,Agent" \
         --max-turns "${AI_SUITE_MAX_TURNS}" \
         --output-format stream-json --verbose < /dev/null \
         | ai_review::stream_split
     else
       $(ai_review::timeout_prefix) claude -p "${SKILL_PROMPT}" \
         --permission-mode bypassPermissions \
-        --allowedTools "Bash,Read,Edit" \
+        --allowedTools "Bash,Read,Edit,Grep,Glob,Task,Agent" \
         --max-turns "${AI_SUITE_MAX_TURNS}"
     fi
   else
@@ -541,15 +566,28 @@ ai_review::invoke_codex() {
   # folded into the captured stdout that gets parsed.
   local stream="${AI_REVIEW_DO_STREAM:-0}"
   local sandbox="read-only"
-  (( AI_RUN_SUITE == 1 )) && sandbox="workspace-write"
+  local -a codex_cfg=()
+  if (( AI_RUN_SUITE == 1 )); then
+    sandbox="workspace-write"
+    # workspace-write grants file writes but NOT network — codex's sandbox
+    # disables outbound network by default even in write mode. Without this
+    # override, `bundle install` / `npm ci` / `pip install` fail inside the
+    # sandbox and every OBSERVED run silently degrades to INFERRED ("deps
+    # failed to install"). Suite mode explicitly needs the registry fetch, so
+    # turn network on for exactly this case; read-only triage keeps the
+    # no-network default.
+    codex_cfg=(-c sandbox_workspace_write.network_access=true)
+  fi
 
   if (( stream == 1 )); then
     ai_review::info "Streaming the agent's steps below (set AI_REVIEW_STREAM=0 to silence)…" >&2
     $(ai_review::timeout_prefix) codex exec --json --sandbox "${sandbox}" \
+      "${codex_cfg[@]+"${codex_cfg[@]}"}" \
       --skip-git-repo-check "${SKILL_PROMPT}" \
       | ai_review::codex_stream_split
   else
     $(ai_review::timeout_prefix) codex exec --sandbox "${sandbox}" \
+      "${codex_cfg[@]+"${codex_cfg[@]}"}" \
       --skip-git-repo-check "${SKILL_PROMPT}" 2>&1
   fi
 }
@@ -674,6 +712,26 @@ ai_review::invoke_ai() {
   esac
 }
 
+# ── Turn-budget overflow detection ──────────────────────────────────────────
+# When the agent exhausts --max-turns before finishing, the CLI exits non-zero
+# and prints a recognizable banner instead of our result marker. This is NOT an
+# unrecoverable error (the SDK models it as the resumable `error_max_turns`
+# state) — it means the run needed more agentic iterations than the budget
+# allowed, typically because a cold-runner suite bootstrap ate the turns. We
+# detect it so the caller can degrade gracefully (record an INFERRED-style
+# not-completed outcome and stay non-blocking) rather than failing the job red.
+#
+# Signatures across the supported CLIs:
+#   claude   — "Reached max turns (N)" / "Error: Reached max turns"
+#   codex    — "turn limit" / "max turns"
+# The match is deliberately broad (case-insensitive) so a wording tweak in any
+# CLI still trips it; a false positive only downgrades a hard failure to a soft
+# one, which is the safe direction.
+ai_review::is_max_turns() {
+  local output="$1"
+  grep -qiE 'reached max turns|max[ _-]?turns|turn limit' <<< "${output}"
+}
+
 # ── Result marker parsing ───────────────────────────────────────────────────
 # The canonical marker is:  <<<AI_REVIEW_RESULT:CLASSIFIED|NO_ACTION>>>
 # We grep for the structured form; if absent we return UNPARSEABLE so the
@@ -752,6 +810,16 @@ ai_review::run() {
   ai_review::log  "────────────────────────────────────────────────────────────"
 
   if (( invoke_rc != 0 )); then
+    # Turn-budget overflow is a soft outcome, not a job failure: the agent ran
+    # out of agentic iterations (usually a cold-runner suite bootstrap ate the
+    # budget) before emitting a verdict. Degrade gracefully — say so and exit 0
+    # — rather than failing the build red. Raise AI_SUITE_MAX_TURNS for more
+    # headroom, or set AI_RUN_SUITE=0 for a fast INFERRED-only pass.
+    if ai_review::is_max_turns "${review_output}"; then
+      ai_review::warn "${SKILL_HUMAN_NAME}: agent hit the turn budget (AI_SUITE_MAX_TURNS=${AI_SUITE_MAX_TURNS}) before finishing — no verdict emitted this run."
+      ai_review::warn "  This is non-blocking. Bump AI_SUITE_MAX_TURNS for more headroom, or run with AI_RUN_SUITE=0 (--no-run-suite) for a fast diff-only (INFERRED) pass."
+      exit 0
+    fi
     ai_review::err "AI CLI (${AI_REVIEW_TOOL_RESOLVED}) exited with code ${invoke_rc}."
     if (( AI_REVIEW_NO_BLOCK == 1 )); then
       ai_review::warn "--no-block in effect: not failing despite CLI error."
