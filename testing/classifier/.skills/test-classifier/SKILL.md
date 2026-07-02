@@ -130,51 +130,28 @@ classify the failures you actually observe:
 4. Set the result `mode` to `"OBSERVED"` in the JSON.
 
 > **Spend your turn budget on classification, not on rediscovering the
-> environment.** You have a bounded number of agentic turns (`AI_SUITE_MAX_TURNS`).
-> A **turn is one assistant iteration, not one tool call** — a single response
-> that batches several independent tool calls still costs one turn, and
-> read-only calls (file reads, searches) batched together execute in parallel.
-> On a cold runner, bootstrap (install the toolchain, start services, precompile
-> assets) can eat the whole budget if you do it by trial and error — the failure
-> mode is running out of turns *before* you emit a verdict. Bootstrap
-> deliberately:
+> environment.** You have a bounded number of agentic turns
+> (`AI_SUITE_MAX_TURNS`), and a turn is one assistant iteration, not one tool
+> call — batch independent calls into one turn. Trial-and-error bootstrap on a
+> cold runner can burn the whole budget before you emit a verdict, so:
 >
-> - **Look for the repo's own bootstrap entry point first.** Many repos ship a
->   one-command setup: `bin/setup` (the Rails convention), `script/bootstrap`,
->   a `Makefile` `setup:`/`bootstrap:` target, or a devcontainer. If one exists
->   and fits the runner, use it — it encodes the maintainers' own recipe.
-> - **Otherwise read the repo's CI workflow** (`.github/workflows/*.yml`). Its
->   setup steps, `services:` containers, toolchain-version pins (also check
->   `.ruby-version`/`.nvmrc`/`.tool-versions`/`mise.toml`), and test command
->   are the ground truth. Reproduce that recipe rather than guessing the package
->   manager, hunting for an interpreter path, or retrying `install` variants one
->   command at a time. If CI declares a Postgres service and a `db:test:prepare`
->   step, do exactly that; if it precompiles assets before the suite, do that too
->   (a suite that renders views will fail without it, and that is an
+> - **Reuse the repo's own setup.** Prefer its bootstrap entry point
+>   (`bin/setup`, `script/bootstrap`, a Makefile `setup` target); otherwise
+>   reproduce the CI workflow (`.github/workflows/*.yml` — setup steps, service
+>   containers, version pins, test command) rather than guessing. If CI
+>   precompiles assets, do that too (a suite that skips it fails with an
 >   `ENVIRONMENT_ISSUE`, not an app bug).
-> - **Batch aggressively.** Chain independent setup shell steps with `&&` into
->   one command instead of one tool call per line, and set `PATH`/`GEM_HOME`/env
->   exports at the top of the same command that uses them (agent shell state
->   does not persist across calls). Issue independent read-only lookups (read
->   the workflow + the lockfile + the version pin) together in one turn, not as
->   three sequential turns.
-> - **Run the suite once, blocking.** Invoke it as a single foreground command
->   with an adequate tool timeout and read the captured output. Do not launch it
->   in the background and then burn turns polling with `sleep`/`pgrep`.
-> - **For a large diff, delegate discovery to a subagent — if your harness has
->   one.** Claude Code's subagent tool (`Task`/`Agent`, e.g. an Explore agent)
->   runs a whole multi-step exploration that costs the parent loop ONE turn and
->   returns only its conclusion — use it to map affected tests/code paths on big
->   diffs, and give it the file paths and questions it needs in the prompt (it
->   does not see your history). Codex and Copilot have no subagent tool: there,
->   keep discovery serial but batched. Either way, understanding the diff is
->   parallelizable; serial env bootstrap is not — don't try to parallelize the
->   latter.
-> - **Degrade before you overflow.** If you near the turn budget, stop
->   investigating and emit your best verdict from what you have already observed —
->   a `confidence: low` verdict with an honest rationale beats hitting the cap
->   with no output at all. If bootstrap genuinely can't complete in budget, fall
->   back to `INFERRED` (below) and say so.
+> - **Batch.** Chain setup steps with `&&` in one command (shell state doesn't
+>   persist across calls); issue independent read-only lookups together.
+> - **Run the suite once, blocking** — don't background it and poll with
+>   `sleep`/`pgrep`.
+> - **Delegate large-diff discovery to a subagent if you have one** (Claude
+>   Code's `Task`/`Agent`): its whole exploration costs the parent ONE turn.
+>   Give it the paths/questions it needs (it can't see your history). Codex and
+>   Copilot have none — keep discovery serial but batched.
+> - **Degrade before you overflow.** Near the cap, emit your best verdict from
+>   what you've observed (`confidence: low` beats no output); if bootstrap can't
+>   finish, fall back to `INFERRED` and say so.
 
 > **Infrastructure-as-code tests need a teardown guarantee — never strand real
 > resources.** Some repos (Terraform/OpenTofu modules, Pulumi, CloudFormation)
