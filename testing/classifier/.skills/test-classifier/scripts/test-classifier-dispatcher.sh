@@ -117,6 +117,7 @@ GATE_MODE=0
 JSON_ONLY=0
 WANT_HELP=0
 SUBMIT=0
+SIMULATE=0
 POSTED_COMMENT_ID=""        # set by the post functions; consumed by --submit
 POSTED_COMMENT_CREATED=""   # the comment's created_at (ISO-8601) from the API
 REMAINING_FOR_LIB=()
@@ -163,6 +164,16 @@ while [[ $# -gt 0 ]]; do
       ;;
     --json-only)
       JSON_ONLY=1
+      shift
+      ;;
+    --simulate)
+      # Skip the AI agent entirely and feed a synthetic classifier result
+      # through the real posting/metrics path — validate the comment + 👍/👎 +
+      # Testing Events pipeline without a live (slow/costly) agent run. Pair with
+      # --post-comment / --submit to actually post + record. Set
+      # AI_SIMULATE_RESULT=NO_ACTION to exercise the true-negative path;
+      # defaults to a CLASSIFIED filler.
+      SIMULATE=1
       shift
       ;;
     -h|--help)
@@ -396,10 +407,24 @@ if [[ "${AI_RUN_SUITE:-1}" == "1" ]]; then
      shell execution): LOCATE this repo's test command (package.json scripts,
      Makefile, pytest/tox, go.mod, Cargo.toml, or its CI workflow's test step),
      INSTALL deps from the repo's lockfile (best-effort), and RUN the suite to
-     get the real pass/fail output. Set "mode":"OBSERVED" in the JSON. If you
-     cannot locate/install/run it (no suite, missing toolchain, needs services,
-     times out), fall back to predicting from the diff, set "mode":"INFERRED",
-     and state the reason in "summary".
+     get the real pass/fail output.
+
+     RUN THE NARROWEST TEST TARGET, NOT A FULL BUILD. You are time-bounded. Do
+     NOT trigger a whole-project build when a targeted test run exists — building
+     everything before the suite is the single biggest cause of timeouts.
+       - Multi-module Maven/Gradle: run tests for the changed module(s) only,
+         e.g. `mvn -pl <changed-module> -am test` (or `-Dtest=...` for specific
+         classes), or `gradle :<module>:test`. Do NOT run the root reactor build
+         (`mvn test` / `mvn verify` at the root). Skip unrelated lifecycle phases
+         where possible (`-DskipITs`, `-Dcheckstyle.skip`) so time goes to tests.
+       - Other ecosystems: scope to the changed package / path (e.g.
+         `pytest path/to/changed_tests`, `go test ./changedpkg/...`,
+         `npm test -- <pattern>`) rather than the entire suite when the diff is
+         local.
+     Set "mode":"OBSERVED" in the JSON. If you cannot locate/install/run it (no
+     suite, missing toolchain, needs services, times out), OR the only available
+     path is a full build that would not finish in time, fall back to predicting
+     from the diff, set "mode":"INFERRED", and state the reason in "summary".
 
      BUDGET DISCIPLINE — you have a bounded number of agentic turns; a turn is
      one assistant iteration, not one tool call, so batch independent lookups
@@ -671,14 +696,39 @@ lines = []
 # IMPORTANT: this anchor line must stay byte-identical — the banner goes AFTER it.
 lines.append("test-classifier: AI triage of failing tests")
 lines.append("")
+
+# Signal-provenance banner (shared by both branches) so a prediction is never
+# mistaken for a real run.
+if mode == "OBSERVED":
+    banner = "> **Observed** — these verdicts are grounded in the actual test run output."
+else:
+    banner = ("> **Inferred, not observed** — the suite was not run for this triage, so these "
+              "verdicts are predicted from the diff. See the summary for why.")
+
+# True-negative branch: the agent ran and found nothing to triage. We STILL post
+# a comment (not silence) so the developer can 👍/👎 it — that reaction is the
+# only tuning signal a true negative can produce, and the metrics harvester needs
+# a comment to attach the reaction to. Keep the same anchor line above so the
+# harvester matches it by the `test-classifier:` prefix.
+if not classifications:
+    lines.append("## AI Test Classifier — no action required")
+    lines.append("")
+    lines.append(banner)
+    lines.append("")
+    lines.append(summary or "No failing tests were triaged for the change under test.")
+    lines.append("")
+    if want_reaction_ask:
+        lines.append("**React 👍 if this is right (nothing needed triage) / 👎 if a real "
+                     "failure was missed**, and on a 👎 please **reply with a one-line "
+                     "reason**. Advisory, non-blocking.")
+    else:
+        lines.append("_Advisory, non-blocking — diagnostic only; the classifier never edits code or tests._")
+    print("\n".join(lines))
+    sys.exit(0)
+
 lines.append("## AI Test Classifier — triage of failing tests")
 lines.append("")
-# Signal-provenance banner so a prediction is never mistaken for a real run.
-if mode == "OBSERVED":
-    lines.append("> **Observed** — these verdicts are grounded in the actual test run output.")
-else:
-    lines.append("> **Inferred, not observed** — the suite was not run for this triage, so these "
-                 "verdicts are predicted from the diff. See the summary for why.")
+lines.append(banner)
 lines.append("")
 lines.append(summary)
 lines.append("")
@@ -949,6 +999,13 @@ print("\t".join([best.get("verdict","") or "", best.get("category","") or "", be
   local verdict category confidence
   IFS=$'\t' read -r verdict category confidence <<< "${repr}"
 
+  # True negative: no classifications, so `repr` is empty. Record an explicit
+  # NO_ACTION verdict rather than a blank row so the sheet distinguishes "agent
+  # ran, nothing to triage" (a real, countable true negative) from a missing row.
+  if [[ -z "${verdict}" ]]; then
+    verdict="NO_ACTION"
+  fi
+
   # comment_created_at comes from the comment POST response; fall back to now.
   local created_at="${POSTED_COMMENT_CREATED:-}"
   [[ -n "${created_at}" ]] || created_at="$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "")"
@@ -993,6 +1050,40 @@ print(json.dumps(dict(zip(keys, sys.argv[1:1+len(keys)]))))
   fi
 }
 
+# Synthesize a classifier output for --simulate mode, byte-compatible with what
+# a real agent emits: the fenced JSON block plus the trailing result marker. This
+# lets the full downstream path (parse_result → extract_classifier_json →
+# render_pr_comment_body → post_comment_to_github → submit_metrics_row) run
+# without invoking the agent. Set AI_SIMULATE_RESULT=NO_ACTION to exercise the
+# true-negative comment + row instead of the default CLASSIFIED table.
+ai_review::synthetic_output() {
+  local kind="${AI_SIMULATE_RESULT:-CLASSIFIED}"
+  local mode="INFERRED"
+  (( AI_RUN_SUITE == 1 )) && mode="OBSERVED"
+
+  if [[ "${kind}" == "NO_ACTION" ]]; then
+    cat <<SIM
+[SIMULATED OUTPUT — no agent was invoked (--simulate).]
+
+<!-- AI_CLASSIFIER_JSON_BEGIN -->
+{ "mode": "${mode}", "summary": "SIMULATED: no failing tests were triaged (pipeline dry run).", "classifications": [] }
+<!-- AI_CLASSIFIER_JSON_END -->
+
+<<<AI_REVIEW_RESULT:NO_ACTION>>>
+SIM
+  else
+    cat <<SIM
+[SIMULATED OUTPUT — no agent was invoked (--simulate).]
+
+<!-- AI_CLASSIFIER_JSON_BEGIN -->
+{ "mode": "${mode}", "summary": "SIMULATED: filler triage for pipeline dry run (these verdicts are not real).", "classifications": [ { "verdict": "FLAKY_FAILURE", "test": "simulated::filler_test", "path": "SIMULATED", "line": 0, "category": "other", "confidence": "low", "in_scope": true, "rationale": "Synthetic entry produced by --simulate to exercise the posting/metrics path without a live agent run." } ] }
+<!-- AI_CLASSIFIER_JSON_END -->
+
+<<<AI_REVIEW_RESULT:CLASSIFIED>>>
+SIM
+  fi
+}
+
 # ── Custom run loop (mirrors the security PR dispatcher) ────────────────────
 test_classifier::run() {
   # Discover the PR (and inject --against into REMAINING_FOR_LIB).
@@ -1006,12 +1097,15 @@ test_classifier::run() {
     exit 0
   fi
 
-  ai_review::resolve_tool
+  # --simulate skips the agent, so it does not need a resolved/installed AI CLI.
+  if (( SIMULATE == 0 )); then
+    ai_review::resolve_tool
+  fi
 
   if (( AI_REVIEW_DRY_RUN == 1 )); then
     ai_review::info "DRY-RUN — no AI invocation will be made."
     ai_review::log  "  Skill:          ${SKILL_HUMAN_NAME} (${SKILL_NAME})"
-    ai_review::log  "  AI tool:        ${AI_REVIEW_TOOL_RESOLVED}"
+    ai_review::log  "  AI tool:        ${AI_REVIEW_TOOL_RESOLVED:-(skipped — --simulate)}"
     ai_review::log  "  PR number:      ${AI_REVIEW_PR_NUMBER:-(none — using --against directly)}"
     ai_review::log  "  Diff source:    $(ai_review::diff_command_description)"
     ai_review::log  "  Post comment:   ${POST_COMMENT}"
@@ -1021,9 +1115,6 @@ test_classifier::run() {
     ai_review::changed_files | sed 's/^/    /'
     exit 0
   fi
-
-  ai_review::info "Running ${SKILL_HUMAN_NAME} on $(ai_review::diff_command_description) via ${AI_REVIEW_TOOL_RESOLVED}..."
-  ai_review::log  "────────────────────────────────────────────────────────────"
 
   export AI_REVIEW_AGAINST
   # Export the PR context so the agent can re-resolve the diff itself when the
@@ -1047,7 +1138,15 @@ test_classifier::run() {
 
   local classifier_output
   local invoke_rc=0
-  classifier_output="$(ai_review::invoke_ai)" || invoke_rc=$?
+  if (( SIMULATE == 1 )); then
+    ai_review::info "SIMULATE — skipping the AI agent; feeding synthetic output (${AI_SIMULATE_RESULT:-CLASSIFIED}) through the real posting/metrics path."
+    ai_review::log  "────────────────────────────────────────────────────────────"
+    classifier_output="$(ai_review::synthetic_output)"
+  else
+    ai_review::info "Running ${SKILL_HUMAN_NAME} on $(ai_review::diff_command_description) via ${AI_REVIEW_TOOL_RESOLVED}..."
+    ai_review::log  "────────────────────────────────────────────────────────────"
+    classifier_output="$(ai_review::invoke_ai)" || invoke_rc=$?
+  fi
 
   if (( JSON_ONLY == 1 )); then
     extract_classifier_json "${classifier_output}"
@@ -1107,7 +1206,7 @@ test_classifier::run() {
   local auto_submit=0
   if [[ -n "${METRICSAI_WEBHOOK_URL:-}" && -n "${METRICSAI_WEBHOOK_KEY:-}" ]] \
      && [[ "${CI:-}" != "true" ]] && { : <>/dev/tty; } 2>/dev/null \
-     && [[ "${result}" == "CLASSIFIED" ]]; then
+     && { [[ "${result}" == "CLASSIFIED" ]] || [[ "${result}" == "NO_ACTION" ]]; }; then
     auto_submit=1
   fi
   local do_submit=0
@@ -1115,43 +1214,44 @@ test_classifier::run() {
 
   # ── Post ONE PR comment with the verdicts. ────────────────────────────────
   # --post-comment is what CI passes to actually post; omit it for a local dry
-  # view (the JSON/report still prints to stdout). Nothing is posted when nothing
-  # was triaged (NO_ACTION). The comment carries the 👍/👎 reaction ask on a
-  # CI/--post-comment run; when we capture the signal via the terminal prompt
-  # (--submit or auto-submit) the ask is omitted (the prompt is the signal).
+  # view (the JSON/report still prints to stdout). A comment is posted on BOTH
+  # results: CLASSIFIED (the verdict table) AND NO_ACTION (a "no action required"
+  # comment). The true negative is posted so its 👍/👎 reaction can be harvested
+  # by the metrics loop — suppressing it (the earlier behavior) made true
+  # negatives invisible to tuning. render_pr_comment_body renders a dedicated
+  # "no action required" body when classifications is empty. The comment carries
+  # the 👍/👎 reaction ask on a CI/--post-comment run; when we capture the signal
+  # via the terminal prompt (--submit or auto-submit) the ask is omitted.
   if (( POST_COMMENT == 1 )); then
-    if [[ "${result}" == "NO_ACTION" ]]; then
-      ai_review::info "Result is NO_ACTION — nothing to triage, so no PR comment is posted."
-    else
-      if [[ -z "${AI_REVIEW_PR_NUMBER:-}" ]]; then
-        ai_review::err "--post-comment requires a discoverable PR. Use --pr <number> or ensure 'gh pr view' resolves. (A --unpushed local run has no PR, so it is report-only — drop --post-comment.)"
-        exit 1
-      fi
-      local json_block
-      json_block="$(extract_classifier_json "${classifier_output}")"
-      if [[ -z "${json_block}" ]]; then
-        ai_review::err "AI response did not contain a parseable JSON block."
-        ai_review::log "  Expected fenced block bounded by:"
-        ai_review::log "      <!-- AI_CLASSIFIER_JSON_BEGIN -->"
-        ai_review::log "      <!-- AI_CLASSIFIER_JSON_END -->"
-        exit 1
-      fi
-      # Include the 👍/👎 reaction ask UNLESS we're capturing the signal via the
-      # terminal prompt (--submit or auto-submit). CI / plain --post-comment →
-      # ask (1); prompt-capturing run → no ask (0). Both surfaces stay alive.
-      local want_reaction_ask=1
-      (( do_submit == 1 )) && want_reaction_ask=0
-      local comment_body
-      comment_body="$(render_pr_comment_body "${json_block}" "${want_reaction_ask}")"
-      post_comment_to_github "${AI_REVIEW_PR_NUMBER}" "${comment_body}"
+    if [[ -z "${AI_REVIEW_PR_NUMBER:-}" ]]; then
+      ai_review::err "--post-comment requires a discoverable PR. Use --pr <number> or ensure 'gh pr view' resolves. (A --unpushed local run has no PR, so it is report-only — drop --post-comment.)"
+      exit 1
     fi
+    local json_block
+    json_block="$(extract_classifier_json "${classifier_output}")"
+    if [[ -z "${json_block}" ]]; then
+      ai_review::err "AI response did not contain a parseable JSON block."
+      ai_review::log "  Expected fenced block bounded by:"
+      ai_review::log "      <!-- AI_CLASSIFIER_JSON_BEGIN -->"
+      ai_review::log "      <!-- AI_CLASSIFIER_JSON_END -->"
+      exit 1
+    fi
+    # Include the 👍/👎 reaction ask UNLESS we're capturing the signal via the
+    # terminal prompt (--submit or auto-submit). CI / plain --post-comment →
+    # ask (1); prompt-capturing run → no ask (0). Both surfaces stay alive.
+    local want_reaction_ask=1
+    (( do_submit == 1 )) && want_reaction_ask=0
+    local comment_body
+    comment_body="$(render_pr_comment_body "${json_block}" "${want_reaction_ask}")"
+    post_comment_to_github "${AI_REVIEW_PR_NUMBER}" "${comment_body}"
   fi
 
   # ── Capture the helpfulness signal + write the Testing Events row. ─────────
   # Runs on --submit OR auto-submit, INDEPENDENT of whether a comment was posted:
   # a local report-only run with no PR still prompts and writes a row (with empty
-  # comment fields). Guarded internally on TTY + CLASSIFIED; no-ops in CI.
-  if (( do_submit == 1 )) && [[ "${result}" == "CLASSIFIED" ]]; then
+  # comment fields). Fires on CLASSIFIED and NO_ACTION alike (a true negative is
+  # a countable row); submit_metrics_row guards internally on TTY and no-ops in CI.
+  if (( do_submit == 1 )) && { [[ "${result}" == "CLASSIFIED" ]] || [[ "${result}" == "NO_ACTION" ]]; }; then
     local json_block_submit
     json_block_submit="$(extract_classifier_json "${classifier_output}")"
     if [[ -n "${json_block_submit}" ]]; then

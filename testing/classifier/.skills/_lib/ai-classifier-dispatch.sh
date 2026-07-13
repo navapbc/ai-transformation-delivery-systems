@@ -201,6 +201,12 @@ Usage:
 Options:
   -n, --dry-run        Print the resolved AI tool, prompt, and target files,
                        but do not invoke the AI. Exits 0.
+  --simulate           Skip the AI agent and feed a synthetic classifier result
+                       through the real posting/metrics path. Use with
+                       --post-comment / --submit to validate the comment + 👍/👎
+                       + Testing Events pipeline without a live (slow/costly)
+                       agent run. Set AI_SIMULATE_RESULT=NO_ACTION to exercise
+                       the true-negative path; defaults to a CLASSIFIED filler.
   --no-block           Run the full classification but always exit 0, regardless
                        of the result marker (the classifier is advisory anyway;
                        this is belt-and-suspenders for CI experiments).

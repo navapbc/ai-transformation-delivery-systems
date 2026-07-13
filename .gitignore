@@ -1,3 +1,6 @@
 .claude/settings.local.json
 .env.local
 .env
+
+# Cloned test repos (fixtures for exercising the classifier) — never commit
+test-repos/
